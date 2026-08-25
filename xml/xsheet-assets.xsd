@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema
+ xmlns:xs="http://www.w3.org/2001/XMLSchema"
+ targetNamespace="http://schemas.animation.org/xsheet/assets"
+ xmlns="http://schemas.animation.org/xsheet/assets"
+ elementFormDefault="qualified">
+
+ <xs:element name="AssetLibrary">
+     <xs:complexType>
+         <xs:sequence>
+             <xs:element name="Asset"
+                         type="AssetType"
+                         maxOccurs="unbounded"/>
+         </xs:sequence>
+     </xs:complexType>
+ </xs:element>
+
+ <xs:complexType name="AssetType">
+     <xs:sequence>
+         <xs:element name="Name" type="xs:string"/>
+         <xs:element name="Type" type="xs:string"/>
+     </xs:sequence>
+     <xs:attribute name="id" type="xs:ID" use="required"/>
+ </xs:complexType>
+
+</xs:schema>
