@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AssetLibrary xmlns="http://schemas.animation.org/xsheet/assets"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://schemas.animation.org/xsheet/assets xsheet-assets.xsd">
+  <Asset id="bg01">
+    <Name>BG Plate</Name>
+    <Type>image</Type>
+    <URL>file:///mnt/assets/bg/bg001.png</URL>
+    <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+    <ModificationDate>2026-08-10T09:15:00Z</ModificationDate>
+  </Asset>
+  <Asset id="rg01">
+    <Name>Hero Rig</Name>
+    <Type>rig</Type>
+    <URL>file:///mnt/assets/rig/rg001.fbx</URL>
+    <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+  </Asset>
+</AssetLibrary>

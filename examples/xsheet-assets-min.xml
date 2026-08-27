@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AssetLibrary xmlns="http://schemas.animation.org/xsheet/assets"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://schemas.animation.org/xsheet/assets xsheet-assets.xsd">
+  <Asset id="a1">
+    <Name>Background</Name>
+    <Type>image</Type>
+    <URL>file:///mnt/assets/bg/bg001.png</URL>
+    <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+  </Asset>
+</AssetLibrary>
