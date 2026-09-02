@@ -10,12 +10,21 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# Set working directory
 WORKDIR /app
 
-# Install initial dependencies (empty file if not present yet)
+# Define the virtual environment path
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+
+# Prepend the venv bin directory to the system PATH
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Install initial dependencies into virtual environment
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# Copy application files
 COPY . .
 
 # Add entrypoint script

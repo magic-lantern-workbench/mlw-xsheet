@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   nicegui:
     build: .
@@ -12,4 +10,4 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-    command: uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+    command: python main.py

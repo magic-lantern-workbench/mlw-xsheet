@@ -14,5 +14,10 @@
     <Type>rig</Type>
     <URL>file:///mnt/assets/rig/rg001.fbx</URL>
     <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+    <Description>
+      Rigging for Hero in filbox format used as a universal interchange standard to transfer rigged and animated characters between software tools.
+    </Description>
+    <ShortDescription>Hero rigging in filbox format</ShortDescription>
+    <Author>Wizzer Works</Author>
   </Asset>
 </AssetLibrary>
