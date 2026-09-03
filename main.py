@@ -1,8 +1,159 @@
-from nicegui import app, ui
+from pathlib import Path
+import os
+from nicegui import ui
 
-# Create a clean header and a welcoming text label
-ui.label('Hello, World!').classes('text-2xl m-4 font-semibold text-primary')
+BASE_DIR = Path.cwd()
 
+current_file = {'path': None}
+
+# --- helpers ---
+def find_xml_files():
+    files = []
+    for root, dirs, filenames in os.walk(BASE_DIR):
+        for fn in filenames:
+            if fn.lower().endswith(('.xml', '.xsd')):
+                files.append(Path(root) / fn)
+    files.sort()
+    return files
+
+
+def open_file(path: Path):
+    try:
+        text = path.read_text(encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to open {path}: {exc}', color='negative')
+        return
+    current_file['path'] = str(path)
+    filename_label.set_text(path.name)
+    editor.value = text
+    preview.set(text)
+
+
+def close_file():
+    current_file['path'] = None
+    filename_label.set_text('No file')
+    editor.value = ''
+    preview.set('')
+
+
+def save_file():
+    if not current_file['path']:
+        save_as()
+        return
+    path = Path(current_file['path'])
+    try:
+        path.write_text(editor.value, encoding='utf-8')
+        ui.notify(f'Saved {path}', color='positive')
+        preview.set(editor.value)
+    except Exception as exc:
+        ui.notify(f'Failed to save {path}: {exc}', color='negative')
+
+
+def save_as():
+    def do_save(_):
+        name = name_input.value.strip()
+        if not name:
+            ui.notify('Please provide a filename', color='warning')
+            return
+        dest = BASE_DIR / name
+        try:
+            dest.write_text(editor.value, encoding='utf-8')
+            current_file['path'] = str(dest)
+            filename_label.set_text(dest.name)
+            ui.notify(f'Saved {dest}', color='positive')
+            save_as_dialog.close()
+            preview.set(editor.value)
+        except Exception as exc:
+            ui.notify(f'Failed to save {dest}: {exc}', color='negative')
+
+    with ui.dialog() as save_as_dialog:
+        with ui.card().classes('p-4'):
+            ui.label('Save As')
+            name_input = ui.input('Filename', value='untitled.xml')
+            with ui.row().classes('mt-2'):
+                ui.button('Save', on_click=do_save)
+                ui.button('Cancel', on_click=lambda: save_as_dialog.close())
+    save_as_dialog.open()
+
+
+# File chooser dialog
+
+def show_file_dialog():
+    files = find_xml_files()
+    selected = {'path': None}
+
+    with ui.dialog() as file_dialog:
+        with ui.card().classes('p-4 w-96'):
+            ui.label('Open file')
+            if not files:
+                ui.label('No XML/XSD files found').classes('text-sm text-gray-500')
+            else:
+                selected_label = ui.label('Selected: None').classes('mt-2 text-sm')
+                with ui.column().classes('mt-2').style('max-height: 60vh; overflow:auto'):
+                    for p in files:
+                        p_str = str(p)
+                        rel = p.relative_to(BASE_DIR).as_posix()
+                        def make_onclick(p_str=p_str, rel=rel):
+                            def _on_click(_=None):
+                                selected['path'] = p_str
+                                selected_label.set_text(f'Selected: {rel}')
+                            return _on_click
+                        ui.button(rel, on_click=make_onclick).props('flat').classes('justify-start')
+            ui.separator()
+            with ui.row().classes('mt-2 justify-end'):
+                ui.button('Cancel', on_click=lambda _: file_dialog.close())
+                def do_select(_=None):
+                    if not selected['path']:
+                        ui.notify('No file selected', color='warning')
+                        return
+                    open_file(Path(selected['path']))
+                    file_dialog.close()
+                ui.button('Select', on_click=do_select)
+    file_dialog.open()
+
+
+# Main content: editor and highlighted preview side-by-side
+@ui.page('/')
+def index():
+    # header with File menu and filename
+    with ui.header():
+        with ui.row().classes('items-center gap-4'):
+            def open_file_dialog(_=None):
+                show_file_dialog()
+            ui.button('File', on_click=open_file_dialog)
+            global filename_label
+            filename_label = ui.label('No file')
+            # Save controls moved to header
+            ui.button('Save', on_click=lambda _: save_file()).props('flat')
+            ui.button('Save As', on_click=lambda _: save_as()).props('flat')
+
+    with ui.row().classes('gap-4'):
+        with ui.column().style('flex:1'):
+            ui.label('Editor').classes('text-lg font-medium')
+            # editor and preview are created here; use nonlocal assignment via globals for simplicity
+            global editor, preview
+            # prefer built-in CodeMirror component if available for semantic highlighting
+            editor = None
+            for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
+                if hasattr(ui, comp):
+                    editor = getattr(ui, comp)(value='', language='xml', on_change=lambda e: preview.set(e.value)).classes('w-full').style('min-height: 60vh')
+                    break
+            if editor is None:
+                # fallback to textarea
+                editor = ui.textarea(value='', on_change=lambda e: preview.set(e.value)).classes('w-full').style('min-height: 60vh')
+                ui.notify('CodeMirror component not found; using plain textarea', color='warning')
+        with ui.column().style('flex:1'):
+            ui.label('Preview (semantic highlighting)').classes('text-lg font-medium')
+            preview = ui.code('', language='xml').classes('w-full').style('min-height: 60vh; white-space: pre-wrap')
+
+
+# Expose a simple route to list files (useful for API clients)
+@ui.page('/files')
+def files_page():
+    for p in find_xml_files():
+        ui.link(p.relative_to(BASE_DIR).as_posix(), f'/open?path={p}')
+
+
+# Start server (allow multiprocessing reloader)
 if __name__ in {"__main__", "__mp_main__"}:
-    # Start the built-in Uvicorn ASGI server with hot-reloading enabled
-    ui.run(reload=True)
+    ui.run()
