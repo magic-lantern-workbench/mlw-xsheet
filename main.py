@@ -25,6 +25,42 @@ def set_filename_label(name: str | None = None):
         filename_label.set_text(label_text)
 
 
+def set_validation_status(message: str, ok: bool = True):
+    """Update the validation status label in the footer."""
+    # validation_status_label is created in the page; guard in case called earlier
+    if 'validation_status_label' in globals():
+        validation_status_label.set_text(message)
+        validation_status_label.style(f'color: {"green" if ok else "red"}')
+
+
+def validate_xml():
+    """Validate the current editor contents as well-formed XML/XSD and report
+    the result in the footer's validation status label."""
+    ed = globals().get('editor')
+    text = ed.value if ed is not None else ''
+    path = current_file.get('path')
+    kind = 'XSD' if path and str(path).lower().endswith('.xsd') else 'XML'
+    if not text.strip():
+        msg = f'Nothing to validate ({kind})'
+        set_validation_status(msg, ok=False)
+        ui.notify(msg, color='warning')
+        return
+    import xml.etree.ElementTree as ET
+    try:
+        ET.fromstring(text)
+        msg = f'{kind} is well-formed'
+        set_validation_status(msg, ok=True)
+        ui.notify(msg, color='positive')
+    except ET.ParseError as exc:
+        msg = f'{kind} invalid: {exc}'
+        set_validation_status(msg, ok=False)
+        ui.notify(msg, color='negative')
+    except Exception as exc:
+        msg = f'{kind} validation error: {exc}'
+        set_validation_status(msg, ok=False)
+        ui.notify(msg, color='negative')
+
+
 # --- helpers ---
 def find_xml_files():
     files = []
@@ -216,6 +252,7 @@ def close_file():
     current_file['modified'] = False
     current_file['saved_content'] = ''
     set_filename_label('No file')
+    set_validation_status('')
     # suppress change handler when clearing editor
     global suppress_editor_change
     suppress_editor_change = True
@@ -394,14 +431,19 @@ window.mlwHighlightLine = function(lineIndex) {
             with ui.dropdown_button('Edit', auto_close=True):
                 ui.menu_item('Undo', on_click=lambda _: do_undo())
                 ui.menu_item('Redo', on_click=lambda _: do_redo())
+            # XML menu with Validation
+            with ui.dropdown_button('XML', auto_close=True):
+                ui.menu_item('Validate', on_click=lambda _: validate_xml())
             # Keep Save buttons as quick-access (optional)
             ui.button('Save', on_click=lambda _: save_file()).props('flat')
             ui.button('Save As', on_click=lambda _: save_as()).props('flat')
 
     with ui.footer():
-        with ui.row().classes('items-center gap-4'):
+        with ui.row().classes('items-center justify-between w-full'):
             global filename_label
             filename_label = ui.label('No file')
+            global validation_status_label
+            validation_status_label = ui.label('')
 
     with ui.row().classes('gap-4 w-full flex-nowrap'):
         with ui.column().style('flex:1; min-width:0'):
