@@ -394,14 +394,17 @@ window.mlwHighlightLine = function(lineIndex) {
             with ui.dropdown_button('Edit', auto_close=True):
                 ui.menu_item('Undo', on_click=lambda _: do_undo())
                 ui.menu_item('Redo', on_click=lambda _: do_redo())
-            global filename_label
-            filename_label = ui.label('No file')
             # Keep Save buttons as quick-access (optional)
             ui.button('Save', on_click=lambda _: save_file()).props('flat')
             ui.button('Save As', on_click=lambda _: save_as()).props('flat')
 
-    with ui.row().classes('gap-4'):
-        with ui.column().style('flex:1'):
+    with ui.footer():
+        with ui.row().classes('items-center gap-4'):
+            global filename_label
+            filename_label = ui.label('No file')
+
+    with ui.row().classes('gap-4 w-full flex-nowrap'):
+        with ui.column().style('flex:1; min-width:0'):
             ui.label('Editor').classes('text-lg font-medium')
             # editor is created here; use global for simplicity
             global editor
@@ -482,7 +485,7 @@ window.mlwHighlightLine = function(lineIndex) {
                 ui.run_javascript(f'window.mlwHighlightLine({line});')
 
         global xml_tree
-        with ui.column().style('width:320px'):
+        with ui.column().style('width:320px; flex-shrink:0'):
             ui.label('Hierarchy').classes('text-lg font-medium')
             xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
     # build initial tree from current editor value
