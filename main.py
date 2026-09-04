@@ -423,14 +423,14 @@ window.mlwHighlightLine = function(lineIndex) {
         with ui.row().classes('items-center gap-4'):
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True):
-                ui.menu_item('Open', on_click=lambda _: show_file_dialog())
-                ui.menu_item('Save', on_click=lambda _: save_file())
+                ui.menu_item('Open (Ctrl+O)', on_click=lambda _: show_file_dialog())
+                ui.menu_item('Save (Ctrl+S)', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True):
-                ui.menu_item('Undo', on_click=lambda _: do_undo())
-                ui.menu_item('Redo', on_click=lambda _: do_redo())
+                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
+                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
             # XML menu with Validation
             with ui.dropdown_button('XML', auto_close=True):
                 ui.menu_item('Validate', on_click=lambda _: validate_xml())
@@ -547,6 +547,9 @@ window.mlwHighlightLine = function(lineIndex) {
         elif e.key == 's' and e.ctrl:
             e.preventDefault()
             save_file()
+        elif e.key == 'o' and e.ctrl:
+            e.preventDefault()
+            show_file_dialog()
     ui.keyboard(on_key=handle_keyboard)
 
 
