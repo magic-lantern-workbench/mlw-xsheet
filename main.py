@@ -5,7 +5,21 @@ from local_file_picker import local_file_picker
 
 BASE_DIR = Path.cwd()
 
-current_file = {'path': None}
+current_file = {'path': None, 'modified': False}
+
+# Suppress editor change handler during programmatic updates
+suppress_editor_change = False
+
+
+def set_filename_label(name: str | None = None):
+    """Update filename label text, adding '*' when modified."""
+    if name is None:
+        name = Path(current_file['path']).name if current_file['path'] else 'No file'
+    label_text = name + (' *' if current_file.get('modified') else '')
+    # filename_label is created in the page; guard in case called earlier
+    if 'filename_label' in globals():
+        filename_label.set_text(label_text)
+
 
 # --- helpers ---
 def find_xml_files():
@@ -25,14 +39,46 @@ def open_file(path: Path):
         ui.notify(f'Failed to open {path}: {exc}', color='negative')
         return
     current_file['path'] = str(path)
-    filename_label.set_text(path.name)
+    current_file['modified'] = False
+    set_filename_label(path.name)
+    # programmatic update — suppress change handler so initial load doesn't mark as modified
+    global suppress_editor_change
+    suppress_editor_change = True
     editor.value = text
+    suppress_editor_change = False
 
 
 def close_file():
     current_file['path'] = None
-    filename_label.set_text('No file')
+    current_file['modified'] = False
+    set_filename_label('No file')
+    # suppress change handler when clearing editor
+    global suppress_editor_change
+    suppress_editor_change = True
     editor.value = ''
+    suppress_editor_change = False
+
+
+def close_with_check():
+    """Close the current file, but prompt to save if modified."""
+    if not current_file.get('path') or not current_file.get('modified'):
+        close_file()
+        return
+    with ui.dialog() as confirm_dialog:
+        with ui.card().classes('p-4'):
+            ui.label('Save changes before closing?')
+            with ui.row().classes('mt-4 justify-end'):
+                def do_no(_=None):
+                    confirm_dialog.close()
+                    close_file()
+                def do_yes(_=None):
+                    # Save then close
+                    save_file()
+                    confirm_dialog.close()
+                    close_file()
+                ui.button('No', on_click=do_no).props('outline')
+                ui.button('Yes', on_click=do_yes).classes('ml-2')
+    confirm_dialog.open()
 
 
 def save_file():
@@ -42,6 +88,8 @@ def save_file():
     path = Path(current_file['path'])
     try:
         path.write_text(editor.value, encoding='utf-8')
+        current_file['modified'] = False
+        set_filename_label()
         ui.notify(f'Saved {path}', color='positive')
     except Exception as exc:
         ui.notify(f'Failed to save {path}: {exc}', color='negative')
@@ -57,7 +105,8 @@ def save_as():
         try:
             dest.write_text(editor.value, encoding='utf-8')
             current_file['path'] = str(dest)
-            filename_label.set_text(dest.name)
+            current_file['modified'] = False
+            set_filename_label(dest.name)
             ui.notify(f'Saved {dest}', color='positive')
             save_as_dialog.close()
         except Exception as exc:
@@ -103,7 +152,7 @@ def index():
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 ui.menu_item('Save', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
-                ui.menu_item('Close', on_click=lambda _: close_file())
+                ui.menu_item('Close', on_click=lambda _: close_with_check())
             global filename_label
             filename_label = ui.label('No file')
             # Keep Save buttons as quick-access (optional)
@@ -117,13 +166,20 @@ def index():
             global editor
             # prefer built-in CodeMirror component if available for semantic highlighting
             editor = None
+            def on_editor_change(e):
+                # ignore programmatic updates
+                if globals().get('suppress_editor_change'):
+                    return
+                # mark document modified and update label
+                current_file['modified'] = True
+                set_filename_label()
             for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
                 if hasattr(ui, comp):
-                    editor = getattr(ui, comp)(value='', language='xml').classes('w-full').style('min-height: 80vh')
+                    editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change).classes('w-full').style('min-height: 80vh')
                     break
             if editor is None:
                 # fallback to textarea
-                editor = ui.textarea(value='').classes('w-full').style('min-height: 80vh')
+                editor = ui.textarea(value='', on_change=on_editor_change).classes('w-full').style('min-height: 80vh')
                 ui.notify('CodeMirror component not found; using plain textarea', color='warning')
 
 
