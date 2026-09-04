@@ -98,12 +98,15 @@ def index():
     # header with File menu and filename
     with ui.header():
         with ui.row().classes('items-center gap-4'):
-            def open_file_dialog(_=None):
-                show_file_dialog()
-            ui.button('File', on_click=open_file_dialog)
+            # File menu dropdown with Open, Save, Save As, Close
+            with ui.dropdown_button('File', auto_close=True):
+                ui.menu_item('Open', on_click=lambda _: show_file_dialog())
+                ui.menu_item('Save', on_click=lambda _: save_file())
+                ui.menu_item('Save As', on_click=lambda _: save_as())
+                ui.menu_item('Close', on_click=lambda _: close_file())
             global filename_label
             filename_label = ui.label('No file')
-            # Save controls moved to header
+            # Keep Save buttons as quick-access (optional)
             ui.button('Save', on_click=lambda _: save_file()).props('flat')
             ui.button('Save As', on_click=lambda _: save_as()).props('flat')
 
