@@ -5,10 +5,14 @@ from local_file_picker import local_file_picker
 
 BASE_DIR = Path.cwd()
 
-current_file = {'path': None, 'modified': False}
+current_file = {'path': None, 'modified': False, 'saved_content': ''}
 
 # Suppress editor change handler during programmatic updates
 suppress_editor_change = False
+# Undo/redo stacks and last value
+undo_stack = []
+redo_stack = []
+last_editor_value = ''
 
 
 def set_filename_label(name: str | None = None):
@@ -40,9 +44,14 @@ def open_file(path: Path):
         return
     current_file['path'] = str(path)
     current_file['modified'] = False
+    current_file['saved_content'] = text
     set_filename_label(path.name)
+    # initialize undo/redo stacks
+    global undo_stack, redo_stack, last_editor_value, suppress_editor_change
+    undo_stack.clear()
+    redo_stack.clear()
+    last_editor_value = text
     # programmatic update — suppress change handler so initial load doesn't mark as modified
-    global suppress_editor_change
     suppress_editor_change = True
     editor.value = text
     suppress_editor_change = False
@@ -89,6 +98,7 @@ def save_file():
     try:
         path.write_text(editor.value, encoding='utf-8')
         current_file['modified'] = False
+        current_file['saved_content'] = editor.value
         set_filename_label()
         ui.notify(f'Saved {path}', color='positive')
     except Exception as exc:
@@ -153,6 +163,10 @@ def index():
                 ui.menu_item('Save', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
+            # Edit menu with Undo/Redo
+            with ui.dropdown_button('Edit', auto_close=True):
+                ui.menu_item('Undo', on_click=lambda _: do_undo())
+                ui.menu_item('Redo', on_click=lambda _: do_redo())
             global filename_label
             filename_label = ui.label('No file')
             # Keep Save buttons as quick-access (optional)
@@ -170,17 +184,67 @@ def index():
                 # ignore programmatic updates
                 if globals().get('suppress_editor_change'):
                     return
+                global undo_stack, redo_stack, last_editor_value
+                new_val = e.value
+                # push previous value onto undo stack
+                if last_editor_value != new_val:
+                    undo_stack.append(last_editor_value)
+                    # clear redo stack on new edit
+                    redo_stack.clear()
+                    last_editor_value = new_val
                 # mark document modified and update label
-                current_file['modified'] = True
+                current_file['modified'] = (new_val != current_file.get('saved_content', ''))
                 set_filename_label()
             for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
                 if hasattr(ui, comp):
                     editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change).classes('w-full').style('min-height: 80vh')
                     break
+            # add Edit menu undo/redo after editor creation
+            def do_undo(_=None):
+                global undo_stack, redo_stack, last_editor_value, suppress_editor_change
+                if not undo_stack:
+                    ui.notify('Nothing to undo', color='info')
+                    return
+                prev = undo_stack.pop()
+                redo_stack.append(last_editor_value)
+                suppress_editor_change = True
+                editor.value = prev
+                suppress_editor_change = False
+                last_editor_value = prev
+                current_file['modified'] = (prev != current_file.get('saved_content', ''))
+                set_filename_label()
+
+            def do_redo(_=None):
+                global undo_stack, redo_stack, last_editor_value, suppress_editor_change
+                if not redo_stack:
+                    ui.notify('Nothing to redo', color='info')
+                    return
+                nxt = redo_stack.pop()
+                undo_stack.append(last_editor_value)
+                suppress_editor_change = True
+                editor.value = nxt
+                suppress_editor_change = False
+                last_editor_value = nxt
+                current_file['modified'] = (nxt != current_file.get('saved_content', ''))
+                set_filename_label()
             if editor is None:
                 # fallback to textarea
                 editor = ui.textarea(value='', on_change=on_editor_change).classes('w-full').style('min-height: 80vh')
                 ui.notify('CodeMirror component not found; using plain textarea', color='warning')
+
+    # Add keyboard shortcuts
+    def handle_keyboard(e):
+        if e.key == 'z' and e.ctrl:
+            e.preventDefault()
+            do_undo()
+        elif e.key == 'y' and e.ctrl:
+            e.preventDefault()
+            do_redo()
+        elif e.key == 's' and e.ctrl:
+            e.preventDefault()
+            save_file()
+    
+    ui.keyboard(on_key=handle_keyboard)
 
 
 # Expose a simple route to list files (useful for API clients)
