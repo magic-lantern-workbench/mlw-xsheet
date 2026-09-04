@@ -125,13 +125,14 @@ def rebuild_tree_from_current():
             text = ''
 
     items, xml_node_map = parse_xml_to_tree(text)
-    # build ui-compatible nodes list (ensure keys are 'id','text','children')
+    # build ui-compatible nodes list using the keys ui.tree actually expects:
+    # 'id', 'label' (default label_key), and 'children' -- applied recursively.
     def build_ui_tree(items):
         ui_items = []
         for it in items:
             label = it.get('text') or it.get('label') or ''
             children = build_ui_tree(it.get('children', [])) if it.get('children') else []
-            ui_items.append({'id': it.get('id'), 'text': label, 'children': children})
+            ui_items.append({'id': it.get('id'), 'label': label, 'children': children})
         return ui_items
     ui_items = build_ui_tree(items)
 
@@ -144,29 +145,12 @@ def rebuild_tree_from_current():
     # try to update existing tree widget
     if xml_tree is not None:
         try:
-            # try common setter names and shapes. Provide both 'children' and 'nodes' to be safe.
-            def ensure_nodes_shape(nodes):
-                out = []
-                for n in nodes:
-                    out.append({
-                        'id': n.get('id'),
-                        'text': n.get('text', ''),
-                        'children': n.get('children', []),
-                        'nodes': n.get('children', []),
-                    })
-                return out
-            shaped = ensure_nodes_shape(ui_items)
-            if hasattr(xml_tree, 'set_nodes'):
-                xml_tree.set_nodes(shaped)
-                print('DEBUG: xml_tree.set_nodes called')
-                return
-            if hasattr(xml_tree, 'set_items'):
-                xml_tree.set_items(shaped)
-                print('DEBUG: xml_tree.set_items called')
-                return
-            # fallback: try setting attribute
-            xml_tree.nodes = shaped
-            print('DEBUG: xml_tree.nodes assigned')
+            # NiceGUI's Tree element has no set_nodes()/set_items() API and plain
+            # attribute assignment (xml_tree.nodes = ...) does NOT propagate to the
+            # client. You must write into .props and then call .update().
+            xml_tree.props['nodes'] = ui_items
+            xml_tree.update()
+            print(f'DEBUG: xml_tree updated via props with {len(ui_items)} root nodes')
             return
         except Exception as exc:
             print('DEBUG: failed to set tree nodes:', exc)
@@ -221,6 +205,7 @@ def open_file(path: Path):
 def close_file():
     current_file['path'] = None
     current_file['modified'] = False
+    current_file['saved_content'] = ''
     set_filename_label('No file')
     # suppress change handler when clearing editor
     global suppress_editor_change
@@ -407,31 +392,31 @@ def index():
                 editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                 ui.notify('CodeMirror component not found; using plain textarea', color='warning')
 
-    # create a right-side column for XML hierarchy as a sibling in the same row
-    # tree selection handler
-    def on_tree_select(e):
-        nid = e.value if hasattr(e, 'value') else e
-        if not nid:
-            return
-        if nid in xml_node_map:
-            start, end = xml_node_map.get(nid, (0, None))
-            if start is None:
-                start = 0
-            # Set cursor for CodeMirror or textarea
-            js = (
-                "(function(){"
-                "let cm = document.querySelector('.cm-editor, .CodeMirror');"
-                "if(cm && cm.CodeMirror){ cm = cm.CodeMirror; cm.focus(); cm.setSelection({line:0,ch:0}); /* fallback */ }"
-                "const ta = document.querySelector('textarea');"
-                f"if(ta){{ta.focus(); ta.setSelectionRange({start},{start});}}"
-                "})();"
-            )
-            ui.run_javascript(js)
+        # create a right-side column for XML hierarchy as a sibling in the same row
+        # tree selection handler
+        def on_tree_select(e):
+            nid = e.value if hasattr(e, 'value') else e
+            if not nid:
+                return
+            if nid in xml_node_map:
+                start, end = xml_node_map.get(nid, (0, None))
+                if start is None:
+                    start = 0
+                # Set cursor for CodeMirror or textarea
+                js = (
+                    "(function(){"
+                    "let cm = document.querySelector('.cm-editor, .CodeMirror');"
+                    "if(cm && cm.CodeMirror){ cm = cm.CodeMirror; cm.focus(); cm.setSelection({line:0,ch:0}); /* fallback */ }"
+                    "const ta = document.querySelector('textarea');"
+                    f"if(ta){{ta.focus(); ta.setSelectionRange({start},{start});}}"
+                    "})();"
+                )
+                ui.run_javascript(js)
 
-    global xml_tree
-    with ui.column().style('width:320px'):
-        ui.label('Hierarchy').classes('text-lg font-medium')
-        xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
+        global xml_tree
+        with ui.column().style('width:320px'):
+            ui.label('Hierarchy').classes('text-lg font-medium')
+            xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
     # build initial tree from current editor value
     try:
         rebuild_tree_from_current()
