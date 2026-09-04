@@ -19,28 +19,20 @@ def find_xml_files():
 
 
 def open_file(path: Path):
-    print(f"DEBUG: open_file called with {path}")
-    print(f"DEBUG: globals available: filename_label={globals().get('filename_label')}, editor={globals().get('editor')}")
     try:
         text = path.read_text(encoding='utf-8')
     except Exception as exc:
         ui.notify(f'Failed to open {path}: {exc}', color='negative')
         return
     current_file['path'] = str(path)
-    print(f"DEBUG: Setting filename_label to {path.name}")
     filename_label.set_text(path.name)
-    print(f"DEBUG: Setting editor.value")
     editor.value = text
-    print(f"DEBUG: Setting preview")
-    preview.set_content(text)
-    print(f"DEBUG: File opened successfully")
 
 
 def close_file():
     current_file['path'] = None
     filename_label.set_text('No file')
     editor.value = ''
-    preview.set_content('')
 
 
 def save_file():
@@ -51,7 +43,6 @@ def save_file():
     try:
         path.write_text(editor.value, encoding='utf-8')
         ui.notify(f'Saved {path}', color='positive')
-        preview.set_content(editor.value)
     except Exception as exc:
         ui.notify(f'Failed to save {path}: {exc}', color='negative')
 
@@ -69,7 +60,6 @@ def save_as():
             filename_label.set_text(dest.name)
             ui.notify(f'Saved {dest}', color='positive')
             save_as_dialog.close()
-            preview.set_content(editor.value)
         except Exception as exc:
             ui.notify(f'Failed to save {dest}: {exc}', color='negative')
 
@@ -120,21 +110,18 @@ def index():
     with ui.row().classes('gap-4'):
         with ui.column().style('flex:1'):
             ui.label('Editor').classes('text-lg font-medium')
-            # editor and preview are created here; use nonlocal assignment via globals for simplicity
-            global editor, preview
+            # editor is created here; use global for simplicity
+            global editor
             # prefer built-in CodeMirror component if available for semantic highlighting
             editor = None
             for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
                 if hasattr(ui, comp):
-                    editor = getattr(ui, comp)(value='', language='xml', on_change=lambda e: preview.set_content(e.value)).classes('w-full').style('min-height: 60vh')
+                    editor = getattr(ui, comp)(value='', language='xml').classes('w-full').style('min-height: 80vh')
                     break
             if editor is None:
                 # fallback to textarea
-                editor = ui.textarea(value='', on_change=lambda e: preview.set_content(e.value)).classes('w-full').style('min-height: 60vh')
+                editor = ui.textarea(value='').classes('w-full').style('min-height: 80vh')
                 ui.notify('CodeMirror component not found; using plain textarea', color='warning')
-        with ui.column().style('flex:1'):
-            ui.label('Preview (semantic highlighting)').classes('text-lg font-medium')
-            preview = ui.code('', language='xml').classes('w-full').style('min-height: 60vh; white-space: pre-wrap')
 
 
 # Expose a simple route to list files (useful for API clients)
