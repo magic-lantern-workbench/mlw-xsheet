@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 from nicegui import ui
+from local_file_picker import local_file_picker
 
 BASE_DIR = Path.cwd()
 
@@ -18,22 +19,28 @@ def find_xml_files():
 
 
 def open_file(path: Path):
+    print(f"DEBUG: open_file called with {path}")
+    print(f"DEBUG: globals available: filename_label={globals().get('filename_label')}, editor={globals().get('editor')}")
     try:
         text = path.read_text(encoding='utf-8')
     except Exception as exc:
         ui.notify(f'Failed to open {path}: {exc}', color='negative')
         return
     current_file['path'] = str(path)
+    print(f"DEBUG: Setting filename_label to {path.name}")
     filename_label.set_text(path.name)
+    print(f"DEBUG: Setting editor.value")
     editor.value = text
-    preview.set(text)
+    print(f"DEBUG: Setting preview")
+    preview.set_content(text)
+    print(f"DEBUG: File opened successfully")
 
 
 def close_file():
     current_file['path'] = None
     filename_label.set_text('No file')
     editor.value = ''
-    preview.set('')
+    preview.set_content('')
 
 
 def save_file():
@@ -44,7 +51,7 @@ def save_file():
     try:
         path.write_text(editor.value, encoding='utf-8')
         ui.notify(f'Saved {path}', color='positive')
-        preview.set(editor.value)
+        preview.set_content(editor.value)
     except Exception as exc:
         ui.notify(f'Failed to save {path}: {exc}', color='negative')
 
@@ -62,7 +69,7 @@ def save_as():
             filename_label.set_text(dest.name)
             ui.notify(f'Saved {dest}', color='positive')
             save_as_dialog.close()
-            preview.set(editor.value)
+            preview.set_content(editor.value)
         except Exception as exc:
             ui.notify(f'Failed to save {dest}: {exc}', color='negative')
 
@@ -76,40 +83,23 @@ def save_as():
     save_as_dialog.open()
 
 
-# File chooser dialog
-
+# File chooser using local_file_picker
 def show_file_dialog():
-    files = find_xml_files()
-    selected = {'path': None}
+    def file_selected_callback(files):
+        if files:
+            print(f"DEBUG: File selected callback with: {files}")
+            open_file(Path(files[0]))
+    
+    class FilePickerWithCallback(local_file_picker):
+        def submit(self, value):
+            print(f"DEBUG: submit() called with {value}")
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+    
+    picker = FilePickerWithCallback(str(BASE_DIR))
+    picker.open()
 
-    with ui.dialog() as file_dialog:
-        with ui.card().classes('p-4 w-96'):
-            ui.label('Open file')
-            if not files:
-                ui.label('No XML/XSD files found').classes('text-sm text-gray-500')
-            else:
-                selected_label = ui.label('Selected: None').classes('mt-2 text-sm')
-                with ui.column().classes('mt-2').style('max-height: 60vh; overflow:auto'):
-                    for p in files:
-                        p_str = str(p)
-                        rel = p.relative_to(BASE_DIR).as_posix()
-                        def make_onclick(p_str=p_str, rel=rel):
-                            def _on_click(_=None):
-                                selected['path'] = p_str
-                                selected_label.set_text(f'Selected: {rel}')
-                            return _on_click
-                        ui.button(rel, on_click=make_onclick).props('flat').classes('justify-start')
-            ui.separator()
-            with ui.row().classes('mt-2 justify-end'):
-                ui.button('Cancel', on_click=lambda _: file_dialog.close())
-                def do_select(_=None):
-                    if not selected['path']:
-                        ui.notify('No file selected', color='warning')
-                        return
-                    open_file(Path(selected['path']))
-                    file_dialog.close()
-                ui.button('Select', on_click=do_select)
-    file_dialog.open()
 
 
 # Main content: editor and highlighted preview side-by-side
@@ -136,11 +126,11 @@ def index():
             editor = None
             for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
                 if hasattr(ui, comp):
-                    editor = getattr(ui, comp)(value='', language='xml', on_change=lambda e: preview.set(e.value)).classes('w-full').style('min-height: 60vh')
+                    editor = getattr(ui, comp)(value='', language='xml', on_change=lambda e: preview.set_content(e.value)).classes('w-full').style('min-height: 60vh')
                     break
             if editor is None:
                 # fallback to textarea
-                editor = ui.textarea(value='', on_change=lambda e: preview.set(e.value)).classes('w-full').style('min-height: 60vh')
+                editor = ui.textarea(value='', on_change=lambda e: preview.set_content(e.value)).classes('w-full').style('min-height: 60vh')
                 ui.notify('CodeMirror component not found; using plain textarea', color='warning')
         with ui.column().style('flex:1'):
             ui.label('Preview (semantic highlighting)').classes('text-lg font-medium')
