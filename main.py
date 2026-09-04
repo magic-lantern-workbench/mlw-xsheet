@@ -38,14 +38,19 @@ def find_xml_files():
 # --- XML hierarchy tree helpers (module-level) ---
 xml_tree = None
 xml_node_map = {}
+xml_parent_map = {}
+_last_synced_node = {'id': None}
 
 def parse_xml_to_tree(text: str):
     """Parse XML text into a nested tree of items with approximate start offsets.
-    Returns (items, node_map) where items is list for ui.tree and node_map maps id->(start,end).
+    Returns (items, node_map, parent_map): items is the list for ui.tree,
+    node_map maps id->(start, end, line), and parent_map maps id->parent_id
+    (root -> None).
     """
     import xml.etree.ElementTree as ET
     items = []
     node_map = {}
+    parent_map = {}
     try:
         root = ET.fromstring(text)
     except Exception as exc:
@@ -54,7 +59,7 @@ def parse_xml_to_tree(text: str):
             print('DEBUG: text sample:', text[:200])
         except Exception:
             pass
-        return items, node_map
+        return items, node_map, parent_map
 
     # helper to strip namespace
     def strip_tag(t):
@@ -69,9 +74,10 @@ def parse_xml_to_tree(text: str):
         return idx
 
     counter = {'n': 0}
-    def walk(elem, search_pos):
+    def walk(elem, search_pos, parent_id):
         tid = f"n{counter['n']}"
         counter['n'] += 1
+        parent_map[tid] = parent_id
         label = strip_tag(elem.tag)
         start = find_start(label, search_pos)
         # tentative end: after this element's end tag
@@ -84,24 +90,25 @@ def parse_xml_to_tree(text: str):
         children = []
         child_search_pos = start + 1 if start != -1 else search_pos
         for child in list(elem):
-            child_item, child_map, child_end = walk(child, child_search_pos)
+            child_item, child_end = walk(child, child_search_pos, tid)
             children.append(child_item)
             # advance search pos to end of child to avoid finding earlier tags
             if child_end and child_end > child_search_pos:
                 child_search_pos = child_end
-        # record node
-        node_map[tid] = (start if start != -1 else 0, end if end != -1 else None)
+        # record node: (start offset, end offset, 0-based line number of start)
+        node_start = start if start != -1 else 0
+        node_map[tid] = (node_start, end if end != -1 else None, text.count('\n', 0, node_start))
         # use 'text' key expected by NiceGUI tree nodes
         item = {'id': tid, 'text': label, 'children': children}
-        return item, node_map, (end if end != -1 else child_search_pos)
+        return item, (end if end != -1 else child_search_pos)
 
-    root_item, node_map, _ = walk(root, 0)
+    root_item, _ = walk(root, 0, None)
     items = [root_item]
-    return items, node_map
+    return items, node_map, parent_map
 
 
 def rebuild_tree_from_current():
-    global xml_tree, xml_node_map
+    global xml_tree, xml_node_map, xml_parent_map
     # Prefer the saved content if available; fallback to editor accessors
     text = ''
     if current_file.get('saved_content'):
@@ -124,7 +131,9 @@ def rebuild_tree_from_current():
         except Exception:
             text = ''
 
-    items, xml_node_map = parse_xml_to_tree(text)
+    items, xml_node_map, xml_parent_map = parse_xml_to_tree(text)
+    # tree structure changed, so any previously tracked selection is stale
+    _last_synced_node['id'] = None
     # build ui-compatible nodes list using the keys ui.tree actually expects:
     # 'id', 'label' (default label_key), and 'children' -- applied recursively.
     def build_ui_tree(items):
@@ -304,6 +313,74 @@ def show_file_dialog():
 # Main content: editor and highlighted preview side-by-side
 @ui.page('/')
 def index():
+    # JS helpers bridging the editor and the Hierarchy tree.
+    # - mlwGetCursorOffset: character offset of the cursor -> used to sync
+    #   editor cursor movement to a tree selection.
+    # - mlwHighlightLine: given a 0-based line number, selects that whole line
+    #   and places the cursor at its start -> used when a tree node is picked.
+    # CodeMirror renders as a contenteditable div (no <textarea>), so both
+    # feature-detect: prefer '.cm-content', fall back to a real <textarea>.
+    ui.add_body_html('''
+<script>
+window.mlwFindEditorRoot = function() {
+    const cm = document.querySelector('.cm-content');
+    if (cm) return {type: 'cm', el: cm};
+    const ta = document.querySelector('textarea');
+    if (ta) return {type: 'ta', el: ta};
+    return null;
+};
+
+window.mlwGetCursorOffset = function() {
+    const root = window.mlwFindEditorRoot();
+    if (!root) return null;
+    if (root.type === 'ta') {
+        return root.el.selectionStart;
+    }
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    if (!root.el.contains(range.startContainer)) return null;
+    const preRange = document.createRange();
+    preRange.selectNodeContents(root.el);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    return preRange.toString().length;
+};
+
+window.mlwHighlightLine = function(lineIndex) {
+    const cmContent = document.querySelector('.cm-content');
+    if (cmContent) {
+        const lines = cmContent.querySelectorAll(':scope > .cm-line');
+        if (lines.length === 0) return false;
+        const idx = Math.max(0, Math.min(lineIndex, lines.length - 1));
+        const lineEl = lines[idx];
+        const range = document.createRange();
+        range.selectNodeContents(lineEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        // Anchor the selection at the line's end but extend (focus/caret) to
+        // its start, so the whole line highlights while the blinking cursor
+        // sits at the beginning of the line.
+        sel.setBaseAndExtent(range.endContainer, range.endOffset, range.startContainer, range.startOffset);
+        lineEl.scrollIntoView({block: 'center'});
+        return true;
+    }
+    const ta = document.querySelector('textarea');
+    if (ta) {
+        const lines = ta.value.split('\\n');
+        const idx = Math.max(0, Math.min(lineIndex, lines.length - 1));
+        let start = 0;
+        for (let i = 0; i < idx; i++) {
+            start += lines[i].length + 1;
+        }
+        const end = start + lines[idx].length;
+        ta.focus();
+        ta.setSelectionRange(start, end, 'backward');
+        return true;
+    }
+    return false;
+};
+</script>
+''')
     # header with File menu and filename
     with ui.header():
         with ui.row().classes('items-center gap-4'):
@@ -393,25 +470,16 @@ def index():
                 ui.notify('CodeMirror component not found; using plain textarea', color='warning')
 
         # create a right-side column for XML hierarchy as a sibling in the same row
-        # tree selection handler
+        # tree selection handler: highlight the line where the selected node
+        # begins, with the cursor placed at the start of that line
         def on_tree_select(e):
             nid = e.value if hasattr(e, 'value') else e
             if not nid:
                 return
+            _last_synced_node['id'] = nid
             if nid in xml_node_map:
-                start, end = xml_node_map.get(nid, (0, None))
-                if start is None:
-                    start = 0
-                # Set cursor for CodeMirror or textarea
-                js = (
-                    "(function(){"
-                    "let cm = document.querySelector('.cm-editor, .CodeMirror');"
-                    "if(cm && cm.CodeMirror){ cm = cm.CodeMirror; cm.focus(); cm.setSelection({line:0,ch:0}); /* fallback */ }"
-                    "const ta = document.querySelector('textarea');"
-                    f"if(ta){{ta.focus(); ta.setSelectionRange({start},{start});}}"
-                    "})();"
-                )
-                ui.run_javascript(js)
+                _start, _end, line = xml_node_map.get(nid, (0, None, 0))
+                ui.run_javascript(f'window.mlwHighlightLine({line});')
 
         global xml_tree
         with ui.column().style('width:320px'):
@@ -438,41 +506,41 @@ def index():
 
 
 
-    # Periodic poll to sync editor cursor -> tree selection (best-effort)
+    # Periodic poll to sync editor cursor -> tree selection
     def poll_cursor_and_select_tree():
+        if xml_tree is None:
+            return
         try:
-            res = ui.run_javascript("return (document.querySelector('textarea') ? document.querySelector('textarea').selectionStart : null);", response=True)
-            if not res:
+            res = ui.run_javascript('return window.mlwGetCursorOffset();', response=True)
+            if res is None:
                 return
             pos = int(res)
-            # find nearest node whose start <= pos
+            # find the innermost node whose start <= cursor position
             best = None
             best_start = -1
-            for nid, (s, e) in xml_node_map.items():
+            for nid, (s, _e, _line) in xml_node_map.items():
                 if s is None:
                     continue
                 if s <= pos and s > best_start:
                     best = nid
                     best_start = s
-            if best and xml_tree is not None:
-                try:
-                    # try server-side select method
-                    xml_tree.select(best)
-                except Exception:
-                    # try client-side selection via js by matching node label text
-                    safe_label = str(best).replace("'","\\'")
-                    js = """
-                    (function(){
-                        const nodes = document.querySelectorAll('[role="treeitem"]');
-                        for(const n of nodes){
-                            if(n.textContent && n.textContent.indexOf('%s')!==-1){
-                                n.click();
-                                break;
-                            }
-                        }
-                    })();
-                    """ % safe_label
-                    ui.run_javascript(js)
+            if not best or best == _last_synced_node['id']:
+                return
+            _last_synced_node['id'] = best
+            # walk up to the root so the selected node's ancestors are expanded
+            # and it's actually visible in the tree
+            ancestors = []
+            cur = xml_parent_map.get(best)
+            while cur is not None:
+                ancestors.append(cur)
+                cur = xml_parent_map.get(cur)
+            existing_expanded = xml_tree.props.get('expanded') or []
+            expanded = list(dict.fromkeys(list(existing_expanded) + ancestors))
+            # same lesson as the earlier 'nodes' bug: write into .props then
+            # .update() -- plain attribute assignment never reaches the client
+            xml_tree.props['expanded'] = expanded
+            xml_tree.props['selected'] = best
+            xml_tree.update()
         except Exception:
             pass
 
