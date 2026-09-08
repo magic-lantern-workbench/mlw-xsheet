@@ -30,7 +30,11 @@ class local_file_picker(ui.dialog):
             self.add_drives_toggle()
             self.grid = ui.aggrid({
                 'columnDefs': [{'field': 'name', 'headerName': 'File'}],
-                'rowSelection': {'mode': 'multiRow' if multiple else 'singleRow'},
+                'rowSelection': {
+                    'mode': 'multiRow' if multiple else 'singleRow',
+                    'checkboxes': False,
+                    'enableClickSelection': True,
+                },
             }, html_columns=[0]).classes('w-96').on('cellDoubleClicked', self.handle_double_click)
             with ui.row().classes('w-full justify-end'):
                 ui.button('Cancel', on_click=self.close).props('outline')
