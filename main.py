@@ -348,7 +348,7 @@ def show_file_dialog():
             self.close()
             super().submit(value)
     
-    picker = FilePickerWithCallback(str(BASE_DIR))
+    picker = FilePickerWithCallback(str(BASE_DIR), upper_limit=None, allowed_extensions=['.xml', '.xsd'])
     picker.open()
 
 

@@ -7,7 +7,8 @@ from nicegui import events, ui
 class local_file_picker(ui.dialog):
 
     def __init__(self, directory: str, *,
-                 upper_limit: str | None = ..., multiple: bool = False, show_hidden_files: bool = False) -> None:
+                 upper_limit: str | None = ..., multiple: bool = False, show_hidden_files: bool = False,
+                 allowed_extensions: list[str] | None = None) -> None:
         """Local File Picker
 
         This is a simple file picker that allows you to select a file from the local filesystem where NiceGUI is running.
@@ -16,6 +17,8 @@ class local_file_picker(ui.dialog):
         :param upper_limit: The directory to stop at (None: no limit, default: same as the starting directory).
         :param multiple: Whether to allow multiple files to be selected.
         :param show_hidden_files: Whether to show hidden files.
+        :param allowed_extensions: If set, only files with one of these extensions are listed (e.g. ['.xml', '.xsd']).
+            Directories are always listed regardless of this filter, so navigation is unaffected.
         """
         super().__init__()
 
@@ -25,6 +28,7 @@ class local_file_picker(ui.dialog):
         else:
             self.upper_limit = Path(directory if upper_limit == ... else upper_limit).expanduser()
         self.show_hidden_files = show_hidden_files
+        self.allowed_extensions = [e.lower() for e in allowed_extensions] if allowed_extensions else None
 
         with self, ui.card():
             self.add_drives_toggle()
@@ -55,6 +59,8 @@ class local_file_picker(ui.dialog):
         paths = list(self.path.glob('*'))
         if not self.show_hidden_files:
             paths = [p for p in paths if not p.name.startswith('.')]
+        if self.allowed_extensions is not None:
+            paths = [p for p in paths if p.is_dir() or p.suffix.lower() in self.allowed_extensions]
         paths.sort(key=lambda p: p.name.lower())
         paths.sort(key=lambda p: not p.is_dir())
 
