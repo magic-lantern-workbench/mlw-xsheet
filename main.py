@@ -97,17 +97,26 @@ def parse_xml_to_tree(text: str):
             pass
         return items, node_map, parent_map
 
+    import re
+
     # helper to strip namespace
     def strip_tag(t):
         return t.split('}', 1)[-1] if '}' in t else t
 
-    # search positions by finding the next occurrence of opening tag
+    # search positions by finding the next occurrence of the opening tag.
+    # Tags may carry a namespace prefix in the source text (e.g. XSD files
+    # commonly write "<xs:element ...>" or "<xsd:element ...>"), which
+    # ElementTree resolves away to a URI, so match any optional "prefix:"
+    # before the local tag name rather than the literal local name.
     def find_start(tag, start_pos):
-        # look for <tag or <tag[space] or <tag>
-        idx = text.find(f"<{tag}", start_pos)
-        if idx == -1:
-            idx = text.find(f"<{tag}>", start_pos)
-        return idx
+        pattern = re.compile(r'<(?:[\w.-]+:)?' + re.escape(tag) + r'(?=[\s/>])')
+        m = pattern.search(text, start_pos)
+        return m.start() if m else -1
+
+    def find_end(tag, start_pos):
+        pattern = re.compile(r'</(?:[\w.-]+:)?' + re.escape(tag) + r'\s*>')
+        m = pattern.search(text, start_pos)
+        return m.end() if m else -1
 
     counter = {'n': 0}
     def walk(elem, search_pos, parent_id):
@@ -117,12 +126,9 @@ def parse_xml_to_tree(text: str):
         label = strip_tag(elem.tag)
         start = find_start(label, search_pos)
         # tentative end: after this element's end tag
-        end_tag = f"</{label}>"
         end = -1
         if start != -1:
-            end = text.find(end_tag, start)
-            if end != -1:
-                end = end + len(end_tag)
+            end = find_end(label, start)
         children = []
         child_search_pos = start + 1 if start != -1 else search_pos
         for child in list(elem):
