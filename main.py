@@ -62,6 +62,21 @@ def validate_xml():
         ui.notify(msg, color='negative')
 
 
+def show_about_dialog():
+    """Show the About dialog with app name, author, version, and a link."""
+    with ui.dialog() as about_dialog, ui.card().classes('p-4'):
+        ui.label('Magic Lantern XSheet Viewer').classes('text-lg font-medium')
+        ui.label('Author: Wizzer Works')
+        ui.label('Version: 0.1')
+        with ui.row().classes('items-center gap-1'):
+            ui.label('Please visit')
+            ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
+            ui.label('for more information about this tool.')
+        with ui.row().classes('w-full justify-end mt-4'):
+            ui.button('Close', on_click=about_dialog.close).props('outline')
+    about_dialog.open()
+
+
 # --- helpers ---
 def find_xml_files():
     files = []
@@ -439,23 +454,21 @@ window.mlwHighlightLine = function(lineIndex) {
 ''')
     # header with File menu and filename
     with ui.header():
-        with ui.row().classes('items-center gap-4'):
+        with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto'):
             # File menu dropdown with Open, Save, Save As, Close
-            with ui.dropdown_button('File', auto_close=True):
+            with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 ui.menu_item('Save (Ctrl+S)', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
             # Edit menu with Undo/Redo
-            with ui.dropdown_button('Edit', auto_close=True):
+            with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
             # XML menu with Validation
-            with ui.dropdown_button('XML', auto_close=True):
+            with ui.dropdown_button('XML', auto_close=True).props('flat color=white'):
                 ui.menu_item('Validate', on_click=lambda _: validate_xml())
-            # Keep Save buttons as quick-access (optional)
-            ui.button('Save', on_click=lambda _: save_file()).props('flat')
-            ui.button('Save As', on_click=lambda _: save_as()).props('flat')
+            ui.button('About', on_click=lambda _: show_about_dialog()).props('flat color=white')
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
