@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 from nicegui import ui
 from local_file_picker import local_file_picker
+from save_file import save_file as SaveFileDialog
 
 BASE_DIR = Path.cwd()
 
@@ -308,30 +309,42 @@ def save_file():
 
 
 def save_as():
-    def do_save(_):
-        name = name_input.value.strip()
-        if not name:
-            ui.notify('Please provide a filename', color='warning')
+    def file_selected_callback(files):
+        if not files:
             return
-        dest = BASE_DIR / name
+        dest = Path(files[0])
         try:
             dest.write_text(editor.value, encoding='utf-8')
-            current_file['path'] = str(dest)
-            current_file['modified'] = False
-            set_filename_label(dest.name)
-            ui.notify(f'Saved {dest}', color='positive')
-            save_as_dialog.close()
         except Exception as exc:
             ui.notify(f'Failed to save {dest}: {exc}', color='negative')
+            return
+        current_file['path'] = str(dest)
+        current_file['modified'] = False
+        current_file['saved_content'] = editor.value
+        set_filename_label(dest.name)
+        ui.notify(f'Saved {dest}', color='positive')
+        # keep the Hierarchy tree (and its editor-sync state) consistent with
+        # the file's new name/location, even though the content is unchanged
+        try:
+            rebuild_tree_from_current()
+        except Exception:
+            pass
 
-    with ui.dialog() as save_as_dialog:
-        with ui.card().classes('p-4'):
-            ui.label('Save As')
-            name_input = ui.input('Filename', value='untitled.xml')
-            with ui.row().classes('mt-2'):
-                ui.button('Save', on_click=do_save)
-                ui.button('Cancel', on_click=lambda: save_as_dialog.close())
-    save_as_dialog.open()
+    class SaveFileWithCallback(SaveFileDialog):
+        def submit(self, value):
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    start_name = Path(current_file['path']).name if current_file.get('path') else 'untitled.xml'
+    dialog = SaveFileWithCallback(
+        str(start_dir),
+        filename=start_name,
+        upper_limit=None,
+        allowed_extensions=['.xml', '.xsd'],
+    )
+    dialog.open()
 
 
 # File chooser using local_file_picker
