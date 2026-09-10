@@ -8,6 +8,10 @@ BASE_DIR = Path.cwd()
 
 current_file = {'path': None, 'modified': False, 'saved_content': ''}
 
+# Path to the .xsd chosen for semantic (schema) validation.
+# None means "auto-detect from the document's xsi:schemaLocation".
+current_schema = {'path': None}
+
 # Suppress editor change handler during programmatic updates
 suppress_editor_change = False
 # Undo/redo stacks and last value
@@ -60,6 +64,141 @@ def validate_xml():
         msg = f'{kind} validation error: {exc}'
         set_validation_status(msg, ok=False)
         ui.notify(msg, color='negative')
+
+
+def _editor_text() -> str:
+    ed = globals().get('editor')
+    return ed.value if ed is not None else ''
+
+
+def _detect_schema_locations(text: str):
+    """Return the list of .xsd filenames/paths referenced by the document via
+    xsi:schemaLocation (namespace/location pairs) or xsi:noNamespaceSchemaLocation."""
+    import re
+    locs = []
+    m = re.search(r'xsi:noNamespaceSchemaLocation\s*=\s*"([^"]+)"', text)
+    if m:
+        locs.append(m.group(1).strip())
+    m = re.search(r'xsi:schemaLocation\s*=\s*"([^"]+)"', text)
+    if m:
+        parts = m.group(1).split()
+        # pairs are (namespaceURI, location); keep the locations
+        locs.extend(parts[1::2])
+    return locs
+
+
+def resolve_schema_for_xml(text: str):
+    """Best-effort resolution of the schema for the current document.
+    Order: explicitly chosen schema -> xsi:schemaLocation resolved next to the
+    file -> same basename found anywhere under BASE_DIR. Returns a Path or None."""
+    chosen = current_schema.get('path')
+    if chosen and Path(chosen).is_file():
+        return Path(chosen)
+
+    doc_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    for loc in _detect_schema_locations(text):
+        cand = (doc_dir / loc)
+        if cand.is_file():
+            return cand
+        # examples often reference "xsheet-assets.xsd" while it lives in xml/;
+        # fall back to a repo-wide search by basename.
+        name = Path(loc).name
+        matches = sorted(BASE_DIR.rglob(name))
+        if matches:
+            return matches[0]
+    return None
+
+
+def show_schema_errors_dialog(errors):
+    """Show a scrollable dialog listing schema-validation errors."""
+    with ui.dialog() as dlg, ui.card().classes('p-4 w-[720px] max-w-full'):
+        ui.label(f'{len(errors)} schema validation error(s)').classes('text-lg font-medium')
+        with ui.scroll_area().classes('w-full h-80 border rounded'):
+            for i, err in enumerate(errors, 1):
+                path = getattr(err, 'path', None) or ''
+                reason = getattr(err, 'reason', None) or str(err)
+                ui.label(f'{i}. {path}').classes('font-mono text-sm')
+                ui.label(f'   {reason}').classes('text-sm').style('color: red; white-space: pre-wrap')
+        with ui.row().classes('w-full justify-end mt-4'):
+            ui.button('Close', on_click=dlg.close).props('outline')
+    dlg.open()
+
+
+def choose_schema(then_validate: bool = True):
+    """Pick a .xsd file to use for semantic validation."""
+    def picked(files):
+        if not files:
+            return
+        current_schema['path'] = str(Path(files[0]))
+        set_schema_label()
+        ui.notify(f'Schema: {Path(files[0]).name}', color='positive')
+        if then_validate:
+            validate_against_schema()
+
+    class SchemaPicker(local_file_picker):
+        def submit(self, value):
+            picked(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(current_schema['path']).parent if current_schema.get('path') else BASE_DIR
+    SchemaPicker(str(start_dir), upper_limit=None, allowed_extensions=['.xsd']).open()
+
+
+def clear_schema():
+    current_schema['path'] = None
+    set_schema_label()
+    ui.notify('Schema cleared (will auto-detect)', color='info')
+
+
+def validate_against_schema():
+    """Validate the editor contents against an XSD schema and report results."""
+    text = _editor_text()
+    if not text.strip():
+        set_validation_status('Nothing to validate', ok=False)
+        ui.notify('Nothing to validate', color='warning')
+        return
+    try:
+        import xmlschema
+    except ImportError:
+        msg = 'xmlschema not installed — add "xmlschema" to requirements.txt and restart'
+        set_validation_status(msg, ok=False)
+        ui.notify(msg, color='negative')
+        return
+
+    schema_path = resolve_schema_for_xml(text)
+    if schema_path is None:
+        ui.notify('No schema found for this document — select one', color='warning')
+        choose_schema(then_validate=True)
+        return
+
+    try:
+        # Passing the .xsd path lets xmlschema resolve its xs:import /
+        # xs:include locations relative to the schema file itself.
+        schema = xmlschema.XMLSchema(str(schema_path))
+        errors = list(schema.iter_errors(text))
+    except Exception as exc:
+        msg = f'Schema load/parse error: {exc}'
+        set_validation_status(msg, ok=False)
+        ui.notify(msg, color='negative')
+        return
+
+    if not errors:
+        msg = f'Valid against {schema_path.name}'
+        set_validation_status(msg, ok=True)
+        ui.notify(msg, color='positive')
+    else:
+        msg = f'{len(errors)} error(s) against {schema_path.name}'
+        set_validation_status(msg, ok=False)
+        ui.notify(msg, color='negative')
+        show_schema_errors_dialog(errors)
+
+
+def set_schema_label():
+    lbl = globals().get('schema_label')
+    if lbl is not None:
+        p = current_schema.get('path')
+        lbl.set_text(f'Schema: {Path(p).name}' if p else 'Schema: auto-detect')
 
 
 def show_about_dialog():
@@ -467,7 +606,11 @@ window.mlwHighlightLine = function(lineIndex) {
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
             # XML menu with Validation
             with ui.dropdown_button('XML', auto_close=True).props('flat color=white'):
-                ui.menu_item('Validate', on_click=lambda _: validate_xml())
+                ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
+                ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema())
+                ui.separator()
+                ui.menu_item('Select Schema…', on_click=lambda _: choose_schema())
+                ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
             ui.button('About', on_click=lambda _: show_about_dialog()).props('flat color=white')
 
     with ui.footer():
@@ -476,6 +619,9 @@ window.mlwHighlightLine = function(lineIndex) {
             filename_label = ui.label('No file')
             global validation_status_label
             validation_status_label = ui.label('')
+            global schema_label
+            schema_label = ui.label('')
+            set_schema_label()
 
     with ui.row().classes('gap-4 w-full flex-nowrap'):
         with ui.column().style('flex:1; min-width:0'):

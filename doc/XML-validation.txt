@@ -1,0 +1,28 @@
+This document describes how the XML validation works.
+
+┌─────────────────────────┬───────────────────────────────────────────────────┐
+│          Item           │                      Action                       │
+├─────────────────────────┼───────────────────────────────────────────────────┤
+│ Validate (well-formed)  │ the old well-formedness check                     │
+├─────────────────────────┼───────────────────────────────────────────────────┤
+│ Validate against Schema │ validates the editor content against an XSD       │
+├─────────────────────────┼───────────────────────────────────────────────────┤
+│ Select Schema…          │ pick a .xsd file to validate against (remembered) │
+├─────────────────────────┼───────────────────────────────────────────────────┤
+│ Clear Schema            │ forget it, go back to auto-detect                 │
+└─────────────────────────┴───────────────────────────────────────────────────┘
+
+  The footer now shows a Schema: … label (the chosen file name, or auto-detect).
+
+  Schema resolution order when you run Validate against Schema:
+  1. A schema you explicitly picked via Select Schema…
+  2. The document's xsi:schemaLocation / xsi:noNamespaceSchemaLocation, resolved next to the current file
+  3. Fallback: the same .xsd basename found anywhere under the project root — this is what makes examples/xsheet-assets-min-v2.xml
+     (which references xsheet-assets.xsd with no path) resolve to xml/xsheet-assets.xsd
+  4. If nothing is found, it opens the file picker
+  
+  xs:import/xs:include inside the XSD (e.g. xsheet-master.xsd pulling in the other seven) resolve relative to the schema file automatically.
+
+  Validation errors open in a scrollable dialog listing each error's element path and reason, e.g.:
+  /AssetLibrary/Asset/CreationDate :: Invalid datetime string 'not-a-date'
+  /AssetLibrary/Asset :: missing required attribute 'id'
