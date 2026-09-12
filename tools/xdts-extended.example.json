@@ -1,0 +1,33 @@
+{
+  "scene": "SC001",
+  "cut": "CUT01",
+  "frameRate": 24,
+  "layers": [
+    {
+      "name": "A",
+      "type": "character",
+      "frames": [
+        { "frame": 1, "cell": "A1", "exposure": 2 },
+        { "frame": 3, "cell": "A2", "exposure": 2 }
+      ]
+    },
+    {
+      "name": "BG",
+      "type": "background",
+      "frames": [
+        { "frame": 1, "cell": "BG1", "exposure": 48 }
+      ]
+    }
+  ],
+  "marks": [
+    { "frame": 12, "type": "action", "note": "Character jumps" }
+  ],
+  "camera": [
+    { "frame": 1, "position": { "x": 0, "y": 0 }, "zoom": 1.0 },
+    { "frame": 24, "position": { "x": 50, "y": 20 }, "zoom": 1.2, "tilt": 5 }
+  ],
+  "audio": [
+    { "startFrame": 1, "durationFrames": 48, "file": "bgm.mp3", "description": "Background music" },
+    { "startFrame": 12, "durationFrames": 6, "file": "jump.wav", "description": "Jump sound effect" }
+  ]
+}
