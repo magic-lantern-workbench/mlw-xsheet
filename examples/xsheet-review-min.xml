@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ReviewData xmlns="http://schemas.animation.org/xsheet/review"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://schemas.animation.org/xsheet/review xsheet-review.xsd">
+
+    <Reviewer>Mark Millard</Reviewer>
+
+    <Status>ApprovedWithNotes</Status>
+
+    <Comment>
+        Improve lip sync on frames 42-55.
+        Camera move approved.
+    </Comment>
+
+</ReviewData>

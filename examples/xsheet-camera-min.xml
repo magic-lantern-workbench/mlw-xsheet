@@ -1,0 +1,491 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- Holds the camera from frames 1-24 -->
+<!-- Pans right from frames 25-72 -->
+<!-- Zooms in from frames 73-96 -->
+<!-- Uses 2D and 3D layers -->
+<!-- References audio tracks -->
+<!-- Includes animator notes -->
+<!-- Includes camera keyframes -->
+<!-- Includes review annotations and version control -->
+<!-- Is structured to be compliant with the proposed modular X-Sheet architecture -->
+
+<ExposureSheet
+    xmlns="xsheet:core:2.0"
+    xmlns:asset="xsheet:assets:2.0"
+    xmlns:audio="xsheet:audio:2.0"
+    xmlns:cam="xsheet:camera:2.0"
+    xmlns:review="xsheet:review:2.0"
+    xmlns:otio="xsheet:otio:2.0"
+    version="2.0">
+
+    <!-- ===================================================== -->
+    <!-- Production Information                                -->
+    <!-- ===================================================== -->
+
+    <Production>
+
+        <ProjectID>SHOW001</ProjectID>
+        <SequenceID>SQ010</SequenceID>
+        <SceneID>SC010</SceneID>
+        <ShotID>SH005</ShotID>
+
+        <Title>Vehicle Arrival</Title>
+
+        <FrameRate>24</FrameRate>
+
+        <StartFrame>1</StartFrame>
+        <EndFrame>96</EndFrame>
+
+    </Production>
+
+    <!-- ===================================================== -->
+    <!-- Asset Catalog                                         -->
+    <!-- ===================================================== -->
+
+    <asset:Assets>
+
+        <asset:Asset
+            id="BG001"
+            name="StreetBackground"
+            category="Background"
+            version="3"/>
+
+        <asset:Asset
+            id="CHR001"
+            name="Hero"
+            category="Character"
+            version="12"/>
+
+        <asset:Asset
+            id="PROP014"
+            name="Vehicle"
+            category="Prop"
+            version="5"/>
+
+    </asset:Assets>
+
+    <!-- ===================================================== -->
+    <!-- Audio Tracks                                          -->
+    <!-- ===================================================== -->
+
+    <audio:AudioTracks>
+
+        <audio:Track
+            id="VO1"
+            type="Dialogue"
+            file="hero_dialogue.wav"/>
+
+        <audio:Track
+            id="MUS1"
+            type="Music"
+            file="scene_music.wav"/>
+
+        <audio:Track
+            id="SFX1"
+            type="Effects"
+            file="vehicle_pass.wav"/>
+
+    </audio:AudioTracks>
+
+    <!-- ===================================================== -->
+    <!-- Camera                                                -->
+    <!-- ===================================================== -->
+
+    <cam:Camera
+        cameraId="CAM001"
+        name="MainCamera"
+        projection="Orthographic">
+
+        <!-- Human Readable Instructions -->
+
+        <cam:CameraMove
+            type="HOLD"
+            startFrame="1"
+            endFrame="24">
+
+            <cam:Description>
+                Hold opening composition.
+            </cam:Description>
+
+        </cam:CameraMove>
+
+        <cam:CameraMove
+            type="PAN_RIGHT"
+            startFrame="25"
+            endFrame="72">
+
+            <cam:Description>
+                Pan right to reveal approaching vehicle.
+            </cam:Description>
+
+        </cam:CameraMove>
+
+        <cam:CameraMove
+            type="ZOOM_IN"
+            startFrame="73"
+            endFrame="96">
+
+            <cam:Description>
+                Push in to hero reaction.
+            </cam:Description>
+
+        </cam:CameraMove>
+
+        <!-- Machine Readable Camera Animation -->
+
+        <cam:Keyframe
+            frame="1"
+            x="0"
+            y="0"
+            z="0"
+            zoom="1.0"
+            focalLength="35"
+            interpolation="Step"
+            note="Hold Begins"/>
+
+        <cam:Keyframe
+            frame="24"
+            x="0"
+            y="0"
+            z="0"
+            zoom="1.0"
+            focalLength="35"
+            interpolation="Step"
+            note="Hold Ends"/>
+
+        <cam:Keyframe
+            frame="25"
+            x="0"
+            y="0"
+            z="0"
+            zoom="1.0"
+            focalLength="35"
+            interpolation="Bezier"
+            note="Pan Starts"/>
+
+        <cam:Keyframe
+            frame="72"
+            x="1200"
+            y="0"
+            z="0"
+            zoom="1.0"
+            focalLength="35"
+            interpolation="Bezier"
+            note="Pan Complete"/>
+
+        <cam:Keyframe
+            frame="73"
+            x="1200"
+            y="0"
+            z="0"
+            zoom="1.0"
+            focalLength="35"
+            interpolation="Bezier"
+            note="Zoom Starts"/>
+
+        <cam:Keyframe
+            frame="96"
+            x="1200"
+            y="0"
+            z="0"
+            zoom="1.8"
+            focalLength="70"
+            interpolation="Bezier"
+            note="Close-up Established"/>
+
+    </cam:Camera>
+
+    <!-- ===================================================== -->
+    <!-- Timeline                                              -->
+    <!-- ===================================================== -->
+
+    <Timeline>
+
+        <!-- ================================================= -->
+        <!-- Frame 1                                           -->
+        <!-- ================================================= -->
+
+        <Frame number="1">
+
+            <Layers>
+
+                <Layer
+                    id="BG"
+                    assetRef="BG001"
+                    type="2D"
+                    cel="BG001"
+                    zOrder="0"/>
+
+                <Layer
+                    id="CHAR"
+                    assetRef="CHR001"
+                    type="2D"
+                    cel="A001"
+                    zOrder="10"/>
+
+                <Layer
+                    id="VEHICLE"
+                    assetRef="PROP014"
+                    type="3D"
+                    sceneFile="vehicle.usd"
+                    zOrder="20"/>
+
+            </Layers>
+
+            <Dialogue phoneme="M">
+                My
+            </Dialogue>
+
+            <AudioRef
+                track="VO1"
+                startFrame="1"
+                endFrame="12"/>
+
+            <Notes>
+                Opening pose. Hold drawing.
+            </Notes>
+
+        </Frame>
+
+        <!-- ================================================= -->
+        <!-- Frame 24                                          -->
+        <!-- ================================================= -->
+
+        <Frame number="24">
+
+            <Layers>
+
+                <Layer
+                    id="BG"
+                    assetRef="BG001"
+                    type="2D"
+                    cel="BG001"
+                    zOrder="0"/>
+
+                <Layer
+                    id="CHAR"
+                    assetRef="CHR001"
+                    type="2D"
+                    cel="A001"
+                    zOrder="10"/>
+
+                <Layer
+                    id="VEHICLE"
+                    assetRef="PROP014"
+                    type="3D"
+                    sceneFile="vehicle.usd"
+                    zOrder="20"/>
+
+            </Layers>
+
+            <Notes>
+                End of hold section.
+            </Notes>
+
+        </Frame>
+
+        <!-- ================================================= -->
+        <!-- Frame 25                                          -->
+        <!-- ================================================= -->
+
+        <Frame number="25">
+
+            <Layers>
+
+                <Layer
+                    id="BG"
+                    assetRef="BG001"
+                    type="2D"
+                    cel="BG002"
+                    zOrder="0"/>
+
+                <Layer
+                    id="CHAR"
+                    assetRef="CHR001"
+                    type="2D"
+                    cel="A002"
+                    zOrder="10"/>
+
+                <Layer
+                    id="VEHICLE"
+                    assetRef="PROP014"
+                    type="3D"
+                    sceneFile="vehicle.usd"
+                    zOrder="20"/>
+
+            </Layers>
+
+            <Notes>
+                Camera pan begins.
+            </Notes>
+
+        </Frame>
+
+        <!-- ================================================= -->
+        <!-- Frame 72                                          -->
+        <!-- ================================================= -->
+
+        <Frame number="72">
+
+            <Layers>
+
+                <Layer
+                    id="BG"
+                    assetRef="BG001"
+                    type="2D"
+                    cel="BG003"
+                    zOrder="0"/>
+
+                <Layer
+                    id="CHAR"
+                    assetRef="CHR001"
+                    type="2D"
+                    cel="A010"
+                    zOrder="10"/>
+
+                <Layer
+                    id="VEHICLE"
+                    assetRef="PROP014"
+                    type="3D"
+                    sceneFile="vehicle.usd"
+                    zOrder="20"/>
+
+            </Layers>
+
+            <AudioRef
+                track="SFX1"
+                startFrame="60"
+                endFrame="80"/>
+
+            <Notes>
+                Pan completed.
+            </Notes>
+
+        </Frame>
+
+        <!-- ================================================= -->
+        <!-- Frame 96                                          -->
+        <!-- ================================================= -->
+
+        <Frame number="96">
+
+            <Layers>
+
+                <Layer
+                    id="BG"
+                    assetRef="BG001"
+                    type="2D"
+                    cel="BG003"
+                    zOrder="0"/>
+
+                <Layer
+                    id="CHAR"
+                    assetRef="CHR001"
+                    type="2D"
+                    cel="A015"
+                    zOrder="10"/>
+
+            </Layers>
+
+            <Dialogue phoneme="OW">
+                Wow.
+            </Dialogue>
+
+            <AudioRef
+                track="VO1"
+                startFrame="90"
+                endFrame="96"/>
+
+            <Notes>
+                Final close-up.
+            </Notes>
+
+        </Frame>
+
+    </Timeline>
+
+    <!-- ===================================================== -->
+    <!-- Reviews                                               -->
+    <!-- ===================================================== -->
+
+    <review:Reviews>
+
+        <review:Review
+            id="RV001"
+            frame="72"
+            reviewer="AnimationDirector"
+            status="NeedsFix">
+
+            <review:Comment>
+                Slow camera ease-out during final 6 frames
+                of the pan.
+            </review:Comment>
+
+        </review:Review>
+
+        <review:Review
+            id="RV002"
+            frame="96"
+            reviewer="Director"
+            status="Approved">
+
+            <review:Comment>
+                Close-up framing approved.
+            </review:Comment>
+
+        </review:Review>
+
+    </review:Reviews>
+
+    <!-- ===================================================== -->
+    <!-- Version Control                                       -->
+    <!-- ===================================================== -->
+
+    <VersionControl>
+
+        <Revision
+            number="1"
+            author="animator01"
+            date="2026-08-17">
+
+            Initial exposure sheet.
+
+        </Revision>
+
+        <Revision
+            number="2"
+            author="layout01"
+            date="2026-08-18">
+
+            Added camera pan and zoom timing.
+
+        </Revision>
+
+    </VersionControl>
+
+    <!-- ===================================================== -->
+    <!-- OTIO Mapping                                          -->
+    <!-- ===================================================== -->
+
+    <otio:OTIO>
+
+        <otio:TimelineRef>
+            SH005.otio
+        </otio:TimelineRef>
+
+        <otio:TrackMap
+            xsheetLayer="CHAR"
+            otioTrack="Animation"/>
+
+        <otio:TrackMap
+            xsheetLayer="VO1"
+            otioTrack="Dialogue"/>
+
+        <otio:TrackMap
+            xsheetLayer="SFX1"
+            otioTrack="Effects"/>
+
+    </otio:OTIO>
+
+</ExposureSheet>

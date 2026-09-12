@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<OpenTimelineIOReference xmlns="http://schemas.animation.org/xsheet/otio"
+                         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                         xsi:schemaLocation="http://schemas.animation.org/xsheet/otio xsheet-otio.xsd">
+
+    <ClipID>SHOT010_005</ClipID>
+    <TrackID>VideoTrack01</TrackID>
+    <TimelineID>Episode01_Master</TimelineID>
+
+</OpenTimelineIOReference>

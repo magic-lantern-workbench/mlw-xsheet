@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AudioTracks xmlns="http://schemas.animation.org/xsheet/audio"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://schemas.animation.org/xsheet/audio xsheet-audio.xsd">
+    <Track id="VO1">
+        <Name>Hero Dialogue</Name>
+        <Type>pcm</Type>
+        <URL>file:///mnt/assets/audio/vo1.wav</URL>
+        <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+    </Track>
+
+    <Track id="MUSIC1">
+        <Name>Main Theme</Name>
+        <Type>pcm</Type>
+        <URL>file:///mnt/assets/audio/music1.wav</URL>
+        <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+    </Track>
+
+    <Track id="SFX1">
+        <Name>Rocket Launch</Name>
+        <Type>pcm</Type>
+        <URL>file:///mnt/assets/audio/sfx1.wav</URL>
+        <CreationDate>2026-08-01T14:30:00Z</CreationDate>
+    </Track>
+
+</AudioTracks>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ExposureSheet xmlns="http://schemas.animation.org/xsheet/core"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:schemaLocation="http://schemas.animation.org/xsheet/core xsheet-core.xsd"
+               version="1.0">
+
+    <Production>
+        <Title>Space Adventure</Title>
+        <SceneNumber>010</SceneNumber>
+        <ShotNumber>005</ShotNumber>
+        <FrameRate>24</FrameRate>
+    </Production>
+
+    <Timeline>
+
+        <Frame number="1">
+            <Layer name="BG">
+                <Drawing>BG001</Drawing>
+            </Layer>
+
+            <Layer name="Character">
+                <Drawing>A001</Drawing>
+            </Layer>
+        </Frame>
+
+        <Frame number="2">
+            <Layer name="BG">
+                <Drawing>BG001</Drawing>
+            </Layer>
+
+            <Layer name="Character">
+                <Drawing>A002</Drawing>
+            </Layer>
+        </Frame>
+
+    </Timeline>
+
+</ExposureSheet>
