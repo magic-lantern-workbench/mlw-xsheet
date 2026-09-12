@@ -447,6 +447,150 @@ def close_with_check():
     confirm_dialog.open()
 
 
+def _set_editor_text(new_text: str):
+    """Programmatically replace the editor contents (used by Find & Replace),
+    keeping undo/redo and modified-state tracking consistent -- same pattern
+    as do_undo/do_redo."""
+    global undo_stack, redo_stack, last_editor_value, suppress_editor_change
+    if new_text == last_editor_value:
+        return
+    undo_stack.append(last_editor_value)
+    redo_stack.clear()
+    suppress_editor_change = True
+    editor.value = new_text
+    suppress_editor_change = False
+    last_editor_value = new_text
+    current_file['modified'] = (new_text != current_file.get('saved_content', ''))
+    set_filename_label()
+    try:
+        rebuild_tree_from_current()
+    except Exception:
+        pass
+
+
+def show_find_dialog():
+    """Find & Replace dialog with case-sensitive and regex options."""
+    import re
+    state = {'matches': [], 'index': -1}
+
+    def build_pattern():
+        query = find_input.value or ''
+        if not query:
+            return None
+        flags = 0 if case_cb.value else re.IGNORECASE
+        pattern_text = query if regex_cb.value else re.escape(query)
+        try:
+            return re.compile(pattern_text, flags)
+        except re.error as exc:
+            status_label.set_text(f'Regex error: {exc}')
+            status_label.style('color: red')
+            return None
+
+    def set_status(text: str, ok: bool = True):
+        status_label.set_text(text)
+        status_label.style(f'color: {"inherit" if ok else "red"}')
+
+    def highlight_current():
+        if not (0 <= state['index'] < len(state['matches'])):
+            return
+        m = state['matches'][state['index']]
+        # editor.id addresses the live CodeMirror EditorView so the highlight
+        # is positioned via CodeMirror's own APIs (see mlwSelectRange) instead
+        # of guessing at which lines happen to be rendered in the DOM.
+        ui.run_javascript(f'window.mlwSelectRange({editor.id}, {m.start()}, {m.end()});')
+
+    def clear_highlight():
+        ui.run_javascript('window.mlwClearFindHighlight && window.mlwClearFindHighlight();')
+
+    def refresh_matches(anchor_pos: int | None = None):
+        pattern = build_pattern()
+        if pattern is None:
+            state['matches'] = []
+            state['index'] = -1
+            return
+        text = _editor_text()
+        state['matches'] = list(pattern.finditer(text))
+        if not state['matches']:
+            state['index'] = -1
+            set_status('No matches', ok=False)
+            clear_highlight()
+            return
+        if anchor_pos is not None:
+            state['index'] = next((i for i, m in enumerate(state['matches']) if m.start() >= anchor_pos), 0)
+        else:
+            state['index'] = 0
+        set_status(f"Match {state['index'] + 1} of {len(state['matches'])}")
+        highlight_current()
+
+    def do_find(delta: int):
+        pattern = build_pattern()
+        if pattern is None:
+            return
+        state['matches'] = list(pattern.finditer(_editor_text()))
+        if not state['matches']:
+            state['index'] = -1
+            set_status('No matches', ok=False)
+            clear_highlight()
+            return
+        if state['index'] == -1:
+            state['index'] = 0 if delta >= 0 else len(state['matches']) - 1
+        else:
+            state['index'] = (state['index'] + delta) % len(state['matches'])
+        set_status(f"Match {state['index'] + 1} of {len(state['matches'])}")
+        highlight_current()
+
+    def do_replace():
+        if not (0 <= state['index'] < len(state['matches'])):
+            do_find(1)
+            if not (0 <= state['index'] < len(state['matches'])):
+                return
+        m = state['matches'][state['index']]
+        try:
+            replacement = m.expand(replace_input.value or '') if regex_cb.value else (replace_input.value or '')
+        except re.error as exc:
+            ui.notify(f'Replacement error: {exc}', color='negative')
+            return
+        text = _editor_text()
+        new_text = text[:m.start()] + replacement + text[m.end():]
+        _set_editor_text(new_text)
+        refresh_matches(anchor_pos=m.start() + len(replacement))
+
+    def do_replace_all():
+        pattern = build_pattern()
+        if pattern is None:
+            return
+        replacement = replace_input.value or ''
+        repl = (lambda mo: mo.expand(replacement)) if regex_cb.value else (lambda mo: replacement)
+        new_text, count = pattern.subn(repl, _editor_text())
+        _set_editor_text(new_text)
+        state['matches'] = []
+        state['index'] = -1
+        set_status(f'Replaced {count} occurrence(s)', ok=bool(count))
+        clear_highlight()
+        ui.notify(f'Replaced {count} occurrence(s)', color='positive' if count else 'warning')
+
+    def do_close():
+        clear_highlight()
+        dlg.close()
+
+    with ui.dialog() as dlg, ui.card().classes('p-4 w-[480px] max-w-full gap-2'):
+        ui.label('Find and Replace').classes('text-lg font-medium')
+        find_input = ui.input('Find').classes('w-full')
+        replace_input = ui.input('Replace with').classes('w-full')
+        with ui.row().classes('items-center gap-4'):
+            case_cb = ui.checkbox('Case sensitive')
+            regex_cb = ui.checkbox('Regex')
+        status_label = ui.label('')
+        find_input.on('keydown.enter', lambda _: do_find(1))
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Find Previous', on_click=lambda _: do_find(-1)).props('outline')
+            ui.button('Find Next', on_click=lambda _: do_find(1)).props('outline')
+            ui.button('Replace', on_click=lambda _: do_replace()).props('outline')
+            ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline')
+            ui.button('Close', on_click=lambda _: do_close())
+    dlg.open()
+
+
 def save_file():
     if not current_file['path']:
         save_as()
@@ -531,6 +675,14 @@ def index():
     # CodeMirror renders as a contenteditable div (no <textarea>), so both
     # feature-detect: prefer '.cm-content', fall back to a real <textarea>.
     ui.add_body_html('''
+<style>
+/* Dark, high-contrast paint for the current Find/Replace match, independent
+   of document focus (see mlwSetFindHighlight in the script below). */
+::highlight(mlw-find) {
+    background-color: #b45309;
+    color: #fff;
+}
+</style>
 <script>
 window.mlwFindEditorRoot = function() {
     const cm = document.querySelector('.cm-content');
@@ -589,6 +741,80 @@ window.mlwHighlightLine = function(lineIndex) {
     }
     return false;
 };
+
+// document.getSelection() renders as the browser's dim "inactive selection"
+// color whenever the editor itself isn't focused (e.g. while the Find dialog's
+// input has focus) -- which makes a plain selection-based highlight nearly
+// invisible. The CSS Custom Highlight API paints independently of focus, so
+// we use it (where available) for a highlight that always shows clearly; the
+// ::highlight(mlw-find) style above controls its color.
+window.mlwSetFindHighlight = function(range) {
+    if (!window.Highlight || !CSS.highlights) return false;
+    try {
+        CSS.highlights.set('mlw-find', new Highlight(range));
+        return true;
+    } catch (e) {
+        return false;
+    }
+};
+
+window.mlwClearFindHighlight = function() {
+    if (CSS.highlights) {
+        CSS.highlights.delete('mlw-find');
+    }
+};
+
+// Look up the raw CodeMirror 6 EditorView behind a ui.codemirror element.
+// NiceGUI keeps a Vue ref named "r<element id>" for every element (see
+// nicegui.js's getElement()); the component instance stores the view as
+// `.editor`. Going through the real EditorView -- instead of querying
+// .cm-content's rendered .cm-line divs -- is essential: CodeMirror only ever
+// renders the lines currently in (or near) the viewport, so a document with
+// many lines has most of its .cm-line elements simply absent from the DOM at
+// any given time, and indexing into whatever happens to be rendered silently
+// picks the wrong line for any offscreen match.
+window.mlwGetCmView = function(elementId) {
+    try {
+        const comp = mounted_app.$refs['r' + elementId];
+        return (comp && comp.editor) ? comp.editor : null;
+    } catch (e) {
+        return null;
+    }
+};
+
+// Select the document character range [from, to) -- used by Find/Replace to
+// highlight the current match. Scrolls it into view first (via CodeMirror's
+// own scrollIntoView, which -- unlike guessing a scroll offset ourselves --
+// correctly expands the rendered viewport to include the target line before
+// we ask for its DOM position), then paints it with the highlight above.
+window.mlwSelectRange = function(elementId, from, to) {
+    const view = window.mlwGetCmView(elementId);
+    if (view) {
+        try {
+            view.dispatch({
+                selection: {anchor: from, head: to},
+                effects: view.constructor.scrollIntoView(from, {y: 'center'}),
+            });
+            const startPos = view.domAtPos(from);
+            const endPos = view.domAtPos(to);
+            const range = document.createRange();
+            range.setStart(startPos.node, startPos.offset);
+            range.setEnd(endPos.node, endPos.offset);
+            window.mlwSetFindHighlight(range);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+    // Fallback: the plain <textarea> editor used when CodeMirror isn't available.
+    const ta = document.querySelector('textarea');
+    if (ta) {
+        ta.focus();
+        ta.setSelectionRange(from, to, 'backward');
+        return true;
+    }
+    return false;
+};
 </script>
 ''')
     # header with File menu and filename
@@ -604,6 +830,8 @@ window.mlwHighlightLine = function(lineIndex) {
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
+                ui.separator()
+                ui.menu_item('Find', on_click=lambda _: show_find_dialog())
             # XML menu with Validation
             with ui.dropdown_button('XML', auto_close=True).props('flat color=white'):
                 ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
