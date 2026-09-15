@@ -5,16 +5,32 @@
  xmlns="http://schemas.animation.org/xsheet/review"
  elementFormDefault="qualified">
 
- <xs:element name="ReviewData">
+ <xs:element name="Reviews">
      <xs:complexType>
          <xs:sequence>
-             <xs:element name="Reviewer" type="xs:string"/>
-             <xs:element name="Status" type="xs:string"/>
-             <xs:element name="Comment"
-                         type="xs:string"
-                         minOccurs="0"/>
+             <xs:element name="Review"
+                         type="ReviewType"
+                         maxOccurs="unbounded"/>
          </xs:sequence>
      </xs:complexType>
  </xs:element>
+
+ <xs:complexType name="ReviewType">
+     <xs:sequence>
+         <xs:element name="Comment" type="xs:string"/>
+     </xs:sequence>
+     <xs:attribute name="id" type="xs:ID" use="required"/>
+     <xs:attribute name="frame" type="xs:positiveInteger" use="required"/>
+     <xs:attribute name="reviewer" type="xs:string" use="required"/>
+     <xs:attribute name="status" type="ReviewStatusEnum" use="required"/>
+ </xs:complexType>
+
+ <xs:simpleType name="ReviewStatusEnum">
+     <xs:restriction base="xs:string">
+         <xs:enumeration value="Approved"/>
+         <xs:enumeration value="NeedsFix"/>
+         <xs:enumeration value="Pending"/>
+     </xs:restriction>
+ </xs:simpleType>
 
 </xs:schema>

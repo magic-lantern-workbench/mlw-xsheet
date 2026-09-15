@@ -3,13 +3,30 @@
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     targetNamespace="http://schemas.animation.org/xsheet/core"
     xmlns="http://schemas.animation.org/xsheet/core"
+    xmlns:asset="http://schemas.animation.org/xsheet/assets"
+    xmlns:audio="http://schemas.animation.org/xsheet/audio"
+    xmlns:cam="http://schemas.animation.org/xsheet/camera"
+    xmlns:review="http://schemas.animation.org/xsheet/review"
+    xmlns:otio="http://schemas.animation.org/xsheet/otio"
     elementFormDefault="qualified">
+
+    <xs:import namespace="http://schemas.animation.org/xsheet/assets" schemaLocation="xsheet-assets.xsd"/>
+    <xs:import namespace="http://schemas.animation.org/xsheet/audio" schemaLocation="xsheet-audio.xsd"/>
+    <xs:import namespace="http://schemas.animation.org/xsheet/camera" schemaLocation="xsheet-camera.xsd"/>
+    <xs:import namespace="http://schemas.animation.org/xsheet/review" schemaLocation="xsheet-review.xsd"/>
+    <xs:import namespace="http://schemas.animation.org/xsheet/otio" schemaLocation="xsheet-otio.xsd"/>
 
     <xs:element name="ExposureSheet">
         <xs:complexType>
             <xs:sequence>
                 <xs:element name="Production" type="ProductionType"/>
+                <xs:element ref="asset:Assets"/>
+                <xs:element ref="audio:AudioTracks"/>
+                <xs:element ref="cam:Camera"/>
                 <xs:element name="Timeline" type="TimelineType"/>
+                <xs:element ref="review:Reviews"/>
+                <xs:element name="VersionControl" type="VersionControlType"/>
+                <xs:element ref="otio:OTIO"/>
             </xs:sequence>
             <xs:attribute name="version" type="xs:string" use="required"/>
         </xs:complexType>
@@ -17,10 +34,14 @@
 
     <xs:complexType name="ProductionType">
         <xs:sequence>
+            <xs:element name="ProjectID" type="xs:string"/>
+            <xs:element name="SequenceID" type="xs:string"/>
+            <xs:element name="SceneID" type="xs:string"/>
+            <xs:element name="ShotID" type="xs:string"/>
             <xs:element name="Title" type="xs:string"/>
-            <xs:element name="SceneNumber" type="xs:string"/>
-            <xs:element name="ShotNumber" type="xs:string"/>
             <xs:element name="FrameRate" type="xs:positiveInteger"/>
+            <xs:element name="StartFrame" type="xs:positiveInteger"/>
+            <xs:element name="EndFrame" type="xs:positiveInteger"/>
         </xs:sequence>
     </xs:complexType>
 
@@ -32,16 +53,64 @@
 
     <xs:complexType name="FrameType">
         <xs:sequence>
-            <xs:element name="Layer" type="LayerType" maxOccurs="unbounded"/>
+            <xs:element name="Layers" type="LayersType"/>
+            <xs:element name="Dialogue" type="DialogueType" minOccurs="0"/>
+            <xs:element name="AudioRef" type="AudioRefType" minOccurs="0" maxOccurs="unbounded"/>
+            <xs:element name="Notes" type="xs:string"/>
         </xs:sequence>
         <xs:attribute name="number" type="xs:positiveInteger" use="required"/>
     </xs:complexType>
 
-    <xs:complexType name="LayerType">
+    <xs:complexType name="LayersType">
         <xs:sequence>
-            <xs:element name="Drawing" type="xs:string"/>
+            <xs:element name="Layer" type="LayerType" maxOccurs="unbounded"/>
         </xs:sequence>
-        <xs:attribute name="name" type="xs:string" use="required"/>
+    </xs:complexType>
+
+    <xs:complexType name="LayerType">
+        <xs:attribute name="id" type="xs:string" use="required"/>
+        <xs:attribute name="assetRef" type="xs:string" use="required"/>
+        <xs:attribute name="type" type="LayerTypeEnum" use="required"/>
+        <xs:attribute name="cel" type="xs:string"/>
+        <xs:attribute name="sceneFile" type="xs:string"/>
+        <xs:attribute name="zOrder" type="xs:integer" use="required"/>
+    </xs:complexType>
+
+    <xs:simpleType name="LayerTypeEnum">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="2D"/>
+            <xs:enumeration value="3D"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:complexType name="DialogueType">
+        <xs:simpleContent>
+            <xs:extension base="xs:string">
+                <xs:attribute name="phoneme" type="xs:string" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:complexType name="AudioRefType">
+        <xs:attribute name="track" type="xs:string" use="required"/>
+        <xs:attribute name="startFrame" type="xs:positiveInteger" use="required"/>
+        <xs:attribute name="endFrame" type="xs:positiveInteger" use="required"/>
+    </xs:complexType>
+
+    <xs:complexType name="VersionControlType">
+        <xs:sequence>
+            <xs:element name="Revision" type="RevisionType" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="RevisionType">
+        <xs:simpleContent>
+            <xs:extension base="xs:string">
+                <xs:attribute name="number" type="xs:positiveInteger" use="required"/>
+                <xs:attribute name="author" type="xs:string" use="required"/>
+                <xs:attribute name="date" type="xs:date" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
     </xs:complexType>
 
 </xs:schema>

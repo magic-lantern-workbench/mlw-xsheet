@@ -5,7 +5,7 @@
  xmlns="http://schemas.animation.org/xsheet/assets"
  elementFormDefault="qualified">
 
- <xs:element name="AssetLibrary">
+ <xs:element name="Assets">
      <xs:complexType>
          <xs:sequence>
              <xs:element name="Asset"
@@ -16,17 +16,10 @@
  </xs:element>
 
  <xs:complexType name="AssetType">
-     <xs:sequence>
-         <xs:element name="Name" type="xs:string"/>
-         <xs:element name="Type" type="xs:string"/>
-         <xs:element name="URL" type="xs:anyURI"/>
-         <xs:element name="CreationDate" type="xs:dateTime"/>
-         <xs:element name="ModificationDate" type="xs:dateTime" minOccurs="0"/>
-         <xs:element name="Description" type="xs:string" minOccurs="0" />
-         <xs:element name="ShortDescription" type="xs:string" minOccurs="0" />
-         <xs:element name="Author" type="xs:string" minOccurs="0" />
-     </xs:sequence>
      <xs:attribute name="id" type="xs:ID" use="required"/>
+     <xs:attribute name="name" type="xs:string" use="required"/>
+     <xs:attribute name="category" type="xs:string" use="required"/>
+     <xs:attribute name="version" type="xs:positiveInteger" use="required"/>
  </xs:complexType>
 
 </xs:schema>

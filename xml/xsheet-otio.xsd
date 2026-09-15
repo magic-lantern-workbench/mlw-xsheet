@@ -5,19 +5,21 @@
  xmlns="http://schemas.animation.org/xsheet/otio"
  elementFormDefault="qualified">
 
- <xs:element name="OpenTimelineIOReference">
+ <xs:element name="OTIO">
      <xs:complexType>
          <xs:sequence>
-             <xs:element name="ClipID"
-                         type="xs:string"/>
-             <xs:element name="TrackID"
-                         type="xs:string"
-                         minOccurs="0"/>
-             <xs:element name="TimelineID"
-                         type="xs:string"
-                         minOccurs="0"/>
+             <xs:element name="TimelineRef" type="xs:string"/>
+             <xs:element name="TrackMap"
+                         type="TrackMapType"
+                         minOccurs="0"
+                         maxOccurs="unbounded"/>
          </xs:sequence>
      </xs:complexType>
  </xs:element>
+
+ <xs:complexType name="TrackMapType">
+     <xs:attribute name="xsheetLayer" type="xs:string" use="required"/>
+     <xs:attribute name="otioTrack" type="xs:string" use="required"/>
+ </xs:complexType>
 
 </xs:schema>
