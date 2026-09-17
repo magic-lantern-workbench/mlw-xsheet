@@ -873,7 +873,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
-                ui.menu_item('Save (Ctrl+S)', on_click=lambda _: save_file())
+                ui.menu_item('Save', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.separator()
                 ui.menu_item('Export XDTS JSON…', on_click=lambda _: export_xdts())
@@ -1003,9 +1003,6 @@ window.mlwSelectRange = function(elementId, from, to) {
         elif e.key == 'y' and e.ctrl:
             e.preventDefault()
             do_redo()
-        elif e.key == 's' and e.ctrl:
-            e.preventDefault()
-            save_file()
     ui.keyboard(on_key=handle_keyboard)
 
 
