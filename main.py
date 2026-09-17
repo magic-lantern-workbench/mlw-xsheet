@@ -325,6 +325,35 @@ xml_node_map = {}
 xml_parent_map = {}
 _last_synced_node = {'id': None}
 
+def _describe_element_label(tag: str, elem) -> str:
+    """Build a Hierarchy label that includes enough of an element's own
+    attributes/text to tell same-tag siblings apart (e.g. which "Asset" or
+    "Frame" this is) instead of a bare, indistinguishable tag name. Falls
+    back to the tag alone for container elements that carry neither (e.g.
+    <Timeline>, <Layers>) -- unchanged from before."""
+    parts = []
+    if elem.attrib:
+        # Attribute keys may carry a namespace URI in Clark notation
+        # ("{uri}local") -- strip it, same as the element tag itself.
+        attrs = {(k.split('}', 1)[-1] if '}' in k else k): v for k, v in elem.attrib.items()}
+        # Prefer short, identifying values (id/name/number/frame/type and the
+        # like are usually short); long ones (URLs, schema-location lists,
+        # descriptions) rarely help tell same-tag siblings apart and would
+        # otherwise crowd out the useful ones once truncated below.
+        short_attrs = {k: v for k, v in attrs.items() if len(v) <= 30}
+        parts.append(' '.join(f'{k}="{v}"' for k, v in (short_attrs or attrs).items()))
+    text = ' '.join((elem.text or '').split())  # collapse embedded newlines/indentation
+    if text and not list(elem):
+        parts.append(text)
+    if not parts:
+        return tag
+    detail = ' '.join(parts)
+    max_len = 80
+    if len(detail) > max_len:
+        detail = detail[:max_len - 1].rstrip() + '…'
+    return f'{tag}: {detail}'
+
+
 def parse_xml_to_tree(text: str):
     """Parse XML text into a nested tree of items with approximate start offsets.
     Returns (items, node_map, parent_map): items is the list for ui.tree,
@@ -389,7 +418,7 @@ def parse_xml_to_tree(text: str):
         node_start = start if start != -1 else 0
         node_map[tid] = (node_start, end if end != -1 else None, text.count('\n', 0, node_start))
         # use 'text' key expected by NiceGUI tree nodes
-        item = {'id': tid, 'text': label, 'children': children}
+        item = {'id': tid, 'text': _describe_element_label(label, elem), 'children': children}
         return item, (end if end != -1 else child_search_pos)
 
     root_item, _ = walk(root, 0, None)
