@@ -713,10 +713,15 @@ def index():
     # JS helpers bridging the editor and the Hierarchy tree.
     # - mlwGetCursorOffset: character offset of the cursor -> used to sync
     #   editor cursor movement to a tree selection.
-    # - mlwHighlightLine: given a 0-based line number, selects that whole line
-    #   and places the cursor at its start -> used when a tree node is picked.
-    # CodeMirror renders as a contenteditable div (no <textarea>), so both
-    # feature-detect: prefer '.cm-content', fall back to a real <textarea>.
+    # - mlwHighlightLine: given a document character offset, selects the whole
+    #   line containing it and places the cursor at that exact offset -> used
+    #   when a tree node is picked. Goes through the real CodeMirror EditorView
+    #   (like mlwSelectRange below) rather than indexing into '.cm-line' DOM
+    #   nodes, because CodeMirror only renders lines near the current scroll
+    #   viewport -- for any document longer than one screenful, a naive
+    #   "querySelectorAll('.cm-line')[lineNumber]" silently picks whichever
+    #   line happens to occupy that DOM position, not the requested document
+    #   line. Falls back to a real <textarea> when CodeMirror isn't present.
     ui.add_body_html('''
 <style>
 /* Dark, high-contrast paint for the current Find/Replace match, independent
@@ -751,35 +756,37 @@ window.mlwGetCursorOffset = function() {
     return preRange.toString().length;
 };
 
-window.mlwHighlightLine = function(lineIndex) {
-    const cmContent = document.querySelector('.cm-content');
-    if (cmContent) {
-        const lines = cmContent.querySelectorAll(':scope > .cm-line');
-        if (lines.length === 0) return false;
-        const idx = Math.max(0, Math.min(lineIndex, lines.length - 1));
-        const lineEl = lines[idx];
-        const range = document.createRange();
-        range.selectNodeContents(lineEl);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        // Anchor the selection at the line's end but extend (focus/caret) to
-        // its start, so the whole line highlights while the blinking cursor
-        // sits at the beginning of the line.
-        sel.setBaseAndExtent(range.endContainer, range.endOffset, range.startContainer, range.startOffset);
-        lineEl.scrollIntoView({block: 'center'});
-        return true;
+window.mlwHighlightLine = function(elementId, charOffset) {
+    const view = window.mlwGetCmView(elementId);
+    if (view) {
+        try {
+            const pos = Math.max(0, Math.min(charOffset, view.state.doc.length));
+            const line = view.state.doc.lineAt(pos);
+            // Anchor the selection at the line's end but focus (caret) at the
+            // requested offset, so the whole line highlights while the
+            // blinking cursor sits exactly where the tree node's tag starts.
+            view.dispatch({
+                selection: {anchor: line.to, head: pos},
+                effects: view.constructor.scrollIntoView(pos, {y: 'center'}),
+            });
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
+    // Fallback: the plain <textarea> editor used when CodeMirror isn't
+    // available. A <textarea> always renders every line in the DOM (no
+    // virtualization), so a direct string search for the surrounding line is
+    // safe here.
     const ta = document.querySelector('textarea');
     if (ta) {
-        const lines = ta.value.split('\\n');
-        const idx = Math.max(0, Math.min(lineIndex, lines.length - 1));
-        let start = 0;
-        for (let i = 0; i < idx; i++) {
-            start += lines[i].length + 1;
-        }
-        const end = start + lines[idx].length;
+        const text = ta.value;
+        const pos = Math.max(0, Math.min(charOffset, text.length));
+        const lineStart = text.lastIndexOf('\\n', pos - 1) + 1;
+        let lineEnd = text.indexOf('\\n', pos);
+        if (lineEnd === -1) lineEnd = text.length;
         ta.focus();
-        ta.setSelectionRange(start, end, 'backward');
+        ta.setSelectionRange(lineStart, lineEnd, 'backward');
         return true;
     }
     return false;
@@ -975,8 +982,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 return
             _last_synced_node['id'] = nid
             if nid in xml_node_map:
-                _start, _end, line = xml_node_map.get(nid, (0, None, 0))
-                ui.run_javascript(f'window.mlwHighlightLine({line});')
+                start, _end, _line = xml_node_map.get(nid, (0, None, 0))
+                ui.run_javascript(f'window.mlwHighlightLine({editor.id}, {start});')
 
         global xml_tree
         with ui.column().style('width:320px; flex-shrink:0'):
