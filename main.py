@@ -13,6 +13,9 @@ current_file = {'path': None, 'modified': False, 'saved_content': ''}
 # None means "auto-detect from the document's xsi:schemaLocation".
 current_schema = {'path': None}
 
+# XML/XSD pretty-print parameters, editable via File > Preferences.
+format_prefs = {'indent_size': 4, 'use_tabs': False}
+
 # Suppress editor change handler during programmatic updates
 suppress_editor_change = False
 # Undo/redo stacks and last value
@@ -70,6 +73,95 @@ def validate_xml():
 def _editor_text() -> str:
     ed = globals().get('editor')
     return ed.value if ed is not None else ''
+
+
+def _strip_insignificant_whitespace(node):
+    """Recursively drop whitespace-only text nodes so re-indenting doesn't
+    compound on top of the source document's own indentation."""
+    for child in list(node.childNodes):
+        if child.nodeType == child.TEXT_NODE and not child.data.strip():
+            node.removeChild(child)
+        else:
+            _strip_insignificant_whitespace(child)
+
+
+def pretty_print_xml(text: str, indent: str = '    ') -> str:
+    """Reformat XML/XSD text with consistent indentation. Uses minidom (not
+    ElementTree) because it models the whole document, not just the root
+    element -- ElementTree silently drops comments that sit before/after the
+    root, which several files in this project rely on for header banners.
+    Raises xml.parsers.expat.ExpatError if the text isn't well-formed."""
+    from xml.dom import minidom
+
+    doc = minidom.parseString(text)
+    _strip_insignificant_whitespace(doc)
+    pretty = doc.toprettyxml(indent=indent, newl='\n')
+    lines = [ln for ln in pretty.split('\n') if ln.strip()]
+    if lines and lines[0].startswith('<?xml'):
+        lines = lines[1:]  # minidom's own declaration; rebuilt below to match the source
+    body = '\n'.join(lines) + '\n'
+
+    import re
+    decl_match = re.match(r'^\s*<\?xml\s+version="([^"]+)"(?:\s+encoding="([^"]+)")?\s*\?>', text)
+    if not decl_match:
+        return body
+    version, encoding = decl_match.group(1), decl_match.group(2) or 'UTF-8'
+    return f'<?xml version="{version}" encoding="{encoding}"?>\n\n{body}'
+
+
+def _format_indent_string() -> str:
+    if format_prefs.get('use_tabs'):
+        return '\t'
+    try:
+        size = max(int(format_prefs.get('indent_size', 4)), 1)
+    except (TypeError, ValueError):
+        size = 4
+    return ' ' * size
+
+
+def format_xml():
+    """Pretty-print the editor's XML/XSD contents in place, using the current
+    format_prefs. Routed through _set_editor_text() so it participates in
+    undo/redo and flips the modified ('*') indicator like any other edit."""
+    text = _editor_text()
+    if not text.strip():
+        ui.notify('Nothing to format', color='warning')
+        return
+    try:
+        formatted = pretty_print_xml(text, indent=_format_indent_string())
+    except Exception as exc:
+        ui.notify(f'Format failed: {exc}', color='negative')
+        return
+    if formatted == text:
+        ui.notify('Already formatted', color='info')
+        return
+    _set_editor_text(formatted)
+    ui.notify('Formatted', color='positive')
+
+
+def show_preferences_dialog():
+    """Preferences dialog for the XML/XSD pretty-print formatter (Edit > Format)."""
+    with ui.dialog() as dlg, ui.card().classes('p-4 w-[360px] max-w-full gap-2'):
+        ui.label('Preferences').classes('text-lg font-medium')
+        ui.label('Format (Edit > Format)').classes('text-sm text-gray-500')
+        use_tabs_cb = ui.checkbox('Use tabs for indentation', value=format_prefs['use_tabs'])
+        indent_input = ui.number(
+            'Indent size (spaces)', value=format_prefs['indent_size'], min=1, max=8, step=1,
+        ).classes('w-full').bind_enabled_from(use_tabs_cb, 'value', backward=lambda v: not v)
+
+        def do_save(_=None):
+            format_prefs['use_tabs'] = bool(use_tabs_cb.value)
+            try:
+                format_prefs['indent_size'] = max(int(indent_input.value), 1)
+            except (TypeError, ValueError):
+                format_prefs['indent_size'] = 4
+            dlg.close()
+            ui.notify('Preferences saved', color='positive')
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline')
+            ui.button('Save', on_click=do_save)
+    dlg.open()
 
 
 def _detect_schema_locations(text: str):
@@ -306,29 +398,14 @@ def parse_xml_to_tree(text: str):
 
 
 def rebuild_tree_from_current():
+    """Rebuild the Hierarchy tree from the editor's live (possibly unsaved)
+    text. Must NOT fall back to current_file['saved_content'] as a
+    preference -- that's the on-disk/last-saved text, which diverges from
+    what's on screen the moment there's any unsaved edit (typing, Find &
+    Replace, Undo/Redo, or Format), leaving every tree node's stored
+    character offset pointing at the wrong place in the actual document."""
     global xml_tree, xml_node_map, xml_parent_map
-    # Prefer the saved content if available; fallback to editor accessors
-    text = ''
-    if current_file.get('saved_content'):
-        text = current_file.get('saved_content')
-    elif 'editor' in globals():
-        ed = globals().get('editor')
-        # try common getters
-        try:
-            if hasattr(ed, 'get_content'):
-                text = ed.get_content()
-            elif hasattr(ed, 'get_code'):
-                text = ed.get_code()
-            elif hasattr(ed, 'value'):
-                text = ed.value
-            else:
-                # last resort, try javascript to read textarea
-                res = ui.run_javascript("return (document.querySelector('textarea') ? document.querySelector('textarea').value : null);", response=True)
-                if res:
-                    text = res
-        except Exception:
-            text = ''
-
+    text = _editor_text()
     items, xml_node_map, xml_parent_map = parse_xml_to_tree(text)
     # tree structure changed, so any previously tracked selection is stale
     _last_synced_node['id'] = None
@@ -878,6 +955,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.separator()
                 ui.menu_item('Export XDTS JSON…', on_click=lambda _: export_xdts())
                 ui.separator()
+                ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
+                ui.separator()
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
@@ -885,6 +964,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_dialog())
+                ui.separator()
+                ui.menu_item('Format', on_click=lambda _: format_xml())
             # XML menu with Validation
             with ui.dropdown_button('XML', auto_close=True).props('flat color=white'):
                 ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
