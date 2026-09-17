@@ -3,6 +3,7 @@ import os
 from nicegui import ui
 from local_file_picker import local_file_picker
 from save_file import save_file as SaveFileDialog
+from tools import xsheet_to_xdts
 
 BASE_DIR = Path.cwd()
 
@@ -645,6 +646,48 @@ def save_as():
     dialog.open()
 
 
+def export_xdts():
+    """Convert the current editor contents (an XSheet ExposureSheet document)
+    to an XDTS JSON timesheet and save it via a Save As-style dialog."""
+    text = _editor_text()
+    if not text.strip():
+        ui.notify('Nothing to export', color='warning')
+        return
+    source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+    try:
+        xdts_text = xsheet_to_xdts.export_xdts_json(text, source_name=source_name)
+    except Exception as exc:
+        ui.notify(f'Export failed: {exc}', color='negative')
+        return
+
+    def file_selected_callback(files):
+        if not files:
+            return
+        dest = Path(files[0])
+        try:
+            dest.write_text(xdts_text, encoding='utf-8')
+        except Exception as exc:
+            ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+            return
+        ui.notify(f'Exported {dest}', color='positive')
+
+    class ExportFileWithCallback(SaveFileDialog):
+        def submit(self, value):
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    start_name = f'{source_name}.xdts.json'
+    dialog = ExportFileWithCallback(
+        str(start_dir),
+        filename=start_name,
+        upper_limit=None,
+        allowed_extensions=['.json'],
+    )
+    dialog.open()
+
+
 # File chooser using local_file_picker
 def show_file_dialog():
     def file_selected_callback(files):
@@ -825,6 +868,9 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 ui.menu_item('Save (Ctrl+S)', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
+                ui.separator()
+                ui.menu_item('Export XDTS JSON…', on_click=lambda _: export_xdts())
+                ui.separator()
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):

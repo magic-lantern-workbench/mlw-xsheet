@@ -2,6 +2,15 @@
 """Convert an XSheet XML ExposureSheet document (xml/xsheet-*.xsd) into an
 XDTS JSON timesheet (tools/xdts-20261206.json).
 
+This module is used two ways:
+
+- As a standalone CLI tool (see ``main()`` / ``if __name__ == "__main__"``
+  below).
+- As a library imported by the Editor (main.py) to power an "Export XDTS
+  JSON" feature, via ``convert_string()``/``convert_element()`` (which work
+  directly off in-editor text, no file on disk required) and
+  ``export_xdts_json()`` (which also renders/validates the JSON).
+
 The two formats model exposure sheets very differently, so this converter
 makes a few explicit mapping decisions:
 
@@ -52,6 +61,12 @@ FIELD_DIALOG = 3
 FIELD_CAMERAWORK = 5
 
 SYMBOL_NULL_CELL = "SYMBOL_NULL_CELL"
+
+DEFAULT_SCHEMA_PATH = Path(__file__).with_name("xdts-20261206.json")
+
+
+class XSheetConversionError(Exception):
+    """Raised when an XSheet document cannot be parsed or converted to XDTS."""
 
 
 def q(prefix: str, tag: str) -> str:
@@ -214,10 +229,15 @@ def build_camerawork_field(camera: dict, start_frame: int) -> dict:
     return {"fieldId": FIELD_CAMERAWORK, "tracks": [{"trackNo": 0, "frames": entries}]}
 
 
-def convert(xml_path: Path, xdts_version: int) -> dict:
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
+def convert_element(root: ET.Element, xdts_version: int = 10, *, source_name: str = "untitled") -> dict:
+    """Convert an already-parsed XSheet <ExposureSheet> root element into an
+    XDTS dict. This is the core conversion shared by every entry point below.
 
+    :param source_name: fallback timeTable name used only when the document
+        has no Production/Title, SequenceID, SceneID or ShotID to build one
+        from (e.g. the source file's stem, or "untitled" for in-editor text
+        that was never saved).
+    """
     production = parse_production(root)
     frames = parse_frames(root)
     camera = parse_camera(root)
@@ -245,7 +265,7 @@ def convert(xml_path: Path, xdts_version: int) -> dict:
 
     name = production.get("Title") or " ".join(
         v for v in (production.get("SequenceID"), production.get("SceneID"), production.get("ShotID")) if v
-    ) or xml_path.stem
+    ) or source_name
 
     cut = digits_for_pattern(production.get("ShotID") or "")
     scene = digits_for_pattern(production.get("SceneID") or "")
@@ -262,12 +282,57 @@ def convert(xml_path: Path, xdts_version: int) -> dict:
     }
 
 
-def validate_against_schema(data: dict, schema_path: Path) -> None:
+def convert_string(xml_text: str, xdts_version: int = 10, *, source_name: str = "untitled") -> dict:
+    """Convert XSheet XML held as a string (e.g. an editor buffer that may not
+    be saved to disk) into an XDTS dict."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise XSheetConversionError(f"XSheet XML is not well-formed: {exc}") from exc
+    return convert_element(root, xdts_version, source_name=source_name)
+
+
+def convert_file(xml_path: Path, xdts_version: int = 10) -> dict:
+    """Convert an XSheet XML file on disk into an XDTS dict."""
+    try:
+        tree = ET.parse(xml_path)
+    except ET.ParseError as exc:
+        raise XSheetConversionError(f"XSheet XML is not well-formed: {exc}") from exc
+    return convert_element(tree.getroot(), xdts_version, source_name=xml_path.stem)
+
+
+def validate_against_schema(data: dict, schema_path: Path | None = None) -> None:
+    """Validate an XDTS dict against the XDTS JSON schema, raising on failure
+    (jsonschema.ValidationError, or another exception if the schema itself
+    can't be loaded)."""
     import jsonschema
 
+    schema_path = schema_path or DEFAULT_SCHEMA_PATH
     with schema_path.open(encoding="utf-8") as f:
         schema = json.load(f)
     jsonschema.validate(instance=data, schema=schema)
+
+
+def export_xdts_json(
+    xml_text: str,
+    *,
+    xdts_version: int = 10,
+    validate: bool = False,
+    indent: int | None = 2,
+    source_name: str = "untitled",
+) -> str:
+    """High-level entry point for the Editor's Export feature: convert XSheet
+    XML text straight to a rendered XDTS JSON string.
+
+    Raises XSheetConversionError if the XML can't be parsed, or
+    jsonschema.ValidationError if ``validate`` is set and the result doesn't
+    satisfy the XDTS schema. Callers (e.g. main.py) are expected to catch
+    these and report them to the user rather than let them propagate.
+    """
+    data = convert_string(xml_text, xdts_version, source_name=source_name)
+    if validate:
+        validate_against_schema(data)
+    return json.dumps(data, indent=indent) + "\n"
 
 
 def main() -> int:
@@ -279,12 +344,15 @@ def main() -> int:
     parser.add_argument("--indent", type=int, default=2, help="JSON indent (0 for compact)")
     args = parser.parse_args()
 
-    data = convert(args.input, args.xdts_version)
+    try:
+        data = convert_file(args.input, args.xdts_version)
+    except XSheetConversionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     if args.validate:
-        schema_path = Path(__file__).with_name("xdts-20261206.json")
         try:
-            validate_against_schema(data, schema_path)
+            validate_against_schema(data)
         except Exception as exc:  # jsonschema.ValidationError or similar
             print(f"XDTS validation failed: {exc}", file=sys.stderr)
             return 1
