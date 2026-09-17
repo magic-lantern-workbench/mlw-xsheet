@@ -3,7 +3,7 @@ import os
 from nicegui import ui
 from local_file_picker import local_file_picker
 from save_file import save_file as SaveFileDialog
-from tools import xsheet_to_xdts
+from tools import xsheet_to_xdts_extended
 
 BASE_DIR = Path.cwd()
 
@@ -655,7 +655,7 @@ def export_xdts():
         return
     source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
     try:
-        xdts_text = xsheet_to_xdts.export_xdts_json(text, source_name=source_name)
+        xdts_text = xsheet_to_xdts_extended.export_xdts_json(text, source_name=source_name)
     except Exception as exc:
         ui.notify(f'Export failed: {exc}', color='negative')
         return
