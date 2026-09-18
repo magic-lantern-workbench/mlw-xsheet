@@ -1117,12 +1117,11 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 ui.menu_item('Save', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
+                ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 ui.menu_item('Export XDTS JSON…', on_click=lambda _: export_xdts())
                 ui.separator()
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
-                ui.separator()
-                ui.menu_item('Close', on_click=lambda _: close_with_check())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
