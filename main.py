@@ -842,27 +842,53 @@ def save_file():
         ui.notify(f'Failed to save {path}: {exc}', color='negative')
 
 
+def _confirm_overwrite(path: Path, on_confirm):
+    """If `path` already exists, ask for confirmation before calling
+    on_confirm(); otherwise call it immediately. Shared by Save As and the
+    Export features, which would otherwise silently clobber an existing
+    file the user picked (or whose name happened to match the default)."""
+    if not path.exists():
+        on_confirm()
+        return
+    with ui.dialog() as confirm_dialog, ui.card().classes('p-4'):
+        ui.label(f'{path.name} already exists. Overwrite it?')
+        with ui.row().classes('mt-4 justify-end'):
+            def do_no(_=None):
+                confirm_dialog.close()
+            def do_yes(_=None):
+                confirm_dialog.close()
+                on_confirm()
+            ui.button('No', on_click=do_no).props('outline')
+            ui.button('Yes', on_click=do_yes).classes('ml-2')
+    confirm_dialog.open()
+
+
 def save_as():
     def file_selected_callback(files):
         if not files:
             return
         dest = Path(files[0])
-        try:
-            dest.write_text(editor.value, encoding='utf-8')
-        except Exception as exc:
-            ui.notify(f'Failed to save {dest}: {exc}', color='negative')
-            return
-        current_file['path'] = str(dest)
-        current_file['modified'] = False
-        current_file['saved_content'] = editor.value
-        set_filename_label(dest.name)
-        ui.notify(f'Saved {dest}', color='positive')
-        # keep the Hierarchy tree (and its editor-sync state) consistent with
-        # the file's new name/location, even though the content is unchanged
-        try:
-            rebuild_tree_from_current()
-        except Exception:
-            pass
+
+        def do_save():
+            try:
+                dest.write_text(editor.value, encoding='utf-8')
+            except Exception as exc:
+                ui.notify(f'Failed to save {dest}: {exc}', color='negative')
+                return
+            current_file['path'] = str(dest)
+            current_file['modified'] = False
+            current_file['saved_content'] = editor.value
+            set_filename_label(dest.name)
+            ui.notify(f'Saved {dest}', color='positive')
+            # keep the Hierarchy tree (and its editor-sync state) consistent
+            # with the file's new name/location, even though the content is
+            # unchanged
+            try:
+                rebuild_tree_from_current()
+            except Exception:
+                pass
+
+        _confirm_overwrite(dest, do_save)
 
     class SaveFileWithCallback(SaveFileDialog):
         def submit(self, value):
@@ -899,12 +925,16 @@ def export_xdts():
         if not files:
             return
         dest = Path(files[0])
-        try:
-            dest.write_text(xdts_text, encoding='utf-8')
-        except Exception as exc:
-            ui.notify(f'Failed to write {dest}: {exc}', color='negative')
-            return
-        ui.notify(f'Exported {dest}', color='positive')
+
+        def do_export():
+            try:
+                dest.write_text(xdts_text, encoding='utf-8')
+            except Exception as exc:
+                ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+                return
+            ui.notify(f'Exported {dest}', color='positive')
+
+        _confirm_overwrite(dest, do_export)
 
     class ExportFileWithCallback(SaveFileDialog):
         def submit(self, value):
@@ -942,12 +972,16 @@ def export_to_pdf():
         if not files:
             return
         dest = Path(files[0])
-        try:
-            dest.write_bytes(pdf_bytes)
-        except Exception as exc:
-            ui.notify(f'Failed to write {dest}: {exc}', color='negative')
-            return
-        ui.notify(f'Exported {dest}', color='positive')
+
+        def do_export():
+            try:
+                dest.write_bytes(pdf_bytes)
+            except Exception as exc:
+                ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+                return
+            ui.notify(f'Exported {dest}', color='positive')
+
+        _confirm_overwrite(dest, do_export)
 
     class ExportPdfWithCallback(SaveFileDialog):
         def submit(self, value):
