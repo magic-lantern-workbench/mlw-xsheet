@@ -6,6 +6,9 @@
 
     <Track id="MUSIC1" type="Music" file="music1.wav"/>
 
-    <Track id="SFX1" type="Effects" file="sfx1.wav"/>
+    <Track id="SFX1"
+           type="Effects" 
+           file="sfx1.wav"
+           description="Sound effect for Kerplop"/>
 
 </AudioTracks>
