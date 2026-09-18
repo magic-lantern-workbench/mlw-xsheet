@@ -17,6 +17,12 @@ current_schema = {'path': None}
 # XML/XSD pretty-print parameters, editable via File > Preferences.
 format_prefs = {'indent_size': 4, 'use_tabs': False}
 
+# Remembers where you were in each tab across switches: the XML editor's
+# cursor offset, and the XSheet grid's topmost visible row index. Both stay
+# None until you switch away from that tab at least once (see index()'s
+# on_main_tab_change()).
+tab_view_state = {'xml_cursor_offset': None, 'xsheet_top_row': None}
+
 # Suppress editor change handler during programmatic updates
 suppress_editor_change = False
 # Undo/redo stacks and last value
@@ -1435,6 +1441,20 @@ window.mlwGetCmView = function(elementId) {
     }
 };
 
+// Cursor offset for the XML/XSheet tab-switch position memory (see
+// index()'s on_main_tab_change()). Deliberately reads CodeMirror's own
+// selection state rather than mlwGetCursorOffset()'s use of
+// document.getSelection(): switching tabs happens by clicking the tab
+// button, which moves native focus/selection away from the editor right
+// before we'd try to read it, so the native-Selection approach would
+// almost always see an empty selection at exactly the moment it matters.
+window.mlwGetEditorCursorOffset = function(elementId) {
+    const view = window.mlwGetCmView(elementId);
+    if (view) return view.state.selection.main.head;
+    const ta = document.querySelector('textarea');
+    return ta ? ta.selectionStart : null;
+};
+
 // Select the document character range [from, to) -- used by Find/Replace to
 // highlight the current match. Scrolls it into view first (via CodeMirror's
 // own scrollIntoView, which -- unlike guessing a scroll offset ourselves --
@@ -1513,7 +1533,51 @@ window.mlwSelectRange = function(elementId, from, to) {
             schema_label = ui.label('')
             set_schema_label()
 
-    with ui.tabs().classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
+    async def on_main_tab_change(e):
+        """Remember the XML editor's cursor line and the XSheet grid's
+        topmost visible row across tab switches -- both would otherwise
+        quietly reset to the top the moment their tab panel goes
+        display:none and back, losing the user's place every time they
+        switch tabs and back.
+
+        The grid side goes through ag-grid's own ensureIndexVisible() /
+        getFirstDisplayedRowIndex() API (via run_grid_method()) rather than
+        reading/writing the scroll container's raw scrollTop: the grid was
+        originally created while its tab was hidden, so a raw scrollTop
+        write doesn't reliably make ag-grid re-render the newly-scrolled-to
+        rows (position looks "restored" but the rows stay blank).
+        ensureIndexVisible() is ag-grid's supported way to scroll to a row
+        and is virtualization-aware, so it (re)renders correctly -- but
+        only once the grid's data is freshly (re)pushed via
+        rebuild_xsheet_from_current() first and the container has had a
+        moment to settle into its now-visible layout."""
+        new_value = e.value if hasattr(e, 'value') else e
+        # e.value is the tab's plain name string ("XML"/"XSheet") here, not
+        # the Tab element itself, even though ui.tab_panels(value=xml_tab)
+        # elsewhere in this file is given the element -- nicegui reports
+        # client-originated tab changes by name.
+        switching_to_xsheet = (new_value == 'XSheet')
+        try:
+            if switching_to_xsheet:
+                offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({editor.id});')
+                if offset is not None:
+                    tab_view_state['xml_cursor_offset'] = int(offset)
+                if xsheet_grid is not None and tab_view_state['xsheet_top_row'] is not None:
+                    import asyncio
+                    rebuild_xsheet_from_current()
+                    await asyncio.sleep(0.15)
+                    xsheet_grid.run_grid_method('ensureIndexVisible', tab_view_state['xsheet_top_row'], 'top')
+            else:
+                if xsheet_grid is not None:
+                    top_row = await xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
+                    if top_row is not None:
+                        tab_view_state['xsheet_top_row'] = int(top_row)
+                if tab_view_state['xml_cursor_offset'] is not None:
+                    ui.run_javascript(f"window.mlwHighlightLine({editor.id}, {tab_view_state['xml_cursor_offset']});")
+        except Exception:
+            pass
+
+    with ui.tabs(on_change=on_main_tab_change).classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
         xml_tab = ui.tab('XML')
         xsheet_tab = ui.tab('XSheet')
 
@@ -1625,6 +1689,10 @@ window.mlwSelectRange = function(elementId, from, to) {
                 'columnDefs': [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80}],
                 'rowData': [],
                 'domLayout': 'normal',
+                # Rows must stay in frame order -- an exposure sheet isn't
+                # meaningful sorted by cel name or dialogue text -- so
+                # disable ag-grid's default click-to-sort on every column.
+                'defaultColDef': {'sortable': False},
             }, auto_size_columns=False).classes('w-full mlw-xsheet-grid').style('height: 75vh')
             # auto_size_columns=False: ui.aggrid defaults to stretching columns to
             # fill the grid's full width, which would override the deliberately
@@ -1649,11 +1717,15 @@ window.mlwSelectRange = function(elementId, from, to) {
 
 
     # Periodic poll to sync editor cursor -> tree selection
-    def poll_cursor_and_select_tree():
+    async def poll_cursor_and_select_tree():
         if xml_tree is None:
             return
         try:
-            res = ui.run_javascript('return window.mlwGetCursorOffset();', response=True)
+            # run_javascript() only returns a value when awaited; the
+            # response=True kwarg this used to use doesn't exist in the
+            # installed nicegui version, so this was silently raising
+            # (and doing nothing) on every single tick.
+            res = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({editor.id});')
             if res is None:
                 return
             pos = int(res)
