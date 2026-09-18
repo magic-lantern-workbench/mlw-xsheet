@@ -1454,7 +1454,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             schema_label = ui.label('')
             set_schema_label()
 
-    with ui.tabs().classes('w-full') as main_tabs:
+    with ui.tabs().classes('w-full').props('align=left') as main_tabs:
         xml_tab = ui.tab('XML')
         xsheet_tab = ui.tab('XSheet')
 
