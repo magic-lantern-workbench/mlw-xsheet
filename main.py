@@ -1266,6 +1266,47 @@ def index():
 .mlw-xsheet-grid .ag-header-cell {
     border-right: 1px solid var(--ag-border-color, #d0d0d0);
 }
+
+/* Classic "manila folder" tab look for the XML/XSheet selector: bordered,
+   rounded-top tab shapes with the active tab visually fused into the page
+   below it, replacing Quasar's default thin colored underline indicator.
+   Colors are tints/shades of the header/footer's blue (#5898d4) so the tab
+   bar reads as part of the same theme. */
+.mlw-folder-tabs .q-tab__indicator {
+    display: none;
+}
+.mlw-folder-tabs .q-tabs__content {
+    border-bottom: 2px solid #5898d4;
+    /* Quasar clips this container to its own box (overflow: hidden) for
+       scrollable tab bars. That clips off the active tab's -2px bottom
+       margin below before it can paint over this border, leaving the blue
+       line visible even under the "active" tab. This app only ever has a
+       couple of fixed tabs (never scrolls), so it's safe to let content
+       overflow the container instead of being clipped. */
+    overflow: visible !important;
+}
+.mlw-folder-tabs .q-tab {
+    margin: 6px 3px 0 0;
+    padding: 0 20px;
+    min-height: 38px;
+    border: 2px solid #5898d4;
+    border-radius: 10px 10px 0 0;
+    background: #dceafb;
+    color: #2b5d8a;
+    transition: background-color 0.15s ease;
+}
+.mlw-folder-tabs .q-tab:hover {
+    background: #c3ddf6;
+}
+.mlw-folder-tabs .q-tab--active {
+    position: relative;
+    z-index: 1;
+    margin-bottom: -2px;
+    background: #ffffff;
+    color: #1c3f60;
+    font-weight: 700;
+    border-bottom: 2px solid #ffffff;
+}
 </style>
 <script>
 window.mlwFindEditorRoot = function() {
@@ -1454,7 +1495,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             schema_label = ui.label('')
             set_schema_label()
 
-    with ui.tabs().classes('w-full').props('align=left') as main_tabs:
+    with ui.tabs().classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
         xml_tab = ui.tab('XML')
         xsheet_tab = ui.tab('XSheet')
 
