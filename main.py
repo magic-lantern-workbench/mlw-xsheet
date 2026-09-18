@@ -240,9 +240,63 @@ def show_validation_message(message: str, ok: bool = True):
     _reveal_validation_panel()
 
 
+def _children_of(parent_tid: str) -> list[str]:
+    """Direct child node ids of parent_tid, in document order. Relies on
+    xml_parent_map's insertion order: parse_xml_to_tree's depth-first walk
+    always inserts a parent's direct children in document order relative to
+    each other (even though descendants of different children interleave in
+    the dict overall), so filtering by parent while preserving dict order
+    reconstructs that per-parent ordering without needing a separate map."""
+    return [tid for tid, pid in xml_parent_map.items() if pid == parent_tid]
+
+
+def resolve_error_offset(path: str, child_index: int | None = None):
+    """Resolve an xmlschema validation-error path (e.g.
+    '/ExposureSheet/Timeline/Frame[2]/Layers/Layer[2]') to that element's
+    (start, end, line) via xml_path_to_id/xml_node_map. xml_path_to_id's keys
+    are namespace-prefix-free (parse_xml_to_tree already strips prefixes from
+    tag names the same way), so any "prefix:" xmlschema put on a segment is
+    stripped here too before looking it up.
+
+    For an "unexpected child" structural error (e.g. a misspelled tag),
+    xmlschema's path only identifies the *parent* it was found under -- there
+    is no schema-side element to descend into for a tag it doesn't
+    recognize -- and instead reports the offending child's 0-based position
+    among its parent's children as the error's `index`. When child_index is
+    given, resolve to that child of the path's element instead of the
+    element itself, so the click lands on the actual bad tag.
+
+    Returns None if the path/index can't be matched -- e.g. the document has
+    changed shape since validation ran."""
+    import re
+    normalized = '/'.join(re.sub(r'^[\w.\-]+:', '', segment) for segment in path.split('/'))
+    tid = xml_path_to_id.get(normalized)
+    if tid is None:
+        return None
+    if child_index is not None:
+        children = _children_of(tid)
+        if not (0 <= child_index < len(children)):
+            return None
+        tid = children[child_index]
+    return xml_node_map.get(tid)
+
+
+def goto_validation_error(path: str, child_index: int | None = None):
+    """Jump the editor to the element a Validation Results entry refers to,
+    reusing the same offset-based highlight the Hierarchy tree uses (which
+    also means the Hierarchy tree's own selection will follow along via the
+    existing cursor->tree sync)."""
+    location = resolve_error_offset(path, child_index)
+    if location is None:
+        ui.notify(f'Could not locate {path} in the current document', color='warning')
+        return
+    start, _end, _line = location
+    ui.run_javascript(f'window.mlwHighlightLine({editor.id}, {start});')
+
+
 def show_validation_errors(errors, schema_name: str):
     """Render a schema-validation error list into the Validation Results
-    panel, and expand the panel."""
+    panel, expand the panel, and make each entry clickable to jump to it."""
     container = _validation_panel_container()
     if container is None:
         return
@@ -250,12 +304,16 @@ def show_validation_errors(errors, schema_name: str):
     with container:
         ui.label(f'{len(errors)} schema validation error(s) against {schema_name}') \
             .classes('font-medium').style('color: red')
+        ui.label('Click an error to jump to it in the editor.').classes('text-xs text-gray-500')
         with ui.scroll_area().classes('w-full h-64 border rounded'):
             for i, err in enumerate(errors, 1):
                 path = getattr(err, 'path', None) or ''
                 reason = getattr(err, 'reason', None) or str(err)
-                ui.label(f'{i}. {path}').classes('font-mono text-sm')
-                ui.label(f'   {reason}').classes('text-sm').style('color: red; white-space: pre-wrap')
+                child_index = getattr(err, 'index', None)
+                with ui.column().classes('w-full gap-0 px-2 py-1 rounded cursor-pointer hover:bg-gray-100') \
+                        .on('click', lambda _, p=path, ci=child_index: goto_validation_error(p, ci)):
+                    ui.label(f'{i}. {path}').classes('font-mono text-sm')
+                    ui.label(f'   {reason}').classes('text-sm').style('color: red; white-space: pre-wrap')
     _reveal_validation_panel()
 
 
@@ -370,6 +428,11 @@ def find_xml_files():
 xml_tree = None
 xml_node_map = {}
 xml_parent_map = {}
+# Maps an xmlschema-style element path (e.g.
+# "/ExposureSheet/Timeline/Frame[2]/Layers/Layer[2]", namespace prefixes
+# stripped) to the tree node id at that path -- lets Validation Results
+# entries jump to the offending element the same way Hierarchy tree clicks do.
+xml_path_to_id = {}
 _last_synced_node = {'id': None}
 
 def _describe_element_label(tag: str, elem) -> str:
@@ -403,14 +466,17 @@ def _describe_element_label(tag: str, elem) -> str:
 
 def parse_xml_to_tree(text: str):
     """Parse XML text into a nested tree of items with approximate start offsets.
-    Returns (items, node_map, parent_map): items is the list for ui.tree,
-    node_map maps id->(start, end, line), and parent_map maps id->parent_id
-    (root -> None).
+    Returns (items, node_map, parent_map, path_map): items is the list for
+    ui.tree, node_map maps id->(start, end, line), parent_map maps
+    id->parent_id (root -> None), and path_map maps an xmlschema-style
+    element path (namespace prefixes stripped, e.g.
+    "/ExposureSheet/Timeline/Frame[2]") to that element's node id.
     """
     import xml.etree.ElementTree as ET
     items = []
     node_map = {}
     parent_map = {}
+    path_map = {}
     try:
         root = ET.fromstring(text)
     except Exception as exc:
@@ -419,7 +485,7 @@ def parse_xml_to_tree(text: str):
             print('DEBUG: text sample:', text[:200])
         except Exception:
             pass
-        return items, node_map, parent_map
+        return items, node_map, parent_map, path_map
 
     import re
 
@@ -443,10 +509,11 @@ def parse_xml_to_tree(text: str):
         return m.end() if m else -1
 
     counter = {'n': 0}
-    def walk(elem, search_pos, parent_id):
+    def walk(elem, search_pos, parent_id, path):
         tid = f"n{counter['n']}"
         counter['n'] += 1
         parent_map[tid] = parent_id
+        path_map[path] = tid
         label = strip_tag(elem.tag)
         start = find_start(label, search_pos)
         # tentative end: after this element's end tag
@@ -454,9 +521,22 @@ def parse_xml_to_tree(text: str):
         if start != -1:
             end = find_end(label, start)
         children = []
+        child_elems = list(elem)
+        # xmlschema's element paths only add a "[N]" (1-based) index when a
+        # tag repeats among its siblings, and omit it entirely when the tag
+        # is unique under that parent -- replicate that rule so path_map's
+        # keys line up with the paths validation errors actually report.
+        tag_counts = {}
+        for child in child_elems:
+            ctag = strip_tag(child.tag)
+            tag_counts[ctag] = tag_counts.get(ctag, 0) + 1
+        tag_seen = {}
         child_search_pos = start + 1 if start != -1 else search_pos
-        for child in list(elem):
-            child_item, child_end = walk(child, child_search_pos, tid)
+        for child in child_elems:
+            ctag = strip_tag(child.tag)
+            tag_seen[ctag] = tag_seen.get(ctag, 0) + 1
+            child_path = f'{path}/{ctag}[{tag_seen[ctag]}]' if tag_counts[ctag] > 1 else f'{path}/{ctag}'
+            child_item, child_end = walk(child, child_search_pos, tid, child_path)
             children.append(child_item)
             # advance search pos to end of child to avoid finding earlier tags
             if child_end and child_end > child_search_pos:
@@ -468,9 +548,9 @@ def parse_xml_to_tree(text: str):
         item = {'id': tid, 'text': _describe_element_label(label, elem), 'children': children}
         return item, (end if end != -1 else child_search_pos)
 
-    root_item, _ = walk(root, 0, None)
+    root_item, _ = walk(root, 0, None, f'/{strip_tag(root.tag)}')
     items = [root_item]
-    return items, node_map, parent_map
+    return items, node_map, parent_map, path_map
 
 
 def rebuild_tree_from_current():
@@ -480,9 +560,9 @@ def rebuild_tree_from_current():
     what's on screen the moment there's any unsaved edit (typing, Find &
     Replace, Undo/Redo, or Format), leaving every tree node's stored
     character offset pointing at the wrong place in the actual document."""
-    global xml_tree, xml_node_map, xml_parent_map
+    global xml_tree, xml_node_map, xml_parent_map, xml_path_to_id
     text = _editor_text()
-    items, xml_node_map, xml_parent_map = parse_xml_to_tree(text)
+    items, xml_node_map, xml_parent_map, xml_path_to_id = parse_xml_to_tree(text)
     # tree structure changed, so any previously tracked selection is stale
     _last_synced_node['id'] = None
     # build ui-compatible nodes list using the keys ui.tree actually expects:
@@ -923,6 +1003,14 @@ window.mlwHighlightLine = function(elementId, charOffset) {
                 selection: {anchor: line.to, head: pos},
                 effects: view.constructor.scrollIntoView(pos, {y: 'center'}),
             });
+            // scrollIntoView above only scrolls CodeMirror's own internal
+            // .cm-scroller -- it has no effect on the outer page's scroll
+            // position. The caller (e.g. a Validation Results entry, which
+            // sits below the editor in page flow) may have the page scrolled
+            // well past the editor, which would otherwise leave the
+            // now-correctly-positioned line scrolled out of view above the
+            // browser's visible viewport.
+            view.dom.scrollIntoView({block: 'center'});
             return true;
         } catch (e) {
             return false;
