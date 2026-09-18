@@ -77,6 +77,20 @@ def _write_title_block(pdf: FPDF, title: str) -> None:
     pdf.ln(8)
 
 
+def _write_warning_banner(pdf: FPDF, warnings: list[str]) -> None:
+    """A prominent first-page notice for when the source document didn't
+    pass validation but the user chose to export it anyway (see main.py's
+    export_to_pdf() / _validate_for_export())."""
+    pdf.set_text_color(180, 0, 0)
+    pdf.set_font('Courier', 'B', 11)
+    pdf.multi_cell(0, 14, 'WARNING: this document did not pass validation:', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_font('Courier', '', 9)
+    for warning in warnings:
+        pdf.multi_cell(0, 12, _sanitize(f'- {warning}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(8)
+
+
 def _write_heading(pdf: FPDF, text: str) -> None:
     pdf.set_font('Courier', 'B', 13)
     pdf.multi_cell(0, 16, _sanitize(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -235,12 +249,17 @@ _TEMPLATES = [
 ]
 
 
-def generate_pdf(text: str, *, title: str = 'Untitled') -> bytes:
+def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | None = None) -> bytes:
     """Render `text` as a PDF and return the raw PDF bytes, using whichever
     registered template's `matches()` accepts the parsed document (falling
     back to a plain source listing when none do, or the text isn't
-    well-formed XML)."""
+    well-formed XML). When `warnings` is non-empty, a prominent notice is
+    stamped onto the first page, above the title, before that template's
+    own content -- see main.py's export_to_pdf(), which populates this from
+    the document's own well-formedness/schema-validation problems."""
     pdf = _new_pdf()
+    if warnings:
+        _write_warning_banner(pdf, warnings)
 
     root = None
     try:

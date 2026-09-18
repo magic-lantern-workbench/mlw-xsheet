@@ -393,6 +393,59 @@ def validate_against_schema():
         show_validation_errors(errors, schema_path.name)
 
 
+def _validate_for_export(text: str) -> list[str]:
+    """Check `text` for the same problems the XML menu's checks report,
+    returning a short human-readable warning line per problem found (empty
+    if the document is fully valid). Used to gate Export to PDF -- unlike
+    the interactive Validate commands, this never prompts for a schema or
+    reports anything when there simply isn't one configured/resolvable;
+    it only flags problems it can actually confirm."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        ET.fromstring(text)
+    except ET.ParseError as exc:
+        return [f'Not well-formed XML: {exc}']
+
+    try:
+        import xmlschema
+    except ImportError:
+        return []
+
+    schema_path = resolve_schema_for_xml(text)
+    if schema_path is None:
+        return []
+
+    try:
+        schema = xmlschema.XMLSchema(str(schema_path))
+        errors = list(schema.iter_errors(text))
+    except Exception as exc:
+        return [f'Schema load/parse error: {exc}']
+
+    if errors:
+        return [f'{len(errors)} schema validation error(s) against {schema_path.name}']
+    return []
+
+
+def _confirm_export_despite_warnings(warnings: list[str], on_confirm):
+    """Warn that the document doesn't validate before exporting it, letting
+    the user cancel or proceed anyway (see export_to_pdf())."""
+    with ui.dialog() as dlg, ui.card().classes('p-4 w-[480px] max-w-full gap-2'):
+        ui.label('This document has validation problems:').classes('font-medium')
+        for w in warnings:
+            ui.label(f'• {w}').classes('text-sm').style('color: red')
+        ui.label('Export to PDF anyway?')
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            def do_cancel(_=None):
+                dlg.close()
+            def do_proceed(_=None):
+                dlg.close()
+                on_confirm()
+            ui.button('Cancel', on_click=do_cancel).props('outline')
+            ui.button('Export Anyway', on_click=do_proceed).props('color=warning')
+    dlg.open()
+
+
 def set_schema_label():
     lbl = globals().get('schema_label')
     if lbl is not None:
@@ -955,49 +1008,62 @@ def export_xdts():
 
 def export_to_pdf():
     """Render the current editor contents (the loaded XML/XSD document) as a
-    paginated PDF source listing and save it via a Save As-style dialog."""
+    paginated PDF and save it via a Save As-style dialog. First checks the
+    document the same way the XML menu's Validate commands do; if it isn't
+    well-formed or fails schema validation, asks for confirmation before
+    proceeding (see _confirm_export_despite_warnings()) -- generation is
+    cancelled outright if the user declines, and the resulting PDF carries a
+    warning banner on its first page if they proceed anyway."""
     text = _editor_text()
     if not text.strip():
         ui.notify('Nothing to export', color='warning')
         return
-    doc_name = Path(current_file['path']).name if current_file.get('path') else 'untitled'
-    source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
-    try:
-        pdf_bytes = export_pdf.generate_pdf(text, title=doc_name)
-    except Exception as exc:
-        ui.notify(f'PDF export failed: {exc}', color='negative')
-        return
 
-    def file_selected_callback(files):
-        if not files:
+    def do_generate(validation_warnings: list[str]):
+        doc_name = Path(current_file['path']).name if current_file.get('path') else 'untitled'
+        source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+        try:
+            pdf_bytes = export_pdf.generate_pdf(text, title=doc_name, warnings=validation_warnings)
+        except Exception as exc:
+            ui.notify(f'PDF export failed: {exc}', color='negative')
             return
-        dest = Path(files[0])
 
-        def do_export():
-            try:
-                dest.write_bytes(pdf_bytes)
-            except Exception as exc:
-                ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+        def file_selected_callback(files):
+            if not files:
                 return
-            ui.notify(f'Exported {dest}', color='positive')
+            dest = Path(files[0])
 
-        _confirm_overwrite(dest, do_export)
+            def do_export():
+                try:
+                    dest.write_bytes(pdf_bytes)
+                except Exception as exc:
+                    ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+                    return
+                ui.notify(f'Exported {dest}', color='positive')
 
-    class ExportPdfWithCallback(SaveFileDialog):
-        def submit(self, value):
-            file_selected_callback(value)
-            self.close()
-            super().submit(value)
+            _confirm_overwrite(dest, do_export)
 
-    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
-    start_name = f'{source_name}.pdf'
-    dialog = ExportPdfWithCallback(
-        str(start_dir),
-        filename=start_name,
-        upper_limit=None,
-        allowed_extensions=['.pdf'],
-    )
-    dialog.open()
+        class ExportPdfWithCallback(SaveFileDialog):
+            def submit(self, value):
+                file_selected_callback(value)
+                self.close()
+                super().submit(value)
+
+        start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+        start_name = f'{source_name}.pdf'
+        dialog = ExportPdfWithCallback(
+            str(start_dir),
+            filename=start_name,
+            upper_limit=None,
+            allowed_extensions=['.pdf'],
+        )
+        dialog.open()
+
+    validation_warnings = _validate_for_export(text)
+    if validation_warnings:
+        _confirm_export_despite_warnings(validation_warnings, lambda: do_generate(validation_warnings))
+    else:
+        do_generate([])
 
 
 # File chooser using OpenFileDialog
