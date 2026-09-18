@@ -8,13 +8,18 @@ reused on its own -- it just takes text in and returns PDF bytes out.
 generate_pdf() parses the text and tries each registered template's
 `matches(root)` in order, rendering with the first one that accepts the
 document. Only one template is registered so far, for the XSheet schema's
-<ExposureSheet> documents (see _render_xsheet_template): it puts the
-Production fields up front, documents every other element's tag, attributes
-and text as a nested outline, and appends the original source as a raw-XML
-appendix. Anything that doesn't match a registered template -- a bare .xsd
-schema, some other XML vocabulary, or text that doesn't even parse -- falls
-back to _render_default_template, a plain paginated listing of the source
-(this module's only behavior before templates existed).
+<ExposureSheet> documents (see _render_xsheet_template): a clickable Table
+of Contents, then the Production fields up front, then every other
+top-level element as its own titled section documenting its tag, attributes
+and text as a nested outline, then the original source as a raw-XML
+appendix. The Table of Contents (via fpdf2's insert_toc_placeholder() /
+start_section()) has one entry per section -- Production, each top-level
+element, and the Appendix -- each a real internal PDF link that jumps to
+that section's page. Anything that doesn't match a registered template -- a
+bare .xsd schema, some other XML vocabulary, or text that doesn't even
+parse -- falls back to _render_default_template, a plain paginated listing
+of the source with no Table of Contents (this module's only behavior before
+templates existed).
 
 To add another schema's template, write a `matches(root) -> bool` and a
 `render(pdf, root, title, raw_text) -> None` and append them to _TEMPLATES.
@@ -92,12 +97,30 @@ def _write_raw_listing(pdf: FPDF, text: str) -> None:
         pdf.multi_cell(body_width, LINE_HEIGHT, line or ' ', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
 
+def _render_toc(pdf: FPDF, outline: list) -> None:
+    """Draws the Table of Contents page: one clickable, dot-leadered line
+    per section start_section() recorded (Production, each top-level
+    element, and the Appendix), jumping to that section's page."""
+    _write_heading(pdf, 'Table of Contents')
+    pdf.set_font('Courier', '', BODY_FONT_SIZE + 1)
+    for section in outline:
+        link = pdf.add_link(page=section.page_number)
+        name = _sanitize(section.name)
+        leader_len = max(3, 64 - len(name))
+        label = f'{name} {"." * leader_len} {section.page_number}'
+        pdf.set_x(pdf.l_margin)
+        pdf.set_text_color(20, 60, 140)
+        pdf.multi_cell(0, 18, label, new_x=XPos.LMARGIN, new_y=YPos.NEXT, link=link)
+        pdf.set_text_color(0, 0, 0)
+
+
 def _write_production_block(pdf: FPDF, root: ET.Element) -> None:
     """The <Production> element's own fields (ProjectID, SceneID,
     FrameRate, ...), as a key/value block at the top of the document."""
     production = next((c for c in root if _strip_ns(c.tag) == 'Production'), None)
     if production is None:
         return
+    pdf.start_section('Production', level=0)
     _write_heading(pdf, 'Production')
     pdf.set_font('Courier', '', BODY_FONT_SIZE)
     for field in production:
@@ -138,22 +161,60 @@ def _write_element_outline(pdf: FPDF, elem: ET.Element, depth: int = 0) -> None:
         _write_element_outline(pdf, child, depth + 1)
 
 
+def _write_section(pdf: FPDF, elem: ET.Element) -> None:
+    """Document one top-level element as its own titled section: a heading
+    for its tag name, its own attributes/text (if any), then each of its
+    children as a nested outline. Blank space before the heading and
+    between each direct child keeps sections and their entries -- each
+    Asset, each Frame, each Review, etc. -- visually distinct blocks rather
+    than a wall of text."""
+    pdf.ln(14)
+    tag = _strip_ns(elem.tag)
+    pdf.start_section(tag, level=0)
+    _write_heading(pdf, tag)
+
+    attrs = _format_attrs(elem)
+    if attrs:
+        pdf.set_x(pdf.l_margin)
+        pdf.set_font('Courier', '', BODY_FONT_SIZE)
+        pdf.set_text_color(90, 90, 90)
+        pdf.multi_cell(pdf.w - pdf.l_margin - pdf.r_margin, LINE_HEIGHT, _sanitize(attrs), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(4)
+
+    children = list(elem)
+    text = ' '.join((elem.text or '').split())
+    if text and not children:
+        pdf.set_x(pdf.l_margin)
+        pdf.set_font('Courier', '', BODY_FONT_SIZE)
+        pdf.multi_cell(0, LINE_HEIGHT, _sanitize(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    for child in children:
+        _write_element_outline(pdf, child)
+        pdf.ln(6)
+
+
 def _is_xsheet_document(root: ET.Element) -> bool:
     return root.tag == f'{{{XSHEET_CORE_NS}}}ExposureSheet'
 
 
 def _render_xsheet_template(pdf: FPDF, root: ET.Element, title: str, raw_text: str) -> None:
-    """Production up front, every other top-level section documented as a
-    nested tag/attribute/text outline, then the raw source as an appendix."""
+    """A clickable Table of Contents, Production up front, every other
+    top-level element as its own titled, spaced-out section, then the raw
+    source as an appendix."""
     _write_title_block(pdf, title)
+
+    pdf.add_page()
+    pdf.insert_toc_placeholder(_render_toc, pages=1)
+
     _write_production_block(pdf, root)
-    _write_heading(pdf, 'Document Structure')
     for child in root:
         if _strip_ns(child.tag) == 'Production':
             continue  # already shown above
-        _write_element_outline(pdf, child)
+        _write_section(pdf, child)
 
     pdf.add_page()
+    pdf.start_section('Appendix: Raw XML', level=0)
     _write_heading(pdf, 'Appendix: Raw XML')
     _write_raw_listing(pdf, raw_text)
 
