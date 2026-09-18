@@ -10,9 +10,9 @@ class save_file(ui.dialog):
                  show_hidden_files: bool = False, allowed_extensions: list[str] | None = None) -> None:
         """Save File dialog
 
-        A save-as dialog that lets you navigate directories (mirroring local_file_picker)
+        A save-as dialog that lets you navigate directories (mirroring open_file)
         and choose or rename the destination filename. Submits a single-element list
-        containing the full destination path, the same convention local_file_picker uses,
+        containing the full destination path, the same convention open_file uses,
         so callers can reuse the same "subclass and override submit()" pattern.
 
         :param directory: The directory to start in.

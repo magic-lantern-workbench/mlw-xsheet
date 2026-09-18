@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 from nicegui import ui
-from local_file_picker import local_file_picker
+from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from tools import xsheet_to_xdts_extended
 
@@ -228,7 +228,7 @@ def choose_schema(then_validate: bool = True):
         if then_validate:
             validate_against_schema()
 
-    class SchemaPicker(local_file_picker):
+    class SchemaPicker(OpenFileDialog):
         def submit(self, value):
             picked(value)
             self.close()
@@ -794,14 +794,14 @@ def export_xdts():
     dialog.open()
 
 
-# File chooser using local_file_picker
+# File chooser using OpenFileDialog
 def show_file_dialog():
     def file_selected_callback(files):
         if files:
             print(f"DEBUG: File selected callback with: {files}")
             open_file(Path(files[0]))
-    
-    class FilePickerWithCallback(local_file_picker):
+
+    class FilePickerWithCallback(OpenFileDialog):
         def submit(self, value):
             print(f"DEBUG: submit() called with {value}")
             file_selected_callback(value)

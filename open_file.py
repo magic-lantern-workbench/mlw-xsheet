@@ -4,12 +4,12 @@ from pathlib import Path
 from nicegui import events, ui
 
 
-class local_file_picker(ui.dialog):
+class open_file(ui.dialog):
 
     def __init__(self, directory: str, *,
                  upper_limit: str | None = ..., multiple: bool = False, show_hidden_files: bool = False,
                  allowed_extensions: list[str] | None = None) -> None:
-        """Local File Picker
+        """Open File dialog
 
         This is a simple file picker that allows you to select a file from the local filesystem where NiceGUI is running.
 
