@@ -4,6 +4,7 @@ from nicegui import ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from tools import xsheet_to_xdts_extended
+import export_pdf
 
 BASE_DIR = Path.cwd()
 
@@ -922,6 +923,49 @@ def export_xdts():
     dialog.open()
 
 
+def export_to_pdf():
+    """Render the current editor contents (the loaded XML/XSD document) as a
+    paginated PDF source listing and save it via a Save As-style dialog."""
+    text = _editor_text()
+    if not text.strip():
+        ui.notify('Nothing to export', color='warning')
+        return
+    doc_name = Path(current_file['path']).name if current_file.get('path') else 'untitled'
+    source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+    try:
+        pdf_bytes = export_pdf.generate_pdf(text, title=doc_name)
+    except Exception as exc:
+        ui.notify(f'PDF export failed: {exc}', color='negative')
+        return
+
+    def file_selected_callback(files):
+        if not files:
+            return
+        dest = Path(files[0])
+        try:
+            dest.write_bytes(pdf_bytes)
+        except Exception as exc:
+            ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+            return
+        ui.notify(f'Exported {dest}', color='positive')
+
+    class ExportPdfWithCallback(SaveFileDialog):
+        def submit(self, value):
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    start_name = f'{source_name}.pdf'
+    dialog = ExportPdfWithCallback(
+        str(start_dir),
+        filename=start_name,
+        upper_limit=None,
+        allowed_extensions=['.pdf'],
+    )
+    dialog.open()
+
+
 # File chooser using OpenFileDialog
 def show_file_dialog():
     def file_selected_callback(files):
@@ -1130,6 +1174,9 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Find', on_click=lambda _: show_find_dialog())
                 ui.separator()
                 ui.menu_item('Format', on_click=lambda _: format_xml())
+            # XSheet menu
+            with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
+                ui.menu_item('Export to PDF', on_click=lambda _: export_to_pdf())
             # XML menu with Validation
             with ui.dropdown_button('XML', auto_close=True).props('flat color=white'):
                 ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
