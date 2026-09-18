@@ -1310,9 +1310,10 @@ def index():
     overflow: visible !important;
 }
 .mlw-folder-tabs .q-tab {
-    margin: 6px 3px 0 0;
-    padding: 0 20px;
-    min-height: 38px;
+    margin: 2px 3px 0 0;
+    padding: 0 16px;
+    min-height: 26px;
+    font-size: 0.8rem;
     border: 2px solid #5898d4;
     border-radius: 10px 10px 0 0;
     background: #dceafb;
@@ -1330,6 +1331,25 @@ def index():
     color: #1c3f60;
     font-weight: 700;
     border-bottom: 2px solid #ffffff;
+}
+
+/* Compact header: less vertical padding/height on the File/Edit/XSheet/XML
+   dropdown buttons and the About button, with a smaller font size to match. */
+header .q-btn {
+    min-height: 26px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    font-size: 0.8rem;
+}
+
+/* Compact dropdown menu items (Open, Save, Validate, ...). Quasar portals
+   QMenu popups to <body>, so this can't be scoped under `header` -- but
+   this app has no other q-menu-based popups, so a plain selector is safe. */
+.q-menu .q-item {
+    min-height: 30px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+    font-size: 0.85rem;
 }
 </style>
 <script>
@@ -1585,7 +1605,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         with ui.tab_panel(xml_tab):
             with ui.row().classes('gap-4 w-full flex-nowrap'):
                 with ui.column().style('flex:1; min-width:0'):
-                    ui.label('XML Editor').classes('text-lg font-medium')
+                    ui.label('XML Editor').classes('text-sm font-medium')
                     # editor is created here; use global for simplicity
                     global editor
                     # prefer built-in CodeMirror component if available for semantic highlighting
@@ -1666,7 +1686,7 @@ window.mlwSelectRange = function(elementId, from, to) {
 
                 global xml_tree
                 with ui.column().style('width:320px; flex-shrink:0'):
-                    ui.label('XML Hierarchy').classes('text-lg font-medium')
+                    ui.label('XML Hierarchy').classes('text-sm font-medium')
                     xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
 
             # Validation Results panel: sits below the Editor/Hierarchy row, collapsed
@@ -1676,7 +1696,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as validation_panel:
                 validation_results_container = ui.column().classes('w-full gap-1')
         with ui.tab_panel(xsheet_tab):
-            ui.label('Exposure Sheet').classes('text-lg font-medium')
+            ui.label('Exposure Sheet').classes('text-sm font-medium')
             # Each row is a frame number (Production/StartFrame..EndFrame,
             # widened to fit any <Frame> outside that range); each column is a
             # layer. Only frame numbers with an actual <Frame> element get their
