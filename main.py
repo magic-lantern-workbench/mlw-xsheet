@@ -202,19 +202,61 @@ def resolve_schema_for_xml(text: str):
     return None
 
 
-def show_schema_errors_dialog(errors):
-    """Show a scrollable dialog listing schema-validation errors."""
-    with ui.dialog() as dlg, ui.card().classes('p-4 w-[720px] max-w-full'):
-        ui.label(f'{len(errors)} schema validation error(s)').classes('text-lg font-medium')
-        with ui.scroll_area().classes('w-full h-80 border rounded'):
+def _validation_panel_container():
+    """The ui.column() inside the Validation Results expansion panel that gets
+    cleared and repopulated on each validation run. None before index() has
+    built the page."""
+    return globals().get('validation_results_container')
+
+
+def _reveal_validation_panel():
+    panel = globals().get('validation_panel')
+    if panel is not None:
+        panel.open()
+
+
+def clear_validation_panel():
+    """Empty the Validation Results panel and collapse it -- used when
+    closing a file, since any results shown no longer describe anything
+    that's still open in the editor."""
+    container = _validation_panel_container()
+    if container is not None:
+        container.clear()
+    panel = globals().get('validation_panel')
+    if panel is not None:
+        panel.close()
+
+
+def show_validation_message(message: str, ok: bool = True):
+    """Render a single-line validation outcome (success, or an error that
+    stopped validation before it could produce a per-element list) into the
+    Validation Results panel, and expand the panel."""
+    container = _validation_panel_container()
+    if container is None:
+        return
+    container.clear()
+    with container:
+        ui.label(message).classes('text-sm').style(f'color: {"green" if ok else "red"}')
+    _reveal_validation_panel()
+
+
+def show_validation_errors(errors, schema_name: str):
+    """Render a schema-validation error list into the Validation Results
+    panel, and expand the panel."""
+    container = _validation_panel_container()
+    if container is None:
+        return
+    container.clear()
+    with container:
+        ui.label(f'{len(errors)} schema validation error(s) against {schema_name}') \
+            .classes('font-medium').style('color: red')
+        with ui.scroll_area().classes('w-full h-64 border rounded'):
             for i, err in enumerate(errors, 1):
                 path = getattr(err, 'path', None) or ''
                 reason = getattr(err, 'reason', None) or str(err)
                 ui.label(f'{i}. {path}').classes('font-mono text-sm')
                 ui.label(f'   {reason}').classes('text-sm').style('color: red; white-space: pre-wrap')
-        with ui.row().classes('w-full justify-end mt-4'):
-            ui.button('Close', on_click=dlg.close).props('outline')
-    dlg.open()
+    _reveal_validation_panel()
 
 
 def choose_schema(then_validate: bool = True):
@@ -245,11 +287,13 @@ def clear_schema():
 
 
 def validate_against_schema():
-    """Validate the editor contents against an XSD schema and report results."""
+    """Validate the editor contents against an XSD schema and report results
+    in the footer status label, a toast, and the Validation Results panel."""
     text = _editor_text()
     if not text.strip():
         set_validation_status('Nothing to validate', ok=False)
         ui.notify('Nothing to validate', color='warning')
+        show_validation_message('Nothing to validate.', ok=False)
         return
     try:
         import xmlschema
@@ -257,6 +301,7 @@ def validate_against_schema():
         msg = 'xmlschema not installed — add "xmlschema" to requirements.txt and restart'
         set_validation_status(msg, ok=False)
         ui.notify(msg, color='negative')
+        show_validation_message(msg, ok=False)
         return
 
     schema_path = resolve_schema_for_xml(text)
@@ -274,17 +319,19 @@ def validate_against_schema():
         msg = f'Schema load/parse error: {exc}'
         set_validation_status(msg, ok=False)
         ui.notify(msg, color='negative')
+        show_validation_message(msg, ok=False)
         return
 
     if not errors:
         msg = f'Valid against {schema_path.name}'
         set_validation_status(msg, ok=True)
         ui.notify(msg, color='positive')
+        show_validation_message(msg, ok=True)
     else:
         msg = f'{len(errors)} error(s) against {schema_path.name}'
         set_validation_status(msg, ok=False)
         ui.notify(msg, color='negative')
-        show_schema_errors_dialog(errors)
+        show_validation_errors(errors, schema_path.name)
 
 
 def set_schema_label():
@@ -521,6 +568,7 @@ def close_file():
     current_file['saved_content'] = ''
     set_filename_label('No file')
     set_validation_status('')
+    clear_validation_panel()
     # suppress change handler when clearing editor
     global suppress_editor_change
     suppress_editor_change = True
@@ -1099,6 +1147,14 @@ window.mlwSelectRange = function(elementId, from, to) {
         with ui.column().style('width:320px; flex-shrink:0'):
             ui.label('Hierarchy').classes('text-lg font-medium')
             xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
+
+    # Validation Results panel: sits below the Editor/Hierarchy row, collapsed
+    # by default, and expands automatically when a validation run completes
+    # (see show_validation_message() / show_validation_errors() above).
+    global validation_panel, validation_results_container
+    with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as validation_panel:
+        validation_results_container = ui.column().classes('w-full gap-1')
+
     # build initial tree from current editor value
     try:
         rebuild_tree_from_current()
