@@ -654,6 +654,23 @@ def rebuild_tree_from_current():
     xml_tree = ui.tree(nodes=ui_items)
 
 
+def expand_hierarchy_root():
+    """Expand the Hierarchy tree to show the root's direct children (one
+    level deep), so opening a file doesn't leave the user staring at a
+    single collapsed root node. Called only from open_file() -- NOT from
+    rebuild_tree_from_current() itself, since that also runs on every
+    ordinary edit, and resetting the user's own expansion state on each
+    keystroke would be disruptive rather than helpful."""
+    tree = globals().get('xml_tree')
+    if tree is None:
+        return
+    root_id = next((tid for tid, parent in xml_parent_map.items() if parent is None), None)
+    if root_id is None:
+        return
+    tree.props['expanded'] = [root_id]
+    tree.update()
+
+
 def parse_exposure_sheet(text: str):
     """Parse `text` into an Exposure Sheet grid for the XSheet tab: layer
     ids (columns, ordered by zOrder) and one row per frame number spanning
@@ -838,6 +855,7 @@ def open_file(path: Path):
     # update xml tree for the opened file
     try:
         rebuild_tree_from_current()
+        expand_hierarchy_root()
     except Exception as exc:
         print('DEBUG: rebuild_tree_from_current failed:', exc)
         pass
