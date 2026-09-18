@@ -616,6 +616,7 @@ def rebuild_tree_from_current():
     character offset pointing at the wrong place in the actual document."""
     global xml_tree, xml_node_map, xml_parent_map, xml_path_to_id
     text = _editor_text()
+    rebuild_xsheet_from_current()  # keep the XSheet tab's grid in sync too
     items, xml_node_map, xml_parent_map, xml_path_to_id = parse_xml_to_tree(text)
     # tree structure changed, so any previously tracked selection is stale
     _last_synced_node['id'] = None
@@ -652,6 +653,153 @@ def rebuild_tree_from_current():
     # fallback: create a simple standalone tree (used only if caller requests it)
     xml_tree = ui.tree(nodes=ui_items)
 
+
+def parse_exposure_sheet(text: str):
+    """Parse `text` into an Exposure Sheet grid for the XSheet tab: layer
+    ids (columns, ordered by zOrder) and one row per frame number spanning
+    Production/StartFrame..EndFrame (widened to cover any <Frame number=...>
+    outside that range, if Production is missing or incomplete). Each row
+    also carries that frame's <Dialogue> (phoneme + spoken text),
+    <AudioRef> (track id(s) and their frame range), and <Notes> text under
+    the fixed 'Dialogue' / 'Audio' / 'Notes' keys.
+
+    Only frame numbers with an actual <Frame> element get their layers'
+    cel values (and Dialogue/Audio/Notes) filled in; every other frame
+    number is still a row, but empty -- so a hold between two sparse
+    <Frame> entries (e.g. one at frame 1 and the next at frame 24) shows as
+    blank boxes in between, matching a traditional exposure sheet's
+    convention of marking only where a new drawing (or cue) starts.
+
+    Returns (layer_ids, rows, message). message explains why the sheet is
+    empty when layer_ids/rows are (not an ExposureSheet, no Timeline, no
+    Frame entries, ...), or otherwise summarizes it (frame/layer counts)."""
+    import xml.etree.ElementTree as ET
+
+    def strip_ns(tag: str) -> str:
+        return tag.split('}', 1)[-1] if '}' in tag else tag
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        return None, None, f'Not well-formed XML: {exc}'
+
+    if strip_ns(root.tag) != 'ExposureSheet':
+        return None, None, 'Current document is not an XSheet ExposureSheet.'
+
+    timeline = next((c for c in root if strip_ns(c.tag) == 'Timeline'), None)
+    if timeline is None:
+        return None, None, 'No <Timeline> found in the current document.'
+
+    production = next((c for c in root if strip_ns(c.tag) == 'Production'), None)
+    start_frame = end_frame = None
+    if production is not None:
+        for field in production:
+            name = strip_ns(field.tag)
+            if name not in ('StartFrame', 'EndFrame'):
+                continue
+            try:
+                value = int((field.text or '').strip())
+            except ValueError:
+                continue
+            if name == 'StartFrame':
+                start_frame = value
+            else:
+                end_frame = value
+
+    frames = []
+    for frame_el in timeline:
+        if strip_ns(frame_el.tag) != 'Frame':
+            continue
+        try:
+            number = int(frame_el.get('number'))
+        except (TypeError, ValueError):
+            continue
+        cels: dict[str, str] = {}
+        zorders: dict[str, int] = {}
+        layers_el = next((c for c in frame_el if strip_ns(c.tag) == 'Layers'), None)
+        if layers_el is not None:
+            for layer_el in layers_el:
+                if strip_ns(layer_el.tag) != 'Layer':
+                    continue
+                layer_id = layer_el.get('id')
+                if not layer_id:
+                    continue
+                cels[layer_id] = layer_el.get('cel') or layer_el.get('sceneFile') or ''
+                try:
+                    zorders[layer_id] = int(layer_el.get('zOrder', '0'))
+                except ValueError:
+                    zorders[layer_id] = 0
+
+        dialogue_el = next((c for c in frame_el if strip_ns(c.tag) == 'Dialogue'), None)
+        dialogue_text = ''
+        if dialogue_el is not None:
+            phoneme = dialogue_el.get('phoneme') or ''
+            spoken = ' '.join((dialogue_el.text or '').split())
+            dialogue_text = f'{phoneme}: {spoken}' if phoneme and spoken else (phoneme or spoken)
+
+        audio_parts = []
+        for ref in frame_el:
+            if strip_ns(ref.tag) != 'AudioRef':
+                continue
+            track = ref.get('track') or ''
+            start, end = ref.get('startFrame'), ref.get('endFrame')
+            audio_parts.append(f'{track} [{start}-{end}]' if track and start and end else track)
+        audio_text = ', '.join(part for part in audio_parts if part)
+
+        notes_el = next((c for c in frame_el if strip_ns(c.tag) == 'Notes'), None)
+        notes_text = ' '.join((notes_el.text or '').split()) if notes_el is not None else ''
+
+        frames.append((number, cels, zorders, dialogue_text, audio_text, notes_text))
+
+    if not frames:
+        return [], [], 'No <Frame> entries found in the Timeline.'
+
+    zorder_by_layer: dict[str, int] = {}
+    for _, cels, zorders, _, _, _ in frames:
+        for layer_id in cels:
+            zorder_by_layer.setdefault(layer_id, zorders.get(layer_id, 0))
+    layer_ids = sorted(zorder_by_layer, key=lambda lid: zorder_by_layer[lid])
+
+    numbers = [n for n, _, _, _, _, _ in frames]
+    lo = min(start_frame, min(numbers)) if start_frame is not None else min(numbers)
+    hi = max(end_frame, max(numbers)) if end_frame is not None else max(numbers)
+
+    frames_by_number = {n: (cels, dialogue, audio, notes) for n, cels, _, dialogue, audio, notes in frames}
+    rows = []
+    for n in range(lo, hi + 1):
+        cels, dialogue, audio, notes = frames_by_number.get(n, ({}, '', '', ''))
+        row = {'Frame': n}
+        for layer_id in layer_ids:
+            row[layer_id] = cels.get(layer_id, '')
+        row['Dialogue'] = dialogue
+        row['Audio'] = audio
+        row['Notes'] = notes
+        rows.append(row)
+
+    return layer_ids, rows, f'{len(rows)} frame(s), {len(layer_ids)} layer(s).'
+
+
+def rebuild_xsheet_from_current():
+    """Rebuild the XSheet tab's Exposure Sheet grid from the editor's live
+    (possibly unsaved) text -- called from rebuild_tree_from_current() so
+    it always stays in step with the Hierarchy tree."""
+    grid = globals().get('xsheet_grid')
+    status = globals().get('xsheet_status_label')
+    if grid is None:
+        return
+    layer_ids, rows, message = parse_exposure_sheet(_editor_text())
+    if status is not None:
+        status.set_text(message)
+    column_defs = [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80}]
+    column_defs += [{'field': lid, 'headerName': lid, 'width': 110} for lid in (layer_ids or [])]
+    column_defs += [
+        {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
+        {'field': 'Audio', 'headerName': 'Audio', 'width': 160},
+        {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
+    ]
+    grid.options['columnDefs'] = column_defs
+    grid.options['rowData'] = rows or []
+    grid.update()
 
 
 def open_file(path: Path):
@@ -1108,6 +1256,16 @@ def index():
     background-color: #b45309;
     color: #fff;
 }
+
+/* Vertical rules between every Exposure Sheet column (header and body),
+   like a traditional exposure sheet's column-ruled grid -- ag-grid's
+   themes only draw row separators by default. Scoped to the XSheet tab's
+   grid (see the 'mlw-xsheet-grid' class) so it doesn't affect other
+   ag-grid instances (e.g. the file picker's). */
+.mlw-xsheet-grid .ag-cell,
+.mlw-xsheet-grid .ag-header-cell {
+    border-right: 1px solid var(--ag-border-color, #d0d0d0);
+}
 </style>
 <script>
 window.mlwFindEditorRoot = function() {
@@ -1296,98 +1454,122 @@ window.mlwSelectRange = function(elementId, from, to) {
             schema_label = ui.label('')
             set_schema_label()
 
-    with ui.row().classes('gap-4 w-full flex-nowrap'):
-        with ui.column().style('flex:1; min-width:0'):
-            ui.label('Editor').classes('text-lg font-medium')
-            # editor is created here; use global for simplicity
-            global editor
-            # prefer built-in CodeMirror component if available for semantic highlighting
-            editor = None
-            def on_editor_change(e):
-                # ignore programmatic updates
-                if globals().get('suppress_editor_change'):
-                    return
-                global undo_stack, redo_stack, last_editor_value
-                new_val = e.value
-                # push previous value onto undo stack
-                if last_editor_value != new_val:
-                    undo_stack.append(last_editor_value)
-                    # clear redo stack on new edit
-                    redo_stack.clear()
-                    last_editor_value = new_val
-                # mark document modified and update label
-                current_file['modified'] = (new_val != current_file.get('saved_content', ''))
-                set_filename_label()
+    with ui.tabs().classes('w-full') as main_tabs:
+        xml_tab = ui.tab('XML')
+        xsheet_tab = ui.tab('XSheet')
 
-            # wrapper to also rebuild XML tree on edits
-            def on_editor_change_with_tree(e):
-                try:
-                    on_editor_change(e)
-                finally:
-                    try:
-                        rebuild_tree_from_current()
-                    except Exception:
-                        pass
-            for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
-                if hasattr(ui, comp):
-                    editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
-                    break
-            # add Edit menu undo/redo after editor creation
-            def do_undo(_=None):
-                global undo_stack, redo_stack, last_editor_value, suppress_editor_change
-                if not undo_stack:
-                    ui.notify('Nothing to undo', color='info')
-                    return
-                prev = undo_stack.pop()
-                redo_stack.append(last_editor_value)
-                suppress_editor_change = True
-                editor.value = prev
-                suppress_editor_change = False
-                last_editor_value = prev
-                current_file['modified'] = (prev != current_file.get('saved_content', ''))
-                set_filename_label()
+    with ui.tab_panels(main_tabs, value=xml_tab).classes('w-full'):
+        with ui.tab_panel(xml_tab):
+            with ui.row().classes('gap-4 w-full flex-nowrap'):
+                with ui.column().style('flex:1; min-width:0'):
+                    ui.label('XML Editor').classes('text-lg font-medium')
+                    # editor is created here; use global for simplicity
+                    global editor
+                    # prefer built-in CodeMirror component if available for semantic highlighting
+                    editor = None
+                    def on_editor_change(e):
+                        # ignore programmatic updates
+                        if globals().get('suppress_editor_change'):
+                            return
+                        global undo_stack, redo_stack, last_editor_value
+                        new_val = e.value
+                        # push previous value onto undo stack
+                        if last_editor_value != new_val:
+                            undo_stack.append(last_editor_value)
+                            # clear redo stack on new edit
+                            redo_stack.clear()
+                            last_editor_value = new_val
+                        # mark document modified and update label
+                        current_file['modified'] = (new_val != current_file.get('saved_content', ''))
+                        set_filename_label()
 
-            def do_redo(_=None):
-                global undo_stack, redo_stack, last_editor_value, suppress_editor_change
-                if not redo_stack:
-                    ui.notify('Nothing to redo', color='info')
-                    return
-                nxt = redo_stack.pop()
-                undo_stack.append(last_editor_value)
-                suppress_editor_change = True
-                editor.value = nxt
-                suppress_editor_change = False
-                last_editor_value = nxt
-                current_file['modified'] = (nxt != current_file.get('saved_content', ''))
-                set_filename_label()
-            if editor is None:
-                # fallback to textarea
-                editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
-                ui.notify('CodeMirror component not found; using plain textarea', color='warning')
+                    # wrapper to also rebuild XML tree on edits
+                    def on_editor_change_with_tree(e):
+                        try:
+                            on_editor_change(e)
+                        finally:
+                            try:
+                                rebuild_tree_from_current()
+                            except Exception:
+                                pass
+                    for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
+                        if hasattr(ui, comp):
+                            editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
+                            break
+                    # add Edit menu undo/redo after editor creation
+                    def do_undo(_=None):
+                        global undo_stack, redo_stack, last_editor_value, suppress_editor_change
+                        if not undo_stack:
+                            ui.notify('Nothing to undo', color='info')
+                            return
+                        prev = undo_stack.pop()
+                        redo_stack.append(last_editor_value)
+                        suppress_editor_change = True
+                        editor.value = prev
+                        suppress_editor_change = False
+                        last_editor_value = prev
+                        current_file['modified'] = (prev != current_file.get('saved_content', ''))
+                        set_filename_label()
 
-        # create a right-side column for XML hierarchy as a sibling in the same row
-        # tree selection handler: highlight the line where the selected node
-        # begins, with the cursor placed at the start of that line
-        def on_tree_select(e):
-            nid = e.value if hasattr(e, 'value') else e
-            if not nid:
-                return
-            _last_synced_node['id'] = nid
-            if nid in xml_node_map:
-                start, _end, _line = xml_node_map.get(nid, (0, None, 0))
-                ui.run_javascript(f'window.mlwHighlightLine({editor.id}, {start});')
+                    def do_redo(_=None):
+                        global undo_stack, redo_stack, last_editor_value, suppress_editor_change
+                        if not redo_stack:
+                            ui.notify('Nothing to redo', color='info')
+                            return
+                        nxt = redo_stack.pop()
+                        undo_stack.append(last_editor_value)
+                        suppress_editor_change = True
+                        editor.value = nxt
+                        suppress_editor_change = False
+                        last_editor_value = nxt
+                        current_file['modified'] = (nxt != current_file.get('saved_content', ''))
+                        set_filename_label()
+                    if editor is None:
+                        # fallback to textarea
+                        editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
+                        ui.notify('CodeMirror component not found; using plain textarea', color='warning')
 
-        global xml_tree
-        with ui.column().style('width:320px; flex-shrink:0'):
-            ui.label('Hierarchy').classes('text-lg font-medium')
-            xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
+                # create a right-side column for XML hierarchy as a sibling in the same row
+                # tree selection handler: highlight the line where the selected node
+                # begins, with the cursor placed at the start of that line
+                def on_tree_select(e):
+                    nid = e.value if hasattr(e, 'value') else e
+                    if not nid:
+                        return
+                    _last_synced_node['id'] = nid
+                    if nid in xml_node_map:
+                        start, _end, _line = xml_node_map.get(nid, (0, None, 0))
+                        ui.run_javascript(f'window.mlwHighlightLine({editor.id}, {start});')
 
-    # Validation Results panel: sits below the Editor/Hierarchy row, collapsed
-    # by default, and expands automatically when a validation run completes
-    # (see show_validation_message() / show_validation_errors() above).
-    global validation_panel, validation_results_container
-    with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as validation_panel:
-        validation_results_container = ui.column().classes('w-full gap-1')
+                global xml_tree
+                with ui.column().style('width:320px; flex-shrink:0'):
+                    ui.label('XML Hierarchy').classes('text-lg font-medium')
+                    xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
+
+            # Validation Results panel: sits below the Editor/Hierarchy row, collapsed
+            # by default, and expands automatically when a validation run completes
+            # (see show_validation_message() / show_validation_errors() above).
+            global validation_panel, validation_results_container
+            with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as validation_panel:
+                validation_results_container = ui.column().classes('w-full gap-1')
+        with ui.tab_panel(xsheet_tab):
+            ui.label('Exposure Sheet').classes('text-lg font-medium')
+            # Each row is a frame number (Production/StartFrame..EndFrame,
+            # widened to fit any <Frame> outside that range); each column is a
+            # layer. Only frame numbers with an actual <Frame> element get their
+            # layers' cel values filled in -- see parse_exposure_sheet() -- so a
+            # hold between two sparse <Frame> entries (e.g. frame 1 and the next
+            # at frame 24) shows as blank boxes for frames 2-23.
+            global xsheet_status_label, xsheet_grid
+            xsheet_status_label = ui.label('').classes('text-sm text-gray-500')
+            xsheet_grid = ui.aggrid({
+                'columnDefs': [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80}],
+                'rowData': [],
+                'domLayout': 'normal',
+            }, auto_size_columns=False).classes('w-full mlw-xsheet-grid').style('height: 75vh')
+            # auto_size_columns=False: ui.aggrid defaults to stretching columns to
+            # fill the grid's full width, which would override the deliberately
+            # narrow per-column widths set above/in rebuild_xsheet_from_current().
 
     # build initial tree from current editor value
     try:
