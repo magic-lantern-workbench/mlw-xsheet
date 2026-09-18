@@ -1578,8 +1578,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             pass
 
     with ui.tabs(on_change=on_main_tab_change).classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
-        xml_tab = ui.tab('XML')
-        xsheet_tab = ui.tab('XSheet')
+        xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+1')
+        xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+2')
 
     with ui.tab_panels(main_tabs, value=xml_tab).classes('w-full'):
         with ui.tab_panel(xml_tab):
@@ -1706,12 +1706,31 @@ window.mlwSelectRange = function(elementId, from, to) {
 
     # Add keyboard shortcuts
     def handle_keyboard(e):
-        if e.key == 'z' and e.ctrl:
-            e.preventDefault()
+        # KeyEventArguments has no preventDefault() in the installed nicegui
+        # version (confirmed: it isn't in its dataclass at all), so there is
+        # no way to suppress a browser-reserved shortcut from here -- every
+        # combo below must be one browsers don't already claim for
+        # themselves. Ctrl+O/Ctrl+S were dropped earlier for exactly this
+        # reason. Ctrl+1-9 is Chrome/Edge's jump-to-tab-N; Alt+1-9 turns out
+        # to be Firefox-on-Linux's equivalent (reported: it was switching the
+        # browser's own tab, not this page's). Neither single modifier is
+        # safe on its own, so tab switching uses BOTH together
+        # (Ctrl+Alt+1/2), a chord neither browser's tab-switching scheme
+        # claims.
+        #
+        # This also used e.ctrl (doesn't exist; modifiers live under
+        # e.modifiers.ctrl/.alt/.../) and never checked e.action.keydown, so
+        # it fired on both keydown and keyup -- both fixed below.
+        if not e.action.keydown:
+            return
+        if e.key == 'z' and e.modifiers.ctrl:
             do_undo()
-        elif e.key == 'y' and e.ctrl:
-            e.preventDefault()
+        elif e.key == 'y' and e.modifiers.ctrl:
             do_redo()
+        elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
+            main_tabs.value = 'XML'
+        elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
+            main_tabs.value = 'XSheet'
     ui.keyboard(on_key=handle_keyboard)
 
 

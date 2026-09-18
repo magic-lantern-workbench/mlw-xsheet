@@ -131,9 +131,15 @@ Opened from **File > Preferences…**; controls the **Format** command:
 
 - `Ctrl+Z` — Undo
 - `Ctrl+Y` — Redo
+- `Ctrl+Alt+1` — Switch to the XML tab
+- `Ctrl+Alt+2` — Switch to the XSheet tab
 
 (`Ctrl+O` and `Ctrl+S` are intentionally not bound — browsers reserve those shortcuts for
-their own Open/Save dialogs and won't let a web page override them. Use the File menu instead.)
+their own Open/Save dialogs and won't let a web page override them. Use the File menu instead.
+For the same reason, tab switching uses `Ctrl+Alt+1`/`Ctrl+Alt+2` rather than a single
+modifier: `Ctrl+1`/`Ctrl+2` is Chrome/Edge's jump-to-browser-tab-N, and `Alt+1`/`Alt+2` is
+Firefox-on-Linux's equivalent — neither single-modifier scheme is safe across browsers, but
+the combined chord isn't claimed by either.)
 
 ### About
 
