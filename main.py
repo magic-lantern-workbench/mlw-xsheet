@@ -23,6 +23,12 @@ format_prefs = {'indent_size': 4, 'use_tabs': False}
 # on_main_tab_change()).
 tab_view_state = {'xml_cursor_offset': None, 'xsheet_top_row': None}
 
+# Frame-number ranges of empty XSheet rows the user has collapsed into a
+# single summary row (see _compute_xsheet_display_rows()). Keyed by
+# (start_frame, end_frame) so the collapse survives a rebuild as long as the
+# underlying empty run doesn't change shape.
+xsheet_collapsed_ranges: set[tuple[int, int]] = set()
+
 # Suppress editor change handler during programmatic updates
 suppress_editor_change = False
 # Undo/redo stacks and last value
@@ -802,6 +808,63 @@ def parse_exposure_sheet(text: str):
     return layer_ids, rows, f'{len(rows)} frame(s), {len(layer_ids)} layer(s).'
 
 
+def _row_is_empty(row: dict, layer_ids: list[str]) -> bool:
+    if any(row.get(lid) for lid in layer_ids):
+        return False
+    return not (row.get('Dialogue') or row.get('Audio') or row.get('Notes'))
+
+
+def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list[dict]:
+    """Expand `rows` into what the grid should actually display: runs of two
+    or more consecutive completely-empty rows get a '_toggle' marker on
+    their first row (an up/down triangle) so the user can collapse them into
+    a single summary row, or expand a previously-collapsed run back out.
+    Collapse state is tracked globally in `xsheet_collapsed_ranges`, keyed
+    by the run's (start_frame, end_frame)."""
+    display: list[dict] = []
+    i, n = 0, len(rows)
+    while i < n:
+        if not _row_is_empty(rows[i], layer_ids):
+            row = dict(rows[i])
+            row['_toggle'] = ''
+            display.append(row)
+            i += 1
+            continue
+        j = i
+        while j < n and _row_is_empty(rows[j], layer_ids):
+            j += 1
+        run = rows[i:j]
+        if len(run) < 2:
+            row = dict(run[0])
+            row['_toggle'] = ''
+            display.append(row)
+        else:
+            start_frame, end_frame = run[0]['Frame'], run[-1]['Frame']
+            key = (start_frame, end_frame)
+            if key in xsheet_collapsed_ranges:
+                summary = {lid: '' for lid in layer_ids}
+                summary['Frame'] = f'{start_frame}–{end_frame}'
+                summary['Dialogue'] = f'({len(run)} empty frames)'
+                summary['Audio'] = ''
+                summary['Notes'] = ''
+                summary['_toggle'] = '▶'  # ▶ collapsed, click to expand
+                summary['_range_start'] = start_frame
+                summary['_range_end'] = end_frame
+                display.append(summary)
+            else:
+                first = dict(run[0])
+                first['_toggle'] = '▼'  # ▼ expanded, click to collapse
+                first['_range_start'] = start_frame
+                first['_range_end'] = end_frame
+                display.append(first)
+                for row in run[1:]:
+                    row = dict(row)
+                    row['_toggle'] = ''
+                    display.append(row)
+        i = j
+    return display
+
+
 def rebuild_xsheet_from_current():
     """Rebuild the XSheet tab's Exposure Sheet grid from the editor's live
     (possibly unsaved) text -- called from rebuild_tree_from_current() so
@@ -813,16 +876,44 @@ def rebuild_xsheet_from_current():
     layer_ids, rows, message = parse_exposure_sheet(_editor_text())
     if status is not None:
         status.set_text(message)
-    column_defs = [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80}]
+    column_defs = [
+        # cellDataType pinned to 'text': a collapsed run's summary row puts a
+        # "start-end" range string here, which ag-grid's auto-inferred
+        # numeric type (from the surrounding integer frame numbers) would
+        # otherwise render as "Invalid Number".
+        {'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80, 'cellDataType': 'text'},
+    ]
     column_defs += [{'field': lid, 'headerName': lid, 'width': 110} for lid in (layer_ids or [])]
     column_defs += [
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160},
         {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
+        {'field': '_toggle', 'headerName': '', 'pinned': 'right', 'width': 30,
+         'sortable': False, 'cellStyle': {'cursor': 'pointer', 'textAlign': 'center'}},
     ]
     grid.options['columnDefs'] = column_defs
-    grid.options['rowData'] = rows or []
+    grid.options['rowData'] = _compute_xsheet_display_rows(rows, layer_ids or []) if rows else []
     grid.update()
+
+
+def handle_xsheet_toggle_click(e):
+    """Handles clicks anywhere in the XSheet grid; only acts on the
+    '_toggle' column of a row that marks a collapsible/collapsed empty run
+    (see _compute_xsheet_display_rows()), flipping that run's collapse
+    state and rebuilding the grid."""
+    args = e.args or {}
+    if args.get('colId') != '_toggle':
+        return
+    data = args.get('data') or {}
+    start_frame, end_frame = data.get('_range_start'), data.get('_range_end')
+    if start_frame is None or end_frame is None:
+        return
+    key = (start_frame, end_frame)
+    if key in xsheet_collapsed_ranges:
+        xsheet_collapsed_ranges.discard(key)
+    else:
+        xsheet_collapsed_ranges.add(key)
+    rebuild_xsheet_from_current()
 
 
 def open_file(path: Path):
@@ -835,6 +926,7 @@ def open_file(path: Path):
     current_file['modified'] = False
     current_file['saved_content'] = text
     set_filename_label(path.name)
+    xsheet_collapsed_ranges.clear()
     # initialize undo/redo stacks
     global undo_stack, redo_stack, last_editor_value, suppress_editor_change
     undo_stack.clear()
@@ -875,6 +967,7 @@ def close_file():
     set_filename_label('No file')
     set_validation_status('')
     clear_validation_panel()
+    xsheet_collapsed_ranges.clear()
     # suppress change handler when clearing editor
     global suppress_editor_change
     suppress_editor_change = True
@@ -1717,6 +1810,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             # auto_size_columns=False: ui.aggrid defaults to stretching columns to
             # fill the grid's full width, which would override the deliberately
             # narrow per-column widths set above/in rebuild_xsheet_from_current().
+            xsheet_grid.on('cellClicked', handle_xsheet_toggle_click)
 
     # build initial tree from current editor value
     try:
