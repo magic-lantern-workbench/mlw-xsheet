@@ -888,8 +888,8 @@ def rebuild_xsheet_from_current():
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160},
         {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
-        {'field': '_toggle', 'headerName': '', 'pinned': 'right', 'width': 30,
-         'sortable': False, 'cellStyle': {'cursor': 'pointer', 'textAlign': 'center'}},
+        {'field': '_toggle', 'headerName': '', 'width': 30, 'sortable': False,
+         'cellStyle': {'cursor': 'pointer', 'textAlign': 'center', 'border': 'none'}},
     ]
     grid.options['columnDefs'] = column_defs
     grid.options['rowData'] = _compute_xsheet_display_rows(rows, layer_ids or []) if rows else []
@@ -1382,6 +1382,14 @@ def index():
 .mlw-xsheet-grid .ag-cell,
 .mlw-xsheet-grid .ag-header-cell {
     border-right: 1px solid var(--ag-border-color, #d0d0d0);
+}
+
+/* The collapse/expand toggle column is a UI control, not sheet data -- no
+   column rule or header border next to it. (Its cells also get
+   cellStyle: {border: 'none'} in rebuild_xsheet_from_current() to drop
+   the row separator line too.) */
+.mlw-xsheet-grid .ag-header-cell[col-id="_toggle"] {
+    border-right: none;
 }
 
 /* Classic "manila folder" tab look for the XML/XSheet selector: bordered,
