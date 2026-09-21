@@ -509,15 +509,14 @@ def _describe_element_label(tag: str, elem) -> str:
     <Timeline>, <Layers>) -- unchanged from before."""
     parts = []
     if elem.attrib:
+        # Use just the first attribute, in document order (elem.attrib
+        # preserves the order attributes appear in the source XML) -- e.g.
+        # an <Asset id="..." name="..." category="..."> shows only id="...".
         # Attribute keys may carry a namespace URI in Clark notation
         # ("{uri}local") -- strip it, same as the element tag itself.
-        attrs = {(k.split('}', 1)[-1] if '}' in k else k): v for k, v in elem.attrib.items()}
-        # Prefer short, identifying values (id/name/number/frame/type and the
-        # like are usually short); long ones (URLs, schema-location lists,
-        # descriptions) rarely help tell same-tag siblings apart and would
-        # otherwise crowd out the useful ones once truncated below.
-        short_attrs = {k: v for k, v in attrs.items() if len(v) <= 30}
-        parts.append(' '.join(f'{k}="{v}"' for k, v in (short_attrs or attrs).items()))
+        first_key, first_value = next(iter(elem.attrib.items()))
+        first_key = first_key.split('}', 1)[-1] if '}' in first_key else first_key
+        parts.append(f'{first_key}="{first_value}"')
     text = ' '.join((elem.text or '').split())  # collapse embedded newlines/indentation
     if text and not list(elem):
         parts.append(text)
