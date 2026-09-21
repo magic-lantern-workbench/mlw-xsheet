@@ -813,6 +813,24 @@ def _row_is_empty(row: dict, layer_ids: list[str]) -> bool:
     return not (row.get('Dialogue') or row.get('Audio') or row.get('Notes'))
 
 
+def _assign_xsheet_zebra_groups(rows: list[dict], layer_ids: list[str]) -> None:
+    """Tags each row (in place, via a '_zebra' key: 0 or 1) with a group
+    that alternates every time the Layer columns' values actually change --
+    a new group starts at each frame with a distinct set of layer/cel
+    values, and every hold row after it (blank layer columns, since only
+    frames with an actual <Frame> element carry values) belongs to that
+    same group. Two back-to-back keyframes with identical layer values
+    don't start a new group, matching "unique frame layer values"."""
+    group = 0
+    last_active_values = None
+    for row in rows:
+        values = tuple(row.get(lid, '') for lid in layer_ids)
+        if any(values) and values != last_active_values:
+            group += 1
+            last_active_values = values
+        row['_zebra'] = group % 2
+
+
 def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list[dict]:
     """Expand `rows` into what the grid should actually display: runs of two
     or more consecutive completely-empty rows get a '_toggle' marker on
@@ -849,6 +867,7 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
                 summary['_toggle'] = '▶'  # ▶ collapsed, click to expand
                 summary['_range_start'] = start_frame
                 summary['_range_end'] = end_frame
+                summary['_zebra'] = run[0].get('_zebra', 0)
                 display.append(summary)
             else:
                 first = dict(run[0])
@@ -875,6 +894,12 @@ def rebuild_xsheet_from_current():
     layer_ids, rows, message = parse_exposure_sheet(_editor_text())
     if status is not None:
         status.set_text(message)
+    if rows:
+        _assign_xsheet_zebra_groups(rows, layer_ids or [])
+    grid.options[':getRowClass'] = (
+        "(params) => params.data && params.data._zebra "
+        "? 'mlw-xsheet-row-b' : 'mlw-xsheet-row-a'"
+    )
     column_defs = [
         # cellDataType pinned to 'text': a collapsed run's summary row puts a
         # "start-end" range string here, which ag-grid's auto-inferred
@@ -1389,6 +1414,22 @@ def index():
    the row separator line too.) */
 .mlw-xsheet-grid .ag-header-cell[col-id="_toggle"] {
     border-right: none;
+}
+
+/* Alternating hold-group shading: every row between one keyframe's Layer
+   values and the next -- including the blank hold rows in between -- gets
+   the same light tint, and each new group (a frame whose layer values
+   actually differ from the previous one) flips to the other tint. Applied
+   via getRowClass in rebuild_xsheet_from_current(), which computes the
+   group per-row in _assign_xsheet_zebra_groups(). Light blue/peach are a
+   soft complementary pair so groups read as distinct without being loud. */
+.mlw-xsheet-grid .ag-row.mlw-xsheet-row-a,
+.mlw-xsheet-grid .ag-row.mlw-xsheet-row-a .ag-cell {
+    background-color: #eaf3fc;
+}
+.mlw-xsheet-grid .ag-row.mlw-xsheet-row-b,
+.mlw-xsheet-grid .ag-row.mlw-xsheet-row-b .ag-cell {
+    background-color: #fdf2e6;
 }
 
 /* Classic "manila folder" tab look for the XML/XSheet selector: bordered,
