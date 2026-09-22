@@ -222,10 +222,20 @@ def _validation_panel_container():
     return globals().get('validation_results_container')
 
 
-def _reveal_validation_panel():
+def _reveal_validation_panel(scroll_into_view: bool = False):
+    """Expand the Validation Results panel. On failure (scroll_into_view),
+    also scroll it into view -- it sits below the Editor/Hierarchy row, so
+    on a tall document it's off the bottom of the screen otherwise. Left
+    alone on success so a passing validation doesn't yank the view away
+    from wherever the user was working."""
     panel = globals().get('validation_panel')
     if panel is not None:
         panel.open()
+        if scroll_into_view:
+            ui.run_javascript(
+                f'getHtmlElement({panel.id})'
+                '?.scrollIntoView({behavior: "smooth", block: "start"});'
+            )
 
 
 def clear_validation_panel():
@@ -250,7 +260,7 @@ def show_validation_message(message: str, ok: bool = True):
     container.clear()
     with container:
         ui.label(message).classes('text-sm').style(f'color: {"green" if ok else "red"}')
-    _reveal_validation_panel()
+    _reveal_validation_panel(scroll_into_view=not ok)
 
 
 def _children_of(parent_tid: str) -> list[str]:
@@ -327,7 +337,7 @@ def show_validation_errors(errors, schema_name: str):
                         .on('click', lambda _, p=path, ci=child_index: goto_validation_error(p, ci)):
                     ui.label(f'{i}. {path}').classes('font-mono text-sm')
                     ui.label(f'   {reason}').classes('text-sm').style('color: red; white-space: pre-wrap')
-    _reveal_validation_panel()
+    _reveal_validation_panel(scroll_into_view=True)
 
 
 def choose_schema(then_validate: bool = True):
