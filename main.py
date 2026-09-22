@@ -480,7 +480,7 @@ def show_about_dialog():
     with ui.dialog() as about_dialog, ui.card().classes('p-4'):
         ui.label('Magic Lantern XSheet Viewer').classes('text-lg font-medium')
         ui.label('Author: Wizzer Works')
-        ui.label('Version: 0.1')
+        ui.label('Version: 1.0.0')
         with ui.row().classes('items-center gap-1'):
             ui.label('Please visit')
             ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
@@ -1224,11 +1224,13 @@ def show_find_dialog():
             regex_cb = ui.checkbox('Regex')
         status_label = ui.label('')
         find_input.on('keydown.enter', lambda _: do_find(1))
-        with ui.row().classes('w-full justify-end gap-2 mt-2'):
-            ui.button('Find Previous', on_click=lambda _: do_find(-1)).props('outline')
+        with ui.row().classes('w-full gap-2 mt-2'):
             ui.button('Find Next', on_click=lambda _: do_find(1)).props('outline')
-            ui.button('Replace', on_click=lambda _: do_replace()).props('outline')
-            ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline')
+            ui.button('Find Previous', on_click=lambda _: do_find(-1)).props('outline')
+        with ui.row().classes('w-full items-center justify-between gap-2'):
+            with ui.row().classes('gap-2'):
+                ui.button('Replace', on_click=lambda _: do_replace()).props('outline')
+                ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline')
             ui.button('Close', on_click=lambda _: do_close())
     dlg.open()
 
