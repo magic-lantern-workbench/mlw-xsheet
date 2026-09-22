@@ -967,8 +967,12 @@ def rebuild_xsheet_from_current():
         # cellDataType pinned to 'text': a collapsed run's summary row puts a
         # "start-end" range string here, which ag-grid's auto-inferred
         # numeric type (from the surrounding integer frame numbers) would
-        # otherwise render as "Invalid Number".
-        {'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80, 'cellDataType': 'text'},
+        # otherwise render as "Invalid Number". lockPosition/suppressMovable
+        # keep Frame from being drag-reordered away from being the first
+        # column -- it's the sheet's anchor, so every other column's
+        # position is read relative to it.
+        {'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80, 'cellDataType': 'text',
+         'lockPosition': 'left', 'suppressMovable': True},
     ]
     column_defs += [{'field': lid, 'headerName': lid, 'width': 110} for lid in (layer_ids or [])]
     column_defs += [
@@ -1970,7 +1974,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             global xsheet_status_label, xsheet_grid
             xsheet_status_label = ui.label('').classes('text-sm text-gray-500')
             xsheet_grid = ui.aggrid({
-                'columnDefs': [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80}],
+                'columnDefs': [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80,
+                                'lockPosition': 'left', 'suppressMovable': True}],
                 'rowData': [],
                 'domLayout': 'normal',
                 # Rows must stay in frame order -- an exposure sheet isn't
