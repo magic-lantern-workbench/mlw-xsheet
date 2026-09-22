@@ -938,7 +938,7 @@ def rebuild_xsheet_from_current():
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
-        {'field': '_toggle', 'headerName': '', 'width': 30, 'sortable': False,
+        {'field': '_toggle', 'headerName': '', 'width': 50, 'sortable': False,
          'cellStyle': {'cursor': 'pointer', 'textAlign': 'center', 'border': 'none'}},
     ]
     grid.options['columnDefs'] = column_defs
