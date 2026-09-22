@@ -698,6 +698,14 @@ def parse_exposure_sheet(text: str):
     blank boxes in between, matching a traditional exposure sheet's
     convention of marking only where a new drawing (or cue) starts.
 
+    An <AudioRef startFrame="1" endFrame="12"> only appears once in the XML
+    (nested under whichever <Frame> its cue starts on), but the cue is
+    audible for every frame in that range -- so every row from startFrame
+    to endFrame gets an Audio entry: the full "track [start-end]" label on
+    the startFrame row, and a plain continuation marker ('X') on every row
+    after it through endFrame, even ones with no <Frame> element of their
+    own.
+
     Returns (layer_ids, rows, message). message explains why the sheet is
     empty when layer_ids/rows are (not an ExposureSheet, no Timeline, no
     Frame entries, ...), or otherwise summarizes it (frame/layer counts)."""
@@ -735,6 +743,10 @@ def parse_exposure_sheet(text: str):
                 end_frame = value
 
     frames = []
+    # (start_frame, end_frame, track) for every <AudioRef> found anywhere in
+    # the Timeline, regardless of which <Frame> it's nested under -- a cue's
+    # XML location only marks where it starts, not every frame it covers.
+    audio_refs: list[tuple[int, int, str]] = []
     for frame_el in timeline:
         if strip_ns(frame_el.tag) != 'Frame':
             continue
@@ -765,42 +777,56 @@ def parse_exposure_sheet(text: str):
             spoken = ' '.join((dialogue_el.text or '').split())
             dialogue_text = f'{phoneme}: {spoken}' if phoneme and spoken else (phoneme or spoken)
 
-        audio_parts = []
         for ref in frame_el:
             if strip_ns(ref.tag) != 'AudioRef':
                 continue
             track = ref.get('track') or ''
-            start, end = ref.get('startFrame'), ref.get('endFrame')
-            audio_parts.append(f'{track} [{start}-{end}]' if track and start and end else track)
-        audio_text = ', '.join(part for part in audio_parts if part)
+            try:
+                ref_start, ref_end = int(ref.get('startFrame')), int(ref.get('endFrame'))
+            except (TypeError, ValueError):
+                continue
+            audio_refs.append((ref_start, ref_end, track))
 
         notes_el = next((c for c in frame_el if strip_ns(c.tag) == 'Notes'), None)
         notes_text = ' '.join((notes_el.text or '').split()) if notes_el is not None else ''
 
-        frames.append((number, cels, zorders, dialogue_text, audio_text, notes_text))
+        frames.append((number, cels, zorders, dialogue_text, notes_text))
 
     if not frames:
         return [], [], 'No <Frame> entries found in the Timeline.'
 
     zorder_by_layer: dict[str, int] = {}
-    for _, cels, zorders, _, _, _ in frames:
+    for _, cels, zorders, _, _ in frames:
         for layer_id in cels:
             zorder_by_layer.setdefault(layer_id, zorders.get(layer_id, 0))
     layer_ids = sorted(zorder_by_layer, key=lambda lid: zorder_by_layer[lid])
 
-    numbers = [n for n, _, _, _, _, _ in frames]
+    numbers = [n for n, _, _, _, _ in frames]
     lo = min(start_frame, min(numbers)) if start_frame is not None else min(numbers)
     hi = max(end_frame, max(numbers)) if end_frame is not None else max(numbers)
+    if audio_refs:
+        lo = min(lo, min(ref_start for ref_start, _, _ in audio_refs))
+        hi = max(hi, max(ref_end for _, ref_end, _ in audio_refs))
 
-    frames_by_number = {n: (cels, dialogue, audio, notes) for n, cels, _, dialogue, audio, notes in frames}
+    def audio_text_for_frame(n: int) -> str:
+        parts = []
+        for ref_start, ref_end, track in audio_refs:
+            if ref_start <= n <= ref_end:
+                if n == ref_start:
+                    parts.append(f'{track} [{ref_start}-{ref_end}]' if track else f'[{ref_start}-{ref_end}]')
+                else:
+                    parts.append('X')  # continuation marker: cue is still playing
+        return ', '.join(parts)
+
+    frames_by_number = {n: (cels, dialogue, notes) for n, cels, _, dialogue, notes in frames}
     rows = []
     for n in range(lo, hi + 1):
-        cels, dialogue, audio, notes = frames_by_number.get(n, ({}, '', '', ''))
+        cels, dialogue, notes = frames_by_number.get(n, ({}, '', ''))
         row = {'Frame': n}
         for layer_id in layer_ids:
             row[layer_id] = cels.get(layer_id, '')
         row['Dialogue'] = dialogue
-        row['Audio'] = audio
+        row['Audio'] = audio_text_for_frame(n)
         row['Notes'] = notes
         rows.append(row)
 
@@ -910,7 +936,7 @@ def rebuild_xsheet_from_current():
     column_defs += [{'field': lid, 'headerName': lid, 'width': 110} for lid in (layer_ids or [])]
     column_defs += [
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
-        {'field': 'Audio', 'headerName': 'Audio', 'width': 160},
+        {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
         {'field': '_toggle', 'headerName': '', 'width': 30, 'sortable': False,
          'cellStyle': {'cursor': 'pointer', 'textAlign': 'center', 'border': 'none'}},
