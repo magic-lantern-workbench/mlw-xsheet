@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<VersionInfo xmlns="http://schemas.animation.org/xsheet/versioning"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://schemas.animation.org/xsheet/versioning xsheet-versioning.xsd">
+
+    <Major>1</Major>
+    <Minor>2</Minor>
+    <Revision>5</Revision>
+
+</VersionInfo>

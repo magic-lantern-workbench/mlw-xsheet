@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/xdts.schema.json",
+  "title": "XDTS Timesheet",
+  "description": "Schema for XDTS animation timesheet JSON files",
+  "type": "object",
+  "properties": {
+    "scene": {
+      "type": "string",
+      "description": "Scene identifier (e.g., SC001)"
+    },
+    "cut": {
+      "type": "string",
+      "description": "Cut identifier (e.g., CUT01)"
+    },
+    "frameRate": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Frames per second (FPS)"
+    },
+    "layers": {
+      "type": "array",
+      "description": "List of animation layers",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Layer name (e.g., A, B, BG)"
+          },
+          "frames": {
+            "type": "array",
+            "description": "Frame exposure data for this layer",
+            "items": {
+              "type": "object",
+              "properties": {
+                "frame": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Frame number (1-based)"
+                },
+                "cell": {
+                  "type": "string",
+                  "description": "Cell name (e.g., A1, B3)"
+                },
+                "exposure": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Number of frames this cell is displayed"
+                }
+              },
+              "required": ["frame", "cell", "exposure"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["name", "frames"],
+        "additionalProperties": false
+      }
+    },
+    "marks": {
+      "type": "array",
+      "description": "Timing marks or notes",
+      "items": {
+        "type": "object",
+        "properties": {
+          "frame": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Frame number where the mark is placed"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of mark (e.g., action, camera, sound)"
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional note or description"
+          }
+        },
+        "required": ["frame", "type"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["scene", "cut", "frameRate", "layers"],
+  "additionalProperties": false
+}

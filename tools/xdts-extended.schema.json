@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/xdts_extended.schema.json",
+  "title": "XDTS Timesheet (Extended)",
+  "description": "Extended schema for XDTS animation timesheet JSON files with camera, audio, and background layers",
+  "type": "object",
+  "properties": {
+    "scene": {
+      "type": "string",
+      "description": "Scene identifier (e.g., SC001)"
+    },
+    "cut": {
+      "type": "string",
+      "description": "Cut identifier (e.g., CUT01)"
+    },
+    "frameRate": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Frames per second (FPS)"
+    },
+    "layers": {
+      "type": "array",
+      "description": "List of animation layers",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Layer name (e.g., A, B, BG)"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["character", "background", "effects"],
+            "description": "Layer type"
+          },
+          "frames": {
+            "type": "array",
+            "description": "Frame exposure data for this layer",
+            "items": {
+              "type": "object",
+              "properties": {
+                "frame": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Frame number (1-based)"
+                },
+                "cell": {
+                  "type": "string",
+                  "description": "Cell name (e.g., A1, B3)"
+                },
+                "exposure": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Number of frames this cell is displayed"
+                }
+              },
+              "required": ["frame", "cell", "exposure"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["name", "type", "frames"],
+        "additionalProperties": false
+      }
+    },
+    "marks": {
+      "type": "array",
+      "description": "Timing marks or notes",
+      "items": {
+        "type": "object",
+        "properties": {
+          "frame": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Frame number where the mark is placed"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of mark (e.g., action, camera, sound)"
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional note or description"
+          }
+        },
+        "required": ["frame", "type"],
+        "additionalProperties": false
+      }
+    },
+    "camera": {
+      "type": "array",
+      "description": "Camera instructions over time",
+      "items": {
+        "type": "object",
+        "properties": {
+          "frame": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Frame number where camera change starts"
+          },
+          "position": {
+            "type": "object",
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "z": { "type": "number" }
+            },
+            "required": ["x", "y"],
+            "additionalProperties": false
+          },
+          "zoom": {
+            "type": "number",
+            "description": "Zoom factor (1.0 = no zoom)"
+          },
+          "rotation": {
+            "type": "number",
+            "description": "Rotation in degrees"
+          },
+          "tilt": {
+            "type": "number",
+            "description": "Tilt angle in degrees"
+          }
+        },
+        "required": ["frame"],
+        "additionalProperties": false
+      }
+    },
+    "audio": {
+      "type": "array",
+      "description": "Audio cues for the scene",
+      "items": {
+        "type": "object",
+        "properties": {
+          "startFrame": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Frame where audio starts"
+          },
+          "durationFrames": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Duration of audio in frames"
+          },
+          "file": {
+            "type": "string",
+            "description": "Path or filename of the audio file"
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional description of the audio cue"
+          }
+        },
+        "required": ["startFrame", "durationFrames", "file"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["scene", "cut", "frameRate", "layers"],
+  "additionalProperties": false
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<OTIO xmlns="http://schemas.animation.org/xsheet/otio"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://schemas.animation.org/xsheet/otio xsheet-otio.xsd">
+
+    <TimelineRef>Episode01_Master.otio</TimelineRef>
+
+    <TrackMap xsheetLayer="SHOT010_005" otioTrack="VideoTrack01"/>
+
+</OTIO>

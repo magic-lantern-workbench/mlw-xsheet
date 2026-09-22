@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!-- Holds the camera from frames 1-24 -->
+<!-- Pans right from frames 25-72 -->
+<!-- Zooms in from frames 73-96 -->
+<!-- Includes human readable camera moves and machine readable keyframes -->
+
+<Camera xmlns="http://schemas.animation.org/xsheet/camera"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://schemas.animation.org/xsheet/camera xsheet-camera.xsd"
+        cameraId="CAM001"
+        name="MainCamera"
+        projection="Orthographic">
+
+    <!-- Human Readable Instructions -->
+
+    <CameraMove
+        type="HOLD"
+        startFrame="1"
+        endFrame="24">
+
+        <Description>
+            Hold opening composition.
+        </Description>
+
+    </CameraMove>
+
+    <CameraMove
+        type="PAN_RIGHT"
+        startFrame="25"
+        endFrame="72">
+
+        <Description>
+            Pan right to reveal approaching vehicle.
+        </Description>
+
+    </CameraMove>
+
+    <CameraMove
+        type="ZOOM_IN"
+        startFrame="73"
+        endFrame="96">
+
+        <Description>
+            Push in to hero reaction.
+        </Description>
+
+    </CameraMove>
+
+    <!-- Machine Readable Camera Animation -->
+
+    <Keyframe
+        frame="1"
+        x="0"
+        y="0"
+        z="0"
+        zoom="1.0"
+        focalLength="35"
+        interpolation="Step"
+        note="Hold Begins"/>
+
+    <Keyframe
+        frame="24"
+        x="0"
+        y="0"
+        z="0"
+        zoom="1.0"
+        focalLength="35"
+        interpolation="Step"
+        note="Hold Ends"/>
+
+    <Keyframe
+        frame="25"
+        x="0"
+        y="0"
+        z="0"
+        zoom="1.0"
+        focalLength="35"
+        interpolation="Bezier"
+        note="Pan Starts"/>
+
+    <Keyframe
+        frame="72"
+        x="1200"
+        y="0"
+        z="0"
+        zoom="1.0"
+        focalLength="35"
+        interpolation="Bezier"
+        note="Pan Complete"/>
+
+    <Keyframe
+        frame="73"
+        x="1200"
+        y="0"
+        z="0"
+        zoom="1.0"
+        focalLength="35"
+        interpolation="Bezier"
+        note="Zoom Starts"/>
+
+    <Keyframe
+        frame="96"
+        x="1200"
+        y="0"
+        z="0"
+        zoom="1.8"
+        focalLength="70"
+        interpolation="Bezier"
+        note="Close-up Established"/>
+
+</Camera>
