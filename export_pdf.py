@@ -1,7 +1,7 @@
 """Render an XML/XSD document as a PDF, via a small per-schema template
 mechanism.
 
-Used by main.py's XSheet > Export Report menu item (see export_to_pdf()
+Used by main.py's XSheet > Generate Report menu item (see export_to_pdf()
 there), but kept independent of NiceGUI/the editor so it can be tested or
 reused on its own -- it just takes text in and returns PDF bytes out.
 generate_xsheet_pdf() below is the counterpart used by XSheet > Export
@@ -11,11 +11,11 @@ the source document's element outline.
 generate_pdf() parses the text and tries each registered template's
 `matches(root)` in order, rendering with the first one that accepts the
 document. Only one template is registered so far, for the XSheet schema's
-<ExposureSheet> documents (see _render_xsheet_template): a clickable Table
-of Contents, then the Production fields up front, then every other
-top-level element as its own titled section documenting its tag, attributes
-and text as a nested outline, then the original source as a raw-XML
-appendix. The Table of Contents (via fpdf2's insert_toc_placeholder() /
+<ExposureSheet> documents (see _render_xsheet_template): the Production
+fields on page 1, a clickable Table of Contents starting on page 2, then
+every other top-level element as its own titled section documenting its
+tag, attributes and text as a nested outline, then the original source as
+a raw-XML appendix. The Table of Contents (via fpdf2's insert_toc_placeholder() /
 start_section()) has one entry per section -- Production, each top-level
 element, and the Appendix -- each a real internal PDF link that jumps to
 that section's page. Anything that doesn't match a registered template -- a
@@ -31,7 +31,7 @@ To add another schema's template, write a `matches(root) -> bool` and a
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
@@ -76,6 +76,8 @@ def _write_title_block(pdf: FPDF, title: str) -> None:
     pdf.set_font('Courier', '', 8)
     pdf.set_text_color(110, 110, 110)
     pdf.cell(0, 12, date.today().isoformat(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    timestamp_utc = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    pdf.cell(0, 12, f'Created: {timestamp_utc}', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_text_color(0, 0, 0)
     pdf.ln(8)
 
@@ -216,17 +218,22 @@ def _is_xsheet_document(root: ET.Element) -> bool:
 
 
 def _render_xsheet_template(pdf: FPDF, root: ET.Element, title: str, raw_text: str) -> None:
-    """A clickable Table of Contents, Production up front, every other
-    top-level element as its own titled, spaced-out section, then the raw
-    source as an appendix."""
+    """Production information, then VersionControl, both on page 1 (right
+    under the title), a clickable Table of Contents starting on page 2,
+    every other top-level element as its own titled, spaced-out section,
+    then the raw source as an appendix."""
     _write_title_block(pdf, title)
+    _write_production_block(pdf, root)
+
+    version_control = next((c for c in root if _strip_ns(c.tag) == 'VersionControl'), None)
+    if version_control is not None:
+        _write_section(pdf, version_control)
 
     pdf.add_page()
     pdf.insert_toc_placeholder(_render_toc, pages=1)
 
-    _write_production_block(pdf, root)
     for child in root:
-        if _strip_ns(child.tag) == 'Production':
+        if _strip_ns(child.tag) in ('Production', 'VersionControl'):
             continue  # already shown above
         _write_section(pdf, child)
 
@@ -280,15 +287,35 @@ def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | No
     return bytes(pdf.output())
 
 
-def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *, title: str = 'Untitled') -> bytes:
+def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
+                         title: str = 'Untitled', source_text: str | None = None) -> bytes:
     """Render the Exposure Sheet grid (as already computed by main.py's
     parse_exposure_sheet()) as a paginated, landscape table PDF: one row per
     frame number, one column per layer plus Camera/Dialogue/Audio/Notes --
     the same shape as the XSheet tab's on-screen grid, including its blank
     hold rows between sparse <Frame> entries. Used by main.py's XSheet >
-    Export XSheet menu item (see export_xsheet() there)."""
+    Export XSheet menu item (see export_xsheet() there).
+
+    `source_text` (the same raw document export_xsheet() parsed to build
+    layer_ids/rows) is used, best-effort, to also show the document's
+    <Production> and <VersionControl> fields on page 1; the grid table
+    itself always starts on page 2 regardless of whether that info was
+    available."""
     pdf = _new_pdf(orientation='L')
     _write_title_block(pdf, f'{title} - Exposure Sheet')
+
+    if source_text:
+        try:
+            root = ET.fromstring(source_text)
+        except ET.ParseError:
+            root = None
+        if root is not None:
+            _write_production_block(pdf, root)
+            version_control = next((c for c in root if _strip_ns(c.tag) == 'VersionControl'), None)
+            if version_control is not None:
+                _write_section(pdf, version_control)
+
+    pdf.add_page()
 
     headers = ['Frame', *layer_ids, 'Camera', 'Dialogue', 'Audio', 'Notes']
     centered = {'Frame', 'Camera', 'Audio', *layer_ids}
