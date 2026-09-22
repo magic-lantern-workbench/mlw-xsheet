@@ -716,6 +716,12 @@ def parse_exposure_sheet(text: str):
     after it through endFrame, even ones with no <Frame> element of their
     own.
 
+    The Camera column works the same way, but from the top-level <Camera>
+    element's <CameraMove type="..." startFrame="..." endFrame="..."/>
+    entries (a sibling of <Timeline>, not nested inside individual <Frame>
+    elements at all) -- the move's type labels its startFrame row, and 'X'
+    marks every row it continues through up to endFrame.
+
     Returns (layer_ids, rows, message). message explains why the sheet is
     empty when layer_ids/rows are (not an ExposureSheet, no Timeline, no
     Frame entries, ...), or otherwise summarizes it (frame/layer counts)."""
@@ -751,6 +757,22 @@ def parse_exposure_sheet(text: str):
                 start_frame = value
             else:
                 end_frame = value
+
+    # (start_frame, end_frame, type) for every <CameraMove> under the
+    # top-level <Camera> element -- a sibling of <Timeline>, so this is
+    # gathered independently of the per-Frame loop below.
+    camera_moves: list[tuple[int, int, str]] = []
+    camera_el = next((c for c in root if strip_ns(c.tag) == 'Camera'), None)
+    if camera_el is not None:
+        for move_el in camera_el:
+            if strip_ns(move_el.tag) != 'CameraMove':
+                continue
+            move_type = move_el.get('type') or ''
+            try:
+                move_start, move_end = int(move_el.get('startFrame')), int(move_el.get('endFrame'))
+            except (TypeError, ValueError):
+                continue
+            camera_moves.append((move_start, move_end, move_type))
 
     frames = []
     # (start_frame, end_frame, track) for every <AudioRef> found anywhere in
@@ -817,15 +839,18 @@ def parse_exposure_sheet(text: str):
     if audio_refs:
         lo = min(lo, min(ref_start for ref_start, _, _ in audio_refs))
         hi = max(hi, max(ref_end for _, ref_end, _ in audio_refs))
+    if camera_moves:
+        lo = min(lo, min(move_start for move_start, _, _ in camera_moves))
+        hi = max(hi, max(move_end for _, move_end, _ in camera_moves))
 
-    def audio_text_for_frame(n: int) -> str:
+    def _span_text_for_frame(n: int, spans: list[tuple[int, int, str]]) -> str:
         parts = []
-        for ref_start, ref_end, track in audio_refs:
-            if ref_start <= n <= ref_end:
-                if n == ref_start:
-                    parts.append(f'{track} [{ref_start}-{ref_end}]' if track else f'[{ref_start}-{ref_end}]')
+        for span_start, span_end, label in spans:
+            if span_start <= n <= span_end:
+                if n == span_start:
+                    parts.append(f'{label} [{span_start}-{span_end}]' if label else f'[{span_start}-{span_end}]')
                 else:
-                    parts.append('X')  # continuation marker: cue is still playing
+                    parts.append('X')  # continuation marker: still in effect
         return ', '.join(parts)
 
     frames_by_number = {n: (cels, dialogue, notes) for n, cels, _, dialogue, notes in frames}
@@ -835,8 +860,9 @@ def parse_exposure_sheet(text: str):
         row = {'Frame': n}
         for layer_id in layer_ids:
             row[layer_id] = cels.get(layer_id, '')
+        row['Camera'] = _span_text_for_frame(n, camera_moves)
         row['Dialogue'] = dialogue
-        row['Audio'] = audio_text_for_frame(n)
+        row['Audio'] = _span_text_for_frame(n, audio_refs)
         row['Notes'] = notes
         rows.append(row)
 
@@ -846,7 +872,7 @@ def parse_exposure_sheet(text: str):
 def _row_is_empty(row: dict, layer_ids: list[str]) -> bool:
     if any(row.get(lid) for lid in layer_ids):
         return False
-    return not (row.get('Dialogue') or row.get('Audio') or row.get('Notes'))
+    return not (row.get('Camera') or row.get('Dialogue') or row.get('Audio') or row.get('Notes'))
 
 
 def _assign_xsheet_zebra_groups(rows: list[dict], layer_ids: list[str]) -> None:
@@ -897,6 +923,7 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
             if key in xsheet_collapsed_ranges:
                 summary = {lid: '' for lid in layer_ids}
                 summary['Frame'] = f'{start_frame}–{end_frame}'
+                summary['Camera'] = ''
                 summary['Dialogue'] = f'({len(run)} empty frames)'
                 summary['Audio'] = ''
                 summary['Notes'] = ''
@@ -945,6 +972,7 @@ def rebuild_xsheet_from_current():
     ]
     column_defs += [{'field': lid, 'headerName': lid, 'width': 110} for lid in (layer_ids or [])]
     column_defs += [
+        {'field': 'Camera', 'headerName': 'Camera', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
