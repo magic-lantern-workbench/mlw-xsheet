@@ -23,15 +23,19 @@ tool (or in OpenToonz) can migrate between the two.
 
 ## Features
 
+- **Two tabs**: **XML** (the text editor and Hierarchy tree) and **XSheet** (a traditional
+  exposure-sheet grid rendered from the same document). Your place in each — editor cursor
+  line, XSheet scroll position — is remembered when you switch away and back.
 - **Text editor** with XML syntax highlighting (CodeMirror), Undo/Redo, and Find & Replace
   (case-sensitive and/or regex, with match highlighting and Replace/Replace All).
 - **Hierarchy tree** showing the document's element structure alongside the editor, kept in
   sync with the live (possibly unsaved) editor content.
   - Clicking a tree node scrolls the editor to and highlights that element.
   - Moving the cursor in the editor selects and reveals the corresponding tree node.
-  - Node labels include enough of an element's own attributes or text to tell same-tag
-    siblings apart at a glance (e.g. `Asset: id="BG001" name="StreetBackground"
-    category="Background" version="3"` instead of three indistinguishable "Asset" nodes).
+  - Node labels show the element's first attribute (if any) to tell same-tag siblings apart
+    at a glance (e.g. `Asset: id="BG001"` instead of three indistinguishable "Asset" nodes).
+- **Exposure Sheet grid** (XSheet tab) — one row per frame, one column per animation layer,
+  plus Camera, Dialogue, Audio, and Notes. See [XSheet tab](#xsheet-tab) below for details.
 - **Pretty-print / Format** — reformats the current XML/XSD with consistent indentation, with
   indent size and tabs-vs-spaces configurable in Preferences. Preserves comments (including
   ones before the root element) and namespace prefixes.
@@ -40,7 +44,9 @@ tool (or in OpenToonz) can migrate between the two.
   - Schema (XSD) validation, with automatic schema resolution (an explicitly chosen schema,
     then the document's own `xsi:schemaLocation`, then a same-named `.xsd` found anywhere
     under the project directory) and a scrollable dialog listing every error's element path
-    and reason.
+    and reason. Automatically scrolled into view on failure.
+- **PDF export** — a full document report (**Generate Report**) or just the Exposure Sheet
+  grid as a table (**Export XSheet**); see [XSheet menu](#xsheet-menu) below.
 - **XDTS JSON export** — converts the current ExposureSheet document to an XDTS-Extended JSON
   timesheet (see [`tools/`](tools/) for the reverse direction and the older/legacy XDTS format).
 - **File management** — Open/Save/Save As with a local file browser, an unsaved-changes prompt
@@ -67,9 +73,14 @@ Either way, open the app at `http://localhost:8080`.
 
 ### Layout
 
-- **Header** — `File`, `Edit`, and `XML` dropdown menus, plus an `About` button.
-- **Editor** (left) — the XML/XSD text editor.
-- **Hierarchy** (right) — a collapsible tree mirroring the document's element structure.
+- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus, plus an `About` button.
+  The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
+  Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
+- **Tabs** — `XML` (Editor + Hierarchy tree) and `XSheet` (the Exposure Sheet grid).
+  `Ctrl+Alt+1`/`Ctrl+Alt+2` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
+- **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
+  collapsible tree mirroring the document's element structure.
+- **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
 - **Footer** — current filename (`*` suffix when there are unsaved changes), validation
   status, and the active schema (a chosen file, or `auto-detect`).
 
@@ -80,9 +91,9 @@ Either way, open the app at `http://localhost:8080`.
 | Open | Browse the local filesystem (starting at the project directory) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. |
+| Close | Close the current document; prompts to save first if there are unsaved changes. |
 | Export XDTS JSON… | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
-| Close | Close the current document; prompts to save first if there are unsaved changes. |
 
 ### Edit menu
 
@@ -92,16 +103,26 @@ Either way, open the app at `http://localhost:8080`.
 | Find | Open the Find & Replace dialog. |
 | Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
 
-**Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex,
-then use Find Next/Previous to jump between matches (each is scrolled to and highlighted), or
-Replace/Replace All to substitute text (regex replacements support `\1`-style backreferences).
+**Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex.
+The first row (Find Next / Find Previous) jumps between matches, each scrolled to and
+highlighted; the second row has Replace / Replace All (substitute text, with regex
+replacements supporting `\1`-style backreferences) on the left and Close on the right.
+
+### XSheet menu
+
+| Item | What it does |
+|---|---|
+| Export XSheet | Render the XSheet tab's Exposure Sheet grid as a paginated, landscape PDF table (Production and VersionControl info on page 1, the grid itself starting on page 2), and save it via a Save As-style dialog. |
+| Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). |
+
+Both PDFs show the export date and a UTC creation timestamp under the title on page 1.
 
 ### XML menu
 
 | Item | What it does |
 |---|---|
 | Validate (well-formed) | Quick syntax check; result shown in the footer. |
-| Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in a scrollable dialog with each error's element path and reason. |
+| Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in the Validation Results panel below the editor (which scrolls into view automatically on failure), each entry clickable to jump to it. |
 | Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
 
@@ -127,6 +148,39 @@ Opened from **File > Preferences…**; controls the **Format** command:
 - Click a node to scroll the editor to and highlight its opening tag.
 - Moving the editor cursor automatically expands and selects the corresponding node.
 
+### XSheet tab
+
+The Exposure Sheet grid, rebuilt from the same live document as the Hierarchy tree. Each row
+is a frame number, spanning `Production/StartFrame`–`EndFrame` (widened to cover any `<Frame
+number="...">` outside that range). Columns, left to right:
+
+- **Frame** — the frame number (or, for a collapsed run, its range — see below). Pinned first
+  and locked in place; it can't be drag-reordered like the other columns.
+- One column per **Layer** (ordered by `zOrder`) — that frame's `cel`/`sceneFile`, if any.
+- **Camera** — the top-level `<Camera>` element's `<CameraMove type="..." startFrame="..."
+  endFrame="...">` entries: the move's type and frame range on its starting frame (e.g.
+  `HOLD [1-24]`), and a centered `X` on every frame it continues through.
+- **Dialogue** — that frame's `<Dialogue>` phoneme/spoken text, if any.
+- **Audio** — `<AudioRef>` entries, the same span convention as Camera (`track [start-end]`
+  on the starting frame, `X` through `endFrame`).
+- **Notes** — that frame's `<Notes>` text, if any.
+
+Only frame numbers with an actual `<Frame>` element get their Layer/Dialogue/Notes columns
+filled in; every other frame number is still a row, but blank — so a hold between two sparse
+`<Frame>` entries (e.g. one at frame 1 and the next at frame 24) shows as blank boxes in
+between, matching a traditional exposure sheet's convention of marking only where a new
+drawing (or cue) starts.
+
+- **Row shading** — rows are tinted in two alternating colors by "hold group": every row from
+  one keyframe's Layer values to the next (including the blank hold rows in between) shares a
+  tint, and each new group of distinct layer values flips to the other tint.
+- **Collapsing empty runs** — a run of two or more consecutive, completely blank rows (no
+  Layer, Camera, Dialogue, Audio, or Notes content) gets a ▼/▶ toggle next to Notes. Clicking
+  it collapses the run into a single summary row (e.g. `2–23`, `(22 empty frames)`), or
+  expands a collapsed run back out.
+- Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
+  text, so rows always stay in frame order.
+
 ### Keyboard shortcuts
 
 - `Ctrl+Z` — Undo
@@ -149,7 +203,8 @@ information.
 ## Project layout
 
 ```
-main.py           NiceGUI application: editor, Hierarchy tree, validation, Format, XDTS export
+main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, validation, Format, XDTS export
+export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
 xml/              XSD schemas defining the ExposureSheet document format
 examples/         Sample .xml / .xsd / .json documents
 tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema)
