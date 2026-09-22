@@ -1711,8 +1711,12 @@ window.mlwSelectRange = function(elementId, from, to) {
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
                 ui.menu_item('Export to PDF', on_click=lambda _: export_to_pdf())
-            # XML menu with Validation
-            with ui.dropdown_button('XML', auto_close=True).props('flat color=white'):
+            # XML menu with Validation -- only meaningful while the XML tab
+            # is active (see on_main_tab_change() below), since it acts on
+            # the editor's content.
+            global xml_menu_button
+            xml_menu_button = ui.dropdown_button('XML', auto_close=True).props('flat color=white')
+            with xml_menu_button:
                 ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
                 ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema())
                 ui.separator()
@@ -1754,6 +1758,8 @@ window.mlwSelectRange = function(elementId, from, to) {
         # elsewhere in this file is given the element -- nicegui reports
         # client-originated tab changes by name.
         switching_to_xsheet = (new_value == 'XSheet')
+        if xml_menu_button is not None:
+            xml_menu_button.disable() if switching_to_xsheet else xml_menu_button.enable()
         try:
             if switching_to_xsheet:
                 offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({editor.id});')
