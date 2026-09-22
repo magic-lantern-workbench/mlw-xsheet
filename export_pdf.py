@@ -1,9 +1,12 @@
 """Render an XML/XSD document as a PDF, via a small per-schema template
 mechanism.
 
-Used by main.py's XSheet > Export to PDF menu item (see export_to_pdf()
+Used by main.py's XSheet > Export Report menu item (see export_to_pdf()
 there), but kept independent of NiceGUI/the editor so it can be tested or
 reused on its own -- it just takes text in and returns PDF bytes out.
+generate_xsheet_pdf() below is the counterpart used by XSheet > Export
+XSheet, rendering the Exposure Sheet grid itself as a table rather than
+the source document's element outline.
 
 generate_pdf() parses the text and tries each registered template's
 `matches(root)` in order, rendering with the first one that accepts the
@@ -59,8 +62,8 @@ def _format_attrs(elem: ET.Element) -> str:
     return ' '.join(f'{_strip_ns(k)}="{v}"' for k, v in elem.attrib.items())
 
 
-def _new_pdf() -> FPDF:
-    pdf = FPDF(format=PAGE_FORMAT, unit='pt')
+def _new_pdf(orientation: str = 'P') -> FPDF:
+    pdf = FPDF(orientation=orientation, format=PAGE_FORMAT, unit='pt')
     pdf.set_auto_page_break(auto=True, margin=MARGIN)
     pdf.set_margins(MARGIN, MARGIN, MARGIN)
     pdf.add_page()
@@ -274,4 +277,32 @@ def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | No
                 return bytes(pdf.output())
 
     _render_default_template(pdf, root, title, text)
+    return bytes(pdf.output())
+
+
+def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *, title: str = 'Untitled') -> bytes:
+    """Render the Exposure Sheet grid (as already computed by main.py's
+    parse_exposure_sheet()) as a paginated, landscape table PDF: one row per
+    frame number, one column per layer plus Camera/Dialogue/Audio/Notes --
+    the same shape as the XSheet tab's on-screen grid, including its blank
+    hold rows between sparse <Frame> entries. Used by main.py's XSheet >
+    Export XSheet menu item (see export_xsheet() there)."""
+    pdf = _new_pdf(orientation='L')
+    _write_title_block(pdf, f'{title} - Exposure Sheet')
+
+    headers = ['Frame', *layer_ids, 'Camera', 'Dialogue', 'Audio', 'Notes']
+    centered = {'Frame', 'Camera', 'Audio', *layer_ids}
+    col_widths = [0.6, *([0.9] * len(layer_ids)), 1.2, 1.3, 0.9, 1.6]
+
+    pdf.set_font('Courier', '', 8)
+    with pdf.table(col_widths=tuple(col_widths), text_align='LEFT', line_height=11) as table:
+        header_row = table.row()
+        for header in headers:
+            header_row.cell(_sanitize(header), align='C')
+        for row in rows:
+            data_row = table.row()
+            for header in headers:
+                value = row.get(header, '')
+                data_row.cell(_sanitize(str(value)), align='C' if header in centered else 'L')
+
     return bytes(pdf.output())

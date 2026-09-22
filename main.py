@@ -456,7 +456,7 @@ def _confirm_export_despite_warnings(warnings: list[str], on_confirm):
         ui.label('This document has validation problems:').classes('font-medium')
         for w in warnings:
             ui.label(f'• {w}').classes('text-sm').style('color: red')
-        ui.label('Export to PDF anyway?')
+        ui.label('Export Report anyway?')
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             def do_cancel(_=None):
                 dlg.close()
@@ -1421,6 +1421,55 @@ def export_to_pdf():
         do_generate([])
 
 
+def export_xsheet():
+    """Render the XSheet tab's Exposure Sheet grid (not the raw XML -- see
+    export_to_pdf() for that) as a paginated landscape PDF table and save it
+    via a Save As-style dialog."""
+    layer_ids, rows, message = parse_exposure_sheet(_editor_text())
+    if not rows:
+        ui.notify(message or 'Nothing to export', color='warning')
+        return
+
+    doc_name = Path(current_file['path']).name if current_file.get('path') else 'untitled'
+    source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+    try:
+        pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name)
+    except Exception as exc:
+        ui.notify(f'XSheet PDF export failed: {exc}', color='negative')
+        return
+
+    def file_selected_callback(files):
+        if not files:
+            return
+        dest = Path(files[0])
+
+        def do_export():
+            try:
+                dest.write_bytes(pdf_bytes)
+            except Exception as exc:
+                ui.notify(f'Failed to write {dest}: {exc}', color='negative')
+                return
+            ui.notify(f'Exported {dest}', color='positive')
+
+        _confirm_overwrite(dest, do_export)
+
+    class ExportXSheetPdfWithCallback(SaveFileDialog):
+        def submit(self, value):
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    start_name = f'{source_name}-xsheet.pdf'
+    dialog = ExportXSheetPdfWithCallback(
+        str(start_dir),
+        filename=start_name,
+        upper_limit=None,
+        allowed_extensions=['.pdf'],
+    )
+    dialog.open()
+
+
 # File chooser using OpenFileDialog
 def show_file_dialog():
     def file_selected_callback(files):
@@ -1740,7 +1789,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Format', on_click=lambda _: format_xml())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
-                ui.menu_item('Export to PDF', on_click=lambda _: export_to_pdf())
+                ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
+                ui.menu_item('Export Report', on_click=lambda _: export_to_pdf())
             # XML menu with Validation -- only meaningful while the XML tab
             # is active (see on_main_tab_change() below), since it acts on
             # the editor's content.
