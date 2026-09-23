@@ -1229,9 +1229,10 @@ def close_file():
 
 
 def close_with_check():
-    """Close the current file, but prompt to save if modified."""
+    """Close the current file, but prompt to save if modified -- including
+    a never-saved document, where Yes goes through Save As."""
     sess = session()
-    if not sess.current_file.get('path') or not sess.current_file.get('modified'):
+    if not sess.current_file.get('modified'):
         close_file()
         return
     with ui.dialog() as confirm_dialog:
@@ -1246,7 +1247,9 @@ def close_with_check():
                     # through, so declining an overwrite prompt keeps the file open
                     confirm_dialog.close()
                     save_file(on_saved=close_file)
-                ui.button('No', on_click=do_no).props('outline')
+                # Cancel backs out of closing entirely, leaving the file open and unsaved
+                ui.button('Cancel', on_click=confirm_dialog.close).props('flat')
+                ui.button('No', on_click=do_no).props('outline').classes('ml-2')
                 ui.button('Yes', on_click=do_yes).classes('ml-2')
     confirm_dialog.open()
 
@@ -1406,7 +1409,7 @@ def save_file(on_saved=None):
     overwriting their changes."""
     sess = session()
     if not sess.current_file['path']:
-        save_as()
+        save_as(on_saved=on_saved)
         return
     path = Path(sess.current_file['path'])
 
@@ -1468,7 +1471,9 @@ def _confirm_overwrite(path: Path, on_confirm):
     confirm_dialog.open()
 
 
-def save_as():
+def save_as(on_saved=None):
+    """Save the editor to a newly chosen file, then call on_saved() if the
+    save went through (not if the dialog or an overwrite prompt is cancelled)."""
     sess = session()
     def file_selected_callback(files):
         if not files:
@@ -1495,6 +1500,8 @@ def save_as():
                 rebuild_tree_from_current()
             except Exception:
                 pass
+            if on_saved is not None:
+                on_saved()
 
         _confirm_overwrite(dest, do_save)
 

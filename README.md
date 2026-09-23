@@ -159,7 +159,7 @@ switching browsers starts fresh settings.
 | Open | Browse the local filesystem (starting at the project directory) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. |
-| Close | Close the current document; prompts to save first if there are unsaved changes. |
+| Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export XDTS JSON… | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
 
