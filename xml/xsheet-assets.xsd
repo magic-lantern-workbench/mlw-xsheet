@@ -16,10 +16,25 @@
  </xs:element>
 
  <xs:complexType name="AssetType">
+     <xs:sequence>
+         <xs:element name="sourceURL" type="xs:anyURI" minOccurs="0"/>
+         <xs:element name="author" type="xs:string" minOccurs="0"/>
+         <xs:element name="contact" type="EmailAddressType" minOccurs="0" maxOccurs="unbounded"/>
+     </xs:sequence>
+
      <xs:attribute name="id" type="xs:ID" use="required"/>
      <xs:attribute name="name" type="xs:string" use="required"/>
      <xs:attribute name="category" type="xs:string" use="required"/>
      <xs:attribute name="version" type="xs:positiveInteger" use="required"/>
  </xs:complexType>
 
+ <xs:simpleType name="EmailAddressType">
+     <!-- xs:token removes leading/trailing whitespaces automatically -->
+     <xs:restriction base="xs:token"> 
+         <xs:maxLength value="254"/>
+         <!-- Standard email validation pattern -->
+         <xs:pattern value="[^@]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"/>
+     </xs:restriction>
+ </xs:simpleType>
+    
 </xs:schema>
