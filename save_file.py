@@ -46,8 +46,8 @@ class save_file(ui.dialog):
                 .on('cellDoubleClicked', self.handle_double_click)
             self.filename_input = ui.input('Filename', value=filename).classes('w-full')
             with ui.row().classes('w-full justify-end'):
-                ui.button('Cancel', on_click=self.close).props('outline')
-                ui.button('Save', on_click=self._handle_save)
+                ui.button('Cancel', on_click=self.close).props('outline size=sm')
+                ui.button('Save', on_click=self._handle_save).props('size=sm')
         self.update_grid()
 
     def add_drives_toggle(self):

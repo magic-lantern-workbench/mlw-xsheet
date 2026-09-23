@@ -285,8 +285,8 @@ def show_preferences_dialog():
             ui.notify('Preferences saved', color='positive')
 
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
-            ui.button('Cancel', on_click=dlg.close).props('outline')
-            ui.button('Save', on_click=do_save)
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Save', on_click=do_save).props('size=sm')
     dlg.open()
 
 
@@ -579,8 +579,8 @@ def _confirm_export_despite_warnings(warnings: list[str], on_confirm):
             def do_proceed(_=None):
                 dlg.close()
                 on_confirm()
-            ui.button('Cancel', on_click=do_cancel).props('outline')
-            ui.button('Export Anyway', on_click=do_proceed).props('color=warning')
+            ui.button('Cancel', on_click=do_cancel).props('outline size=sm')
+            ui.button('Export Anyway', on_click=do_proceed).props('color=warning size=sm')
     dlg.open()
 
 
@@ -602,7 +602,7 @@ def show_about_dialog():
             ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
             ui.label('for more information about this tool.')
         with ui.row().classes('w-full justify-end mt-4'):
-            ui.button('Close', on_click=about_dialog.close).props('outline')
+            ui.button('Close', on_click=about_dialog.close).props('outline size=sm')
     about_dialog.open()
 
 
@@ -1188,8 +1188,8 @@ def open_file(path: Path, restore_draft: bool | None = None):
     with ui.dialog().props('persistent') as dlg, ui.card().classes('p-4'):
         ui.label(f'You have unsaved changes to {path.name} from an earlier session. Restore them?')
         with ui.row().classes('mt-4 justify-end'):
-            ui.button('Discard', on_click=dlg.close).props('outline')
-            ui.button('Restore', on_click=lambda: (dlg.close(), restore())).classes('ml-2')
+            ui.button('Discard', on_click=dlg.close).props('outline size=sm')
+            ui.button('Restore', on_click=lambda: (dlg.close(), restore())).props('size=sm').classes('ml-2')
     dlg.open()
 
 
@@ -1248,9 +1248,9 @@ def close_with_check():
                     confirm_dialog.close()
                     save_file(on_saved=close_file)
                 # Cancel backs out of closing entirely, leaving the file open and unsaved
-                ui.button('Cancel', on_click=confirm_dialog.close).props('flat')
-                ui.button('No', on_click=do_no).props('outline').classes('ml-2')
-                ui.button('Yes', on_click=do_yes).classes('ml-2')
+                ui.button('Cancel', on_click=confirm_dialog.close).props('flat size=sm')
+                ui.button('No', on_click=do_no).props('outline size=sm').classes('ml-2')
+                ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
     confirm_dialog.open()
 
 
@@ -1381,7 +1381,11 @@ def show_find_dialog():
         clear_highlight()
         dlg.close()
 
-    with ui.dialog() as dlg, ui.card().classes('p-4 w-[480px] max-w-full gap-2'):
+    # Seamless (no backdrop) and docked to the right edge, over the Hierarchy
+    # panel: matches are scrolled to the middle of the editor, so a centered,
+    # backdrop-dimmed dialog would cover exactly the text it just found.
+    with ui.dialog().props('seamless position=right') as dlg, \
+            ui.card().classes('p-4 w-[420px] max-w-full gap-2'):
         ui.label('Find and Replace').classes('text-lg font-medium')
         find_input = ui.input('Find').classes('w-full')
         replace_input = ui.input('Replace with').classes('w-full')
@@ -1391,13 +1395,12 @@ def show_find_dialog():
         status_label = ui.label('')
         find_input.on('keydown.enter', lambda _: do_find(1))
         with ui.row().classes('w-full gap-2 mt-2'):
-            ui.button('Find Next', on_click=lambda _: do_find(1)).props('outline')
-            ui.button('Find Previous', on_click=lambda _: do_find(-1)).props('outline')
-        with ui.row().classes('w-full items-center justify-between gap-2'):
-            with ui.row().classes('gap-2'):
-                ui.button('Replace', on_click=lambda _: do_replace()).props('outline')
-                ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline')
-            ui.button('Close', on_click=lambda _: do_close())
+            ui.button('Find Next', on_click=lambda _: do_find(1)).props('outline size=sm')
+            ui.button('Find Previous', on_click=lambda _: do_find(-1)).props('outline size=sm')
+            ui.button('Replace', on_click=lambda _: do_replace()).props('outline size=sm')
+            ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline size=sm')
+        with ui.row().classes('w-full justify-end'):
+            ui.button('Close', on_click=lambda _: do_close()).props('size=sm')
     dlg.open()
 
 
@@ -1445,8 +1448,8 @@ def save_file(on_saved=None):
             def do_yes(_=None):
                 confirm_dialog.close()
                 do_save()
-            ui.button('No', on_click=do_no).props('outline')
-            ui.button('Overwrite', on_click=do_yes).props('color=warning').classes('ml-2')
+            ui.button('No', on_click=do_no).props('outline size=sm')
+            ui.button('Overwrite', on_click=do_yes).props('color=warning size=sm').classes('ml-2')
     confirm_dialog.open()
 
 
@@ -1466,8 +1469,8 @@ def _confirm_overwrite(path: Path, on_confirm):
             def do_yes(_=None):
                 confirm_dialog.close()
                 on_confirm()
-            ui.button('No', on_click=do_no).props('outline')
-            ui.button('Yes', on_click=do_yes).classes('ml-2')
+            ui.button('No', on_click=do_no).props('outline size=sm')
+            ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
     confirm_dialog.open()
 
 

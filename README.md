@@ -172,9 +172,11 @@ switching browsers starts fresh settings.
 | Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
 
 **Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex.
-The first row (Find Next / Find Previous) jumps between matches, each scrolled to and
-highlighted; the second row has Replace / Replace All (substitute text, with regex
-replacements supporting `\1`-style backreferences) on the left and Close on the right.
+One row of buttons holds Find Next / Find Previous (jump between matches, each scrolled to and
+highlighted) and Replace / Replace All (substitute text, with regex replacements supporting
+`\1`-style backreferences). Close is on its own row below. The dialog sits at the right edge
+of the window, over the Hierarchy panel, so it doesn't cover the matches it highlights, and
+you can keep working in the editor while it's open.
 
 ### XSheet menu
 

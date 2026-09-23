@@ -41,8 +41,8 @@ class open_file(ui.dialog):
                 },
             }, html_columns=[0]).classes('w-96').on('cellDoubleClicked', self.handle_double_click)
             with ui.row().classes('w-full justify-end'):
-                ui.button('Cancel', on_click=self.close).props('outline')
-                ui.button('Ok', on_click=self._handle_ok)
+                ui.button('Cancel', on_click=self.close).props('outline size=sm')
+                ui.button('Ok', on_click=self._handle_ok).props('size=sm')
         self.update_grid()
 
     def add_drives_toggle(self):
