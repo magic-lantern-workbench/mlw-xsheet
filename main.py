@@ -102,6 +102,8 @@ def session() -> Session:
 #   'recent_files_limit': how many of those Open Recent shows, editable via
 #                     File > Preferences; the rest are kept so raising the
 #                     limit again brings them back.
+#   'open_dir':       folder of the file this user last picked in File > Open,
+#                     where the Open dialog starts next time.
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
@@ -1790,6 +1792,7 @@ def show_file_dialog():
     def file_selected_callback(files):
         if files:
             print(f"DEBUG: File selected callback with: {files}")
+            user_storage()['open_dir'] = str(Path(files[0]).parent)
             open_file(Path(files[0]))
 
     class FilePickerWithCallback(OpenFileDialog):
@@ -1799,7 +1802,11 @@ def show_file_dialog():
             self.close()
             super().submit(value)
     
-    picker = FilePickerWithCallback(str(BASE_DIR), upper_limit=None, allowed_extensions=['.xml', '.xsd'])
+    # Start where this user last picked a file, unless that folder is gone.
+    start_dir = Path(user_storage().get('open_dir') or BASE_DIR)
+    if not start_dir.is_dir():
+        start_dir = BASE_DIR
+    picker = FilePickerWithCallback(str(start_dir), upper_limit=None, allowed_extensions=['.xml', '.xsd'])
     picker.open()
 
 
