@@ -3,10 +3,12 @@ from pathlib import Path
 
 from nicegui import events, ui
 
+from dialog_ui import titled_card
+
 
 class open_file(ui.dialog):
 
-    def __init__(self, directory: str, *,
+    def __init__(self, directory: str, *, title: str = 'Open',
                  upper_limit: str | None = ..., multiple: bool = False, show_hidden_files: bool = False,
                  allowed_extensions: list[str] | None = None) -> None:
         """Open File dialog
@@ -14,6 +16,7 @@ class open_file(ui.dialog):
         This is a simple file picker that allows you to select a file from the local filesystem where NiceGUI is running.
 
         :param directory: The directory to start in.
+        :param title: The dialog's title (e.g. 'Select Schema' when picking a schema).
         :param upper_limit: The directory to stop at (None: no limit, default: same as the starting directory).
         :param multiple: Whether to allow multiple files to be selected.
         :param show_hidden_files: Whether to show hidden files.
@@ -30,7 +33,7 @@ class open_file(ui.dialog):
         self.show_hidden_files = show_hidden_files
         self.allowed_extensions = [e.lower() for e in allowed_extensions] if allowed_extensions else None
 
-        with self, ui.card():
+        with self, titled_card(title):
             self.add_drives_toggle()
             self.grid = ui.aggrid({
                 'columnDefs': [{'field': 'name', 'headerName': 'File'}],

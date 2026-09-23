@@ -3,6 +3,7 @@ import os
 from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
+from dialog_ui import titled_card
 from tools import xsheet_to_xdts_extended
 import export_pdf
 
@@ -341,8 +342,7 @@ def format_xml():
 def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
     (Edit > Format) and a Recent Files tab for File > Open Recent."""
-    with ui.dialog() as dlg, ui.card().classes('p-4 w-[380px] max-w-full gap-2'):
-        ui.label('Preferences').classes('text-lg font-medium')
+    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[380px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
@@ -565,7 +565,7 @@ def choose_schema(then_validate: bool = True):
             super().submit(value)
 
     start_dir = Path(chosen_schema_path()).parent if chosen_schema_path() else BASE_DIR
-    SchemaPicker(str(start_dir), upper_limit=None, allowed_extensions=['.xsd']).open()
+    SchemaPicker(str(start_dir), title='Select Schema', upper_limit=None, allowed_extensions=['.xsd']).open()
 
 
 def clear_schema():
@@ -659,7 +659,7 @@ def _validate_for_export(text: str) -> list[str]:
 def _confirm_export_despite_warnings(warnings: list[str], on_confirm):
     """Warn that the document doesn't validate before exporting it, letting
     the user cancel or proceed anyway (see export_to_pdf())."""
-    with ui.dialog() as dlg, ui.card().classes('p-4 w-[480px] max-w-full gap-2'):
+    with ui.dialog() as dlg, titled_card('Validation Problems', classes='w-[480px] max-w-full', body_classes='gap-2'):
         ui.label('This document has validation problems:').classes('font-medium')
         for w in warnings:
             ui.label(f'• {w}').classes('text-sm').style('color: red')
@@ -684,8 +684,7 @@ def set_schema_label():
 
 def show_about_dialog():
     """Show the About dialog with app name, author, version, and a link."""
-    with ui.dialog() as about_dialog, ui.card().classes('p-4'):
-        ui.label('Magic Lantern XSheet Viewer').classes('text-lg font-medium')
+    with ui.dialog() as about_dialog, titled_card('Magic Lantern XSheet Viewer'):
         ui.label('Author: Wizzer Works')
         ui.label('Version: 1.0.0')
         with ui.row().classes('items-center gap-1'):
@@ -1277,7 +1276,7 @@ def open_file(path: Path, restore_draft: bool | None = None):
     if restore_draft:
         restore()
         return
-    with ui.dialog().props('persistent') as dlg, ui.card().classes('p-4'):
+    with ui.dialog().props('persistent') as dlg, titled_card('Restore Unsaved Changes'):
         ui.label(f'You have unsaved changes to {path.name} from an earlier session. Restore them?')
         with ui.row().classes('mt-4 justify-end'):
             ui.button('Discard', on_click=dlg.close).props('outline size=sm')
@@ -1327,22 +1326,21 @@ def close_with_check():
     if not sess.current_file.get('modified'):
         close_file()
         return
-    with ui.dialog() as confirm_dialog:
-        with ui.card().classes('p-4'):
-            ui.label('Save changes before closing?')
-            with ui.row().classes('mt-4 justify-end'):
-                def do_no(_=None):
-                    confirm_dialog.close()
-                    close_file()
-                def do_yes(_=None):
-                    # Save then close -- only once the save actually went
-                    # through, so declining an overwrite prompt keeps the file open
-                    confirm_dialog.close()
-                    save_file(on_saved=close_file)
-                # Cancel backs out of closing entirely, leaving the file open and unsaved
-                ui.button('Cancel', on_click=confirm_dialog.close).props('flat size=sm')
-                ui.button('No', on_click=do_no).props('outline size=sm').classes('ml-2')
-                ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
+    with ui.dialog() as confirm_dialog, titled_card('Unsaved Changes'):
+        ui.label('Save changes before closing?')
+        with ui.row().classes('mt-4 justify-end'):
+            def do_no(_=None):
+                confirm_dialog.close()
+                close_file()
+            def do_yes(_=None):
+                # Save then close -- only once the save actually went
+                # through, so declining an overwrite prompt keeps the file open
+                confirm_dialog.close()
+                save_file(on_saved=close_file)
+            # Cancel backs out of closing entirely, leaving the file open and unsaved
+            ui.button('Cancel', on_click=confirm_dialog.close).props('flat size=sm')
+            ui.button('No', on_click=do_no).props('outline size=sm').classes('ml-2')
+            ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
     confirm_dialog.open()
 
 
@@ -1477,8 +1475,7 @@ def show_find_dialog():
     # panel: matches are scrolled to the middle of the editor, so a centered,
     # backdrop-dimmed dialog would cover exactly the text it just found.
     with ui.dialog().props('seamless position=right') as dlg, \
-            ui.card().classes('p-4 w-[420px] max-w-full gap-2'):
-        ui.label('Find and Replace').classes('text-lg font-medium')
+            titled_card('Find and Replace', classes='w-[420px] max-w-full', body_classes='gap-2'):
         find_input = ui.input('Find').classes('w-full')
         replace_input = ui.input('Replace with').classes('w-full')
         with ui.row().classes('items-center gap-4'):
@@ -1531,7 +1528,7 @@ def save_file(on_saved=None):
     if on_disk is None or on_disk == sess.current_file['saved_content']:
         do_save()
         return
-    with ui.dialog() as confirm_dialog, ui.card().classes('p-4'):
+    with ui.dialog() as confirm_dialog, titled_card('File Changed on Disk'):
         ui.label(f'{path.name} was changed on disk since you opened it, '
                  'possibly by another user. Overwrite those changes?')
         with ui.row().classes('mt-4 justify-end'):
@@ -1553,7 +1550,7 @@ def _confirm_overwrite(path: Path, on_confirm):
     if not path.exists():
         on_confirm()
         return
-    with ui.dialog() as confirm_dialog, ui.card().classes('p-4'):
+    with ui.dialog() as confirm_dialog, titled_card('File Already Exists'):
         ui.label(f'{path.name} already exists. Overwrite it?')
         with ui.row().classes('mt-4 justify-end'):
             def do_no(_=None):
@@ -1658,6 +1655,7 @@ def export_xdts():
     start_name = f'{source_name}.xdts.json'
     dialog = ExportFileWithCallback(
         str(start_dir),
+        title='Export XDTS JSON',
         filename=start_name,
         upper_limit=None,
         allowed_extensions=['.json'],
@@ -1713,6 +1711,7 @@ def export_to_pdf():
         start_name = f'{source_name}.pdf'
         dialog = ExportPdfWithCallback(
             str(start_dir),
+            title='Generate Report',
             filename=start_name,
             upper_limit=None,
             allowed_extensions=['.pdf'],
@@ -1770,6 +1769,7 @@ def export_xsheet():
     start_name = f'{source_name}-xsheet.pdf'
     dialog = ExportXSheetPdfWithCallback(
         str(start_dir),
+        title='Export XSheet',
         filename=start_name,
         upper_limit=None,
         allowed_extensions=['.pdf'],
