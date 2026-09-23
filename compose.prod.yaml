@@ -7,6 +7,13 @@
 #
 # The app is only reachable through Caddy (see Caddyfile), which serves HTTPS
 # on 443 and redirects HTTP on 80.
+
+# Its own project name, so the production stack's containers, network and
+# volumes never collide with the development stack's ("mlw-xsheet", from the
+# directory name) -- both can run on one machine, and bringing either one
+# up or down leaves the other alone.
+name: mlw-xsheet-prod
+
 services:
   xsheet:
     # Not published on the host; Caddy reaches it on the compose network.

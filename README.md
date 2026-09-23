@@ -95,6 +95,11 @@ restart policy, HTTPS), use `compose.prod.yaml` instead of the override:
 MLW_DOMAIN=xsheet.example.com docker compose -f compose.yaml -f compose.prod.yaml up -d --build
 ```
 
+The production stack runs as its own Compose project, `mlw-xsheet-prod`, separate from the
+development stack (`mlw-xsheet`). Both can run on the same machine, and starting or stopping
+one leaves the other alone. Its volumes are named with that prefix, e.g.
+`mlw-xsheet-prod_xsheet-data`.
+
 Production serves the app over **HTTPS** through a [Caddy](https://caddyserver.com/) reverse
 proxy (see [`Caddyfile`](Caddyfile)). The app's own port isn't published, and HTTP on port 80
 redirects to HTTPS on 443.
