@@ -127,6 +127,7 @@ are saved per user (per browser, via a cookie), so they survive reloads and serv
 and carry over to that user's other tabs. The server keeps them in `NICEGUI_STORAGE_PATH`:
 
 - **Preferences** and the chosen schema.
+- **Recent files** (File > Open Recent).
 - **Unsaved changes.** Edits are saved as a draft as you type. Reloading the page (or opening
   a new tab) reopens the document you were last working on, with your unsaved changes and the
   `*` indicator; Undo takes you back to the saved text. Each file keeps its own draft, so if you
@@ -157,6 +158,7 @@ switching browsers starts fresh settings.
 | Item | What it does |
 |---|---|
 | Open | Browse the local filesystem (starting at the project directory) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. |
+| Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
@@ -206,10 +208,14 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**; controls the **Format** command:
+Opened from **File > Preferences…**. Settings are saved per user. The dialog has two tabs:
 
-- **Use tabs for indentation** — tabs instead of spaces.
-- **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
+- **Format** — controls the **Format** command:
+  - **Use tabs for indentation** — tabs instead of spaces.
+  - **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
+- **Recent Files** — controls **File > Open Recent**:
+  - **Number of recent files to list** — 1–20, default 5. Lowering it hides older entries
+    rather than deleting them (up to 20 are kept), so raising it again brings them back.
 
 ### Hierarchy tree
 

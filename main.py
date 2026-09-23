@@ -70,6 +70,7 @@ class Session:
         self.validation_results_container = None
         self.xsheet_status_label = None
         self.xsheet_grid = None
+        self.recent_menu = None
 
         # This user's app.storage.user, captured while index() still has the
         # page request (event handlers and timers don't always carry one).
@@ -94,7 +95,15 @@ def session() -> Session:
 #   'last_document':  key of the document this user last worked on, reopened
 #                     (with its draft, if any) when the page is reloaded; None
 #                     once they close it.
+#   'recent_files':   paths of files this user opened or saved, most recent
+#                     first (up to MAX_RECENT_FILES_LIMIT), listed in
+#                     File > Open Recent.
+#   'recent_files_limit': how many of those Open Recent shows, editable via
+#                     File > Preferences; the rest are kept so raising the
+#                     limit again brings them back.
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
+DEFAULT_RECENT_FILES_LIMIT = 5
+MAX_RECENT_FILES_LIMIT = 20
 
 
 def user_storage():
@@ -117,6 +126,71 @@ def chosen_schema_path() -> str | None:
 
 def set_chosen_schema_path(path: str | None) -> None:
     user_storage()['schema_path'] = path
+
+
+def recent_files_limit() -> int:
+    try:
+        limit = int(user_storage().get('recent_files_limit', DEFAULT_RECENT_FILES_LIMIT))
+    except (TypeError, ValueError):
+        limit = DEFAULT_RECENT_FILES_LIMIT
+    return max(1, min(limit, MAX_RECENT_FILES_LIMIT))
+
+
+def set_recent_files_limit(limit: int) -> None:
+    user_storage()['recent_files_limit'] = max(1, min(int(limit), MAX_RECENT_FILES_LIMIT))
+    rebuild_recent_menu()
+
+
+def recent_files() -> list[str]:
+    """The files File > Open Recent lists, most recent first."""
+    return list(user_storage().get('recent_files', []))[:recent_files_limit()]
+
+
+def _set_recent_files(paths: list[str]) -> None:
+    user_storage()['recent_files'] = paths[:MAX_RECENT_FILES_LIMIT]
+    rebuild_recent_menu()
+
+
+def add_recent_file(path: str) -> None:
+    stored = user_storage().get('recent_files', [])
+    _set_recent_files([path] + [p for p in stored if p != path])
+
+
+def remove_recent_file(path: str) -> None:
+    _set_recent_files([p for p in user_storage().get('recent_files', []) if p != path])
+
+
+def clear_recent_files() -> None:
+    _set_recent_files([])
+    ui.notify('Recent files cleared', color='info')
+
+
+def open_recent_file(path: Path) -> None:
+    if not path.is_file():
+        remove_recent_file(str(path))
+        ui.notify(f'{path.name} no longer exists; removed it from recent files', color='warning')
+        return
+    open_file(path)
+
+
+def rebuild_recent_menu() -> None:
+    """(Re)fill this page's File > Open Recent submenu from the user's list.
+    Also runs each time the submenu opens, since another of the user's tabs
+    may have changed the list."""
+    menu = session().recent_menu
+    if menu is None:
+        return
+    menu.clear()
+    paths = recent_files()
+    with menu:
+        if not paths:
+            ui.menu_item('No recent files').props('disable')
+            return
+        for p in paths:
+            path = Path(p)
+            ui.menu_item(path.name, on_click=lambda _, path=path: open_recent_file(path)).tooltip(str(path))
+        ui.separator()
+        ui.menu_item('Clear Recent Files', on_click=lambda _: clear_recent_files())
 
 
 def _drafts() -> dict:
@@ -264,15 +338,27 @@ def format_xml():
 
 
 def show_preferences_dialog():
-    """Preferences dialog for the XML/XSD pretty-print formatter (Edit > Format)."""
-    with ui.dialog() as dlg, ui.card().classes('p-4 w-[360px] max-w-full gap-2'):
+    """Preferences dialog: a Format tab for the XML/XSD pretty-printer
+    (Edit > Format) and a Recent Files tab for File > Open Recent."""
+    with ui.dialog() as dlg, ui.card().classes('p-4 w-[380px] max-w-full gap-2'):
         ui.label('Preferences').classes('text-lg font-medium')
-        ui.label('Format (Edit > Format)').classes('text-sm text-gray-500')
-        prefs = format_prefs()
-        use_tabs_cb = ui.checkbox('Use tabs for indentation', value=prefs['use_tabs'])
-        indent_input = ui.number(
-            'Indent size (spaces)', value=prefs['indent_size'], min=1, max=8, step=1,
-        ).classes('w-full').bind_enabled_from(use_tabs_cb, 'value', backward=lambda v: not v)
+        with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
+            format_tab = ui.tab('Format')
+            recent_tab = ui.tab('Recent Files')
+        with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
+            with ui.tab_panel(format_tab).classes('px-0 gap-2'):
+                ui.label('Used by Edit > Format').classes('text-sm text-gray-500')
+                prefs = format_prefs()
+                use_tabs_cb = ui.checkbox('Use tabs for indentation', value=prefs['use_tabs'])
+                indent_input = ui.number(
+                    'Indent size (spaces)', value=prefs['indent_size'], min=1, max=8, step=1,
+                ).classes('w-full').bind_enabled_from(use_tabs_cb, 'value', backward=lambda v: not v)
+            with ui.tab_panel(recent_tab).classes('px-0 gap-2'):
+                ui.label('Used by File > Open Recent').classes('text-sm text-gray-500')
+                recent_input = ui.number(
+                    f'Number of recent files to list (1–{MAX_RECENT_FILES_LIMIT})',
+                    value=recent_files_limit(), min=1, max=MAX_RECENT_FILES_LIMIT, step=1, format='%d',
+                ).classes('w-full')
 
         def do_save(_=None):
             prefs['use_tabs'] = bool(use_tabs_cb.value)
@@ -281,6 +367,10 @@ def show_preferences_dialog():
             except (TypeError, ValueError):
                 prefs['indent_size'] = 4
             set_format_prefs(prefs)
+            try:
+                set_recent_files_limit(int(recent_input.value))
+            except (TypeError, ValueError):
+                set_recent_files_limit(DEFAULT_RECENT_FILES_LIMIT)
             dlg.close()
             ui.notify('Preferences saved', color='positive')
 
@@ -1174,6 +1264,7 @@ def open_file(path: Path, restore_draft: bool | None = None):
     key = str(path)
     draft = _drafts().get(key)
     _load_document(key, text, text)  # also drops the draft; restoring re-saves it
+    add_recent_file(key)
     ui.notify(f'Opened {path.name}', color='positive')
     if not draft or draft['text'] == text:
         return
@@ -1495,6 +1586,7 @@ def save_as(on_saved=None):
             sess.current_file['saved_content'] = sess.editor.value
             set_filename_label(dest.name)
             remember_document()
+            add_recent_file(str(dest))
             ui.notify(f'Saved {dest}', color='positive')
             # keep the Hierarchy tree (and its editor-sync state) consistent
             # with the file's new name/location, even though the content is
@@ -1989,6 +2081,16 @@ window.mlwSelectRange = function(elementId, from, to) {
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
+                # Submenu of this user's recently opened files. The File
+                # dropdown auto-closes on any click inside it, so stop this
+                # item's click from reaching it -- otherwise opening the
+                # submenu would close the whole menu.
+                with ui.menu_item('Open Recent', auto_close=False).on('click.stop', js_handler='() => {}'):
+                    with ui.item_section().props('side'):
+                        ui.icon('keyboard_arrow_right')
+                    sess.recent_menu = ui.menu().props('anchor="top end" self="top start" auto-close')
+                    sess.recent_menu.on('before-show', lambda _: rebuild_recent_menu())
+                rebuild_recent_menu()
                 ui.menu_item('Save', on_click=lambda _: save_file())
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
