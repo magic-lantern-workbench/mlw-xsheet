@@ -74,19 +74,34 @@ Either way, open the app at `http://localhost:8080`.
 `docker compose up` is the **development** setup: it merges `compose.override.yaml`, which
 builds the `dev` image target, bind-mounts the working tree, and auto-reloads on edits.
 
-For a **production** container (non-root, read-only filesystem, no auto-reload, healthcheck,
-restart policy), use `compose.prod.yaml` instead of the override:
+For a **production** deployment (non-root, read-only filesystem, no auto-reload, healthcheck,
+restart policy, HTTPS), use `compose.prod.yaml` instead of the override:
 
 ```bash
-docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+MLW_DOMAIN=xsheet.example.com docker compose -f compose.yaml -f compose.prod.yaml up -d --build
 ```
+
+Production serves the app over **HTTPS** through a [Caddy](https://caddyserver.com/) reverse
+proxy (see [`Caddyfile`](Caddyfile)). The app's own port isn't published, and HTTP on port 80
+redirects to HTTPS on 443.
+
+- **Public domain:** set `MLW_DOMAIN` to a hostname whose DNS points at the server, with ports
+  80 and 443 reachable from the internet. Caddy gets and renews a Let's Encrypt certificate
+  automatically.
+- **Local or internal:** leave `MLW_DOMAIN` unset (it defaults to `localhost`) or use an
+  internal name. Caddy then issues a certificate from its own local CA, which browsers warn
+  about unless you trust that CA. You can copy it out with
+  `docker compose -f compose.yaml -f compose.prod.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt .`
+- `MLW_HTTP_PORT` and `MLW_HTTPS_PORT` change the host ports (default `80`/`443`). Let's Encrypt
+  needs the defaults.
+- Certificates are kept in the `caddy-data` volume, so don't delete it between deploys.
 
 In production, the file dialogs open in `/data`, a named volume (`xsheet-data`), rather than
 the app directory. The bundled schemas in `xml/` are still found by auto-detection. The server
 reads these environment variables: `MLW_DATA_DIR` (file dialog root; defaults to the working
 directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), and `MLW_RELOAD`
-(`1`/`0`). On the host side, `MLW_HOST_PORT`, `MLW_IMAGE`, and `MLW_TAG` set the published
-port and the image name and tag.
+(`1`/`0`). `MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the
+host port in development.
 
 ### Layout
 
