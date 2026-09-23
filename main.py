@@ -1,9 +1,11 @@
 from pathlib import Path
 import os
+import time
 from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from dialog_ui import titled_card
+import auth
 from tools import xsheet_to_xdts_extended
 import export_pdf
 
@@ -343,11 +345,13 @@ def format_xml():
 
 def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
-    (Edit > Format) and a Recent Files tab for File > Open Recent."""
+    (Edit > Format), a Recent Files tab for File > Open Recent, and a Login
+    tab for the server's password and inactivity time-out (see auth.py)."""
     with ui.dialog() as dlg, titled_card('Preferences', classes='w-[380px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
+            login_tab = ui.tab('Login')
         with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
                 ui.label('Used by Edit > Format').classes('text-sm text-gray-500')
@@ -362,8 +366,38 @@ def show_preferences_dialog():
                     f'Number of recent files to list (1–{MAX_RECENT_FILES_LIMIT})',
                     value=recent_files_limit(), min=1, max=MAX_RECENT_FILES_LIMIT, step=1, format='%d',
                 ).classes('w-full')
+            with ui.tab_panel(login_tab).classes('px-0 gap-2'):
+                ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
+                timeout_input = ui.number(
+                    f'Log out after this many idle minutes (1–{auth.MAX_TIMEOUT_MINUTES})',
+                    value=auth.session_timeout_minutes(), min=1, max=auth.MAX_TIMEOUT_MINUTES, step=1, format='%d',
+                ).classes('w-full')
+                ui.label('Change password (leave blank to keep it)').classes('text-sm text-gray-500 mt-2')
+                current_pw = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
+                new_pw = ui.input('New password', password=True, password_toggle_button=True).classes('w-full')
+                confirm_pw = ui.input('Confirm new password', password=True, password_toggle_button=True).classes('w-full')
 
         def do_save(_=None):
+            # Check a password change first, so a mistake there saves nothing
+            # and leaves the dialog open to fix it.
+            changing_password = any((current_pw.value, new_pw.value, confirm_pw.value))
+            if changing_password:
+                error = None
+                if not auth.check_password(current_pw.value or ''):
+                    error = 'Current password is incorrect'
+                elif not new_pw.value:
+                    error = 'Enter a new password'
+                elif new_pw.value != confirm_pw.value:
+                    error = "New passwords don't match"
+                if error:
+                    tabs.value = login_tab
+                    ui.notify(error, color='negative')
+                    return
+                auth.set_password(new_pw.value)
+            try:
+                auth.set_session_timeout_minutes(int(timeout_input.value))
+            except (TypeError, ValueError):
+                auth.set_session_timeout_minutes(auth.DEFAULT_TIMEOUT_MINUTES)
             prefs['use_tabs'] = bool(use_tabs_cb.value)
             try:
                 prefs['indent_size'] = max(int(indent_input.value), 1)
@@ -375,7 +409,7 @@ def show_preferences_dialog():
             except (TypeError, ValueError):
                 set_recent_files_limit(DEFAULT_RECENT_FILES_LIMIT)
             dlg.close()
-            ui.notify('Preferences saved', color='positive')
+            ui.notify('Preferences saved' + (' (password changed)' if changing_password else ''), color='positive')
 
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
@@ -1934,6 +1968,14 @@ header .q-btn {
 }
 </style>
 <script>
+// Time of the latest keyboard/mouse/touch activity on this page, read by
+// index()'s session timer to keep the login alive (see auth.py).
+window.mlwLastActivity = Date.now();
+['mousedown', 'mousemove', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+    document.addEventListener(type, function() { window.mlwLastActivity = Date.now(); },
+                              {capture: true, passive: true});
+});
+
 window.mlwFindEditorRoot = function() {
     const cm = document.querySelector('.cm-content');
     if (cm) return {type: 'cm', el: cm};
@@ -2138,6 +2180,14 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Select Schema…', on_click=lambda _: choose_schema())
                 ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
             ui.button('About', on_click=lambda _: show_about_dialog()).props('flat color=white')
+        ui.space()
+        # User menu at the right end of the menubar
+        with ui.button(icon='account_circle').props('flat round color=white'):
+            # to the left of the icon, so it never covers the menu opening below it
+            ui.tooltip(f'Logged in as {auth.current_username()}') \
+                .props('anchor="center left" self="center right" :offset="[8, 0]"')
+            with ui.menu().props('anchor="bottom right" self="top right"'):
+                ui.menu_item('Logout', on_click=lambda _: auth.log_out(sess.user_storage))
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
@@ -2391,6 +2441,24 @@ window.mlwSelectRange = function(elementId, from, to) {
             pass
 
     ui.timer(0.5, poll_cursor_and_select_tree)
+
+    # Inactivity time-out: report this page's latest activity to the
+    # browser's shared login state, and log out once all its tabs have been
+    # idle for longer than the time-out (or another tab logged out).
+    async def check_session():
+        store = sess.user_storage
+        try:
+            idle_ms = await ui.run_javascript('return Date.now() - window.mlwLastActivity;')
+        except Exception:
+            return  # page disconnected; nothing to report
+        if not store.get('authenticated'):  # logged out from another tab
+            ui.navigate.to('/login')
+            return
+        auth.record_activity(store, time.time() - float(idle_ms) / 1000)
+        if not auth.session_is_active(store):
+            auth.log_out(store, timed_out=True)
+
+    ui.timer(10, check_session)
 
 
 # Expose a simple route to list files (useful for API clients)

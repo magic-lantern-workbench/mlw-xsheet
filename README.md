@@ -71,6 +71,20 @@ python main.py
 
 Either way, open the app at `http://localhost:8080`.
 
+### Logging in
+
+The app asks you to log in first. For now there's a single account for the whole server:
+user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).
+Change it before exposing the server to anyone else. The password is stored only as a salted
+hash, in `NICEGUI_STORAGE_PATH`.
+
+- Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
+  opens a menu with **Logout**, which logs them all out and returns to the login page.
+- After 30 minutes without keyboard, mouse or touch activity in any of the browser's tabs,
+  you're logged out and the login page says why. The time-out is also set in Preferences. Your
+  unsaved changes are kept as a draft and come back when you log in again.
+- A wrong password is rejected after a short delay, to slow down guessing.
+
 `docker compose up` is the **development** setup: it merges `compose.override.yaml`, which
 builds the `dev` image target, bind-mounts the working tree, and auto-reloads on edits.
 
@@ -142,7 +156,8 @@ switching browsers starts fresh settings.
 
 ### Layout
 
-- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus, plus an `About` button.
+- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus and an `About` button on the
+  left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
   Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
 - **Tabs** — `XML` (Editor + Hierarchy tree) and `XSheet` (the Exposure Sheet grid).
@@ -209,7 +224,8 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**. Settings are saved per user. The dialog has two tabs:
+Opened from **File > Preferences…**. The dialog has three tabs. Format and Recent Files are
+saved per user; Login applies to everyone using the server:
 
 - **Format** — controls the **Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
@@ -217,6 +233,11 @@ Opened from **File > Preferences…**. Settings are saved per user. The dialog h
 - **Recent Files** — controls **File > Open Recent**:
   - **Number of recent files to list** — 1–20, default 5. Lowering it hides older entries
     rather than deleting them (up to 20 are kept), so raising it again brings them back.
+- **Login** — the server's single account (see [Logging in](#logging-in)):
+  - **Log out after this many idle minutes** — 1–1440, default 30.
+  - **Change password** — enter the current password and the new one twice. Leave all three
+    blank to keep the password. If something's wrong, nothing is saved and the dialog stays
+    open.
 
 ### Hierarchy tree
 
