@@ -99,9 +99,38 @@ redirects to HTTPS on 443.
 In production, the file dialogs open in `/data`, a named volume (`xsheet-data`), rather than
 the app directory. The bundled schemas in `xml/` are still found by auto-detection. The server
 reads these environment variables: `MLW_DATA_DIR` (file dialog root; defaults to the working
-directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), and `MLW_RELOAD`
-(`1`/`0`). `MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the
-host port in development.
+directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), `MLW_RELOAD`
+(`1`/`0`), `MLW_STORAGE_SECRET` (signs the per-user settings cookie), and
+`NICEGUI_STORAGE_PATH` (where per-user settings are saved; `/state` in production).
+`MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the host port in
+development.
+
+Production requires `MLW_STORAGE_SECRET`. Generate it once and keep it in `.env` (git-ignored),
+which compose reads automatically. Changing it signs everyone out of their saved settings.
+
+```bash
+echo "MLW_STORAGE_SECRET=$(openssl rand -hex 32)" >> .env
+```
+
+To put the example documents in the production data volume:
+
+```bash
+docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
+docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
+```
+
+### Multiple users
+
+Several people can use one server at the same time. Every browser tab has its own editing
+session: the open document, unsaved edits, undo/redo history, validation results, and XSheet
+view. Preferences and the chosen schema are saved per user (per browser, via a cookie), so they
+survive reloads and carry over to that user's other tabs. The server keeps them in
+`NICEGUI_STORAGE_PATH`.
+
+Documents are shared: everyone sees the same files in the data directory. If you save a file
+that someone else has saved since you opened it, you're asked before overwriting their changes.
+There are no user accounts, so a "user" is a browser, not a person. Clearing cookies or
+switching browsers starts fresh settings.
 
 ### Layout
 
@@ -121,7 +150,7 @@ host port in development.
 | Item | What it does |
 |---|---|
 | Open | Browse the local filesystem (starting at the project directory) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. |
-| Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. |
+| Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. |
 | Close | Close the current document; prompts to save first if there are unsaved changes. |
 | Export XDTS JSON… | Convert the current document to an XDTS-Extended JSON timesheet and save it. |

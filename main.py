@@ -1,6 +1,6 @@
 from pathlib import Path
 import os
-from nicegui import ui
+from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from tools import xsheet_to_xdts_extended
@@ -14,59 +14,122 @@ BASE_DIR = Path(os.environ.get('MLW_DATA_DIR') or Path.cwd()).resolve()
 # Where the bundled schemas (xml/*.xsd) live, independent of BASE_DIR.
 APP_DIR = Path(__file__).resolve().parent
 
-current_file = {'path': None, 'modified': False, 'saved_content': ''}
 
-# Path to the .xsd chosen for semantic (schema) validation.
-# None means "auto-detect from the document's xsi:schemaLocation".
-current_schema = {'path': None}
 
-# XML/XSD pretty-print parameters, editable via File > Preferences.
-format_prefs = {'indent_size': 4, 'use_tabs': False}
+class Session:
+    """Everything that belongs to one open page (one browser tab): the
+    document being edited, its undo/redo history, the Hierarchy tree's lookup
+    maps, and references to that page's own widgets. One instance is created
+    per page load in index() and kept in app.storage.client, so concurrent
+    users -- or one user with two tabs open -- never see or overwrite each
+    other's state. Module-level functions reach it via session(), which
+    resolves to the calling client because NiceGUI runs every event handler
+    and timer inside its page's context."""
 
-# Remembers where you were in each tab across switches: the XML editor's
-# cursor offset, and the XSheet grid's topmost visible row index. Both stay
-# None until you switch away from that tab at least once (see index()'s
-# on_main_tab_change()).
-tab_view_state = {'xml_cursor_offset': None, 'xsheet_top_row': None}
+    def __init__(self):
+        self.current_file = {'path': None, 'modified': False, 'saved_content': ''}
 
-# Frame-number ranges of empty XSheet rows the user has collapsed into a
-# single summary row (see _compute_xsheet_display_rows()). Keyed by
-# (start_frame, end_frame) so the collapse survives a rebuild as long as the
-# underlying empty run doesn't change shape.
-xsheet_collapsed_ranges: set[tuple[int, int]] = set()
+        # Remembers where you were in each tab across switches: the XML
+        # editor's cursor offset, and the XSheet grid's topmost visible row
+        # index. Both stay None until you switch away from that tab at least
+        # once (see index()'s on_main_tab_change()).
+        self.tab_view_state = {'xml_cursor_offset': None, 'xsheet_top_row': None}
 
-# Suppress editor change handler during programmatic updates
-suppress_editor_change = False
-# Undo/redo stacks and last value
-undo_stack = []
-redo_stack = []
-last_editor_value = ''
+        # Frame-number ranges of empty XSheet rows the user has collapsed into
+        # a single summary row (see _compute_xsheet_display_rows()). Keyed by
+        # (start_frame, end_frame) so the collapse survives a rebuild as long
+        # as the underlying empty run doesn't change shape.
+        self.xsheet_collapsed_ranges: set[tuple[int, int]] = set()
+
+        # Suppress editor change handler during programmatic updates
+        self.suppress_editor_change = False
+        # Undo/redo stacks and last value
+        self.undo_stack = []
+        self.redo_stack = []
+        self.last_editor_value = ''
+
+        # XML hierarchy tree lookup maps (see parse_xml_to_tree()).
+        self.xml_node_map = {}
+        self.xml_parent_map = {}
+        # Maps an xmlschema-style element path (e.g.
+        # "/ExposureSheet/Timeline/Frame[2]/Layers/Layer[2]", namespace
+        # prefixes stripped) to the tree node id at that path -- lets
+        # Validation Results entries jump to the offending element the same
+        # way Hierarchy tree clicks do.
+        self.xml_path_to_id = {}
+        self.last_synced_node = {'id': None}
+
+        # This page's widgets, assigned as index() builds them.
+        self.editor = None
+        self.xml_tree = None
+        self.xml_menu_button = None
+        self.filename_label = None
+        self.validation_status_label = None
+        self.schema_label = None
+        self.validation_panel = None
+        self.validation_results_container = None
+        self.xsheet_status_label = None
+        self.xsheet_grid = None
+
+
+def session() -> Session:
+    """The Session of the page the current event/timer belongs to."""
+    return app.storage.client['session']
+
+
+# Per-user settings kept in app.storage.user, which NiceGUI persists per
+# browser (identified by a signed cookie) across reloads, tabs, and server
+# restarts -- unlike Session, which lives only as long as its page.
+#   'format_prefs':  XML/XSD pretty-print parameters, editable via
+#                    File > Preferences.
+#   'schema_path':   the .xsd chosen for semantic (schema) validation; None
+#                    means "auto-detect from the document's xsi:schemaLocation".
+DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
+
+
+def format_prefs() -> dict:
+    """This user's format preferences, filled in with defaults. A copy --
+    save changes with set_format_prefs()."""
+    return {**DEFAULT_FORMAT_PREFS, **app.storage.user.get('format_prefs', {})}
+
+
+def set_format_prefs(prefs: dict) -> None:
+    app.storage.user['format_prefs'] = dict(prefs)
+
+
+def chosen_schema_path() -> str | None:
+    return app.storage.user.get('schema_path')
+
+
+def set_chosen_schema_path(path: str | None) -> None:
+    app.storage.user['schema_path'] = path
 
 
 def set_filename_label(name: str | None = None):
     """Update filename label text, adding '*' when modified."""
+    sess = session()
     if name is None:
-        name = Path(current_file['path']).name if current_file['path'] else 'No file'
-    label_text = name + (' *' if current_file.get('modified') else '')
-    # filename_label is created in the page; guard in case called earlier
-    if 'filename_label' in globals():
-        filename_label.set_text(label_text)
+        name = Path(sess.current_file['path']).name if sess.current_file['path'] else 'No file'
+    label_text = name + (' *' if sess.current_file.get('modified') else '')
+    if sess.filename_label is not None:
+        sess.filename_label.set_text(label_text)
 
 
 def set_validation_status(message: str, ok: bool = True):
     """Update the validation status label in the footer."""
-    # validation_status_label is created in the page; guard in case called earlier
-    if 'validation_status_label' in globals():
-        validation_status_label.set_text(message)
-        validation_status_label.style(f'color: {"green" if ok else "red"}')
+    sess = session()
+    if sess.validation_status_label is not None:
+        sess.validation_status_label.set_text(message)
+        sess.validation_status_label.style(f'color: {"green" if ok else "red"}')
 
 
 def validate_xml():
     """Validate the current editor contents as well-formed XML/XSD and report
     the result in the footer's validation status label."""
-    ed = globals().get('editor')
+    sess = session()
+    ed = sess.editor
     text = ed.value if ed is not None else ''
-    path = current_file.get('path')
+    path = sess.current_file.get('path')
     kind = 'XSD' if path and str(path).lower().endswith('.xsd') else 'XML'
     if not text.strip():
         msg = f'Nothing to validate ({kind})'
@@ -90,7 +153,7 @@ def validate_xml():
 
 
 def _editor_text() -> str:
-    ed = globals().get('editor')
+    ed = session().editor
     return ed.value if ed is not None else ''
 
 
@@ -129,10 +192,11 @@ def pretty_print_xml(text: str, indent: str = '    ') -> str:
 
 
 def _format_indent_string() -> str:
-    if format_prefs.get('use_tabs'):
+    prefs = format_prefs()
+    if prefs.get('use_tabs'):
         return '\t'
     try:
-        size = max(int(format_prefs.get('indent_size', 4)), 1)
+        size = max(int(prefs.get('indent_size', 4)), 1)
     except (TypeError, ValueError):
         size = 4
     return ' ' * size
@@ -140,7 +204,7 @@ def _format_indent_string() -> str:
 
 def format_xml():
     """Pretty-print the editor's XML/XSD contents in place, using the current
-    format_prefs. Routed through _set_editor_text() so it participates in
+    format preferences. Routed through _set_editor_text() so it participates in
     undo/redo and flips the modified ('*') indicator like any other edit."""
     text = _editor_text()
     if not text.strip():
@@ -163,17 +227,19 @@ def show_preferences_dialog():
     with ui.dialog() as dlg, ui.card().classes('p-4 w-[360px] max-w-full gap-2'):
         ui.label('Preferences').classes('text-lg font-medium')
         ui.label('Format (Edit > Format)').classes('text-sm text-gray-500')
-        use_tabs_cb = ui.checkbox('Use tabs for indentation', value=format_prefs['use_tabs'])
+        prefs = format_prefs()
+        use_tabs_cb = ui.checkbox('Use tabs for indentation', value=prefs['use_tabs'])
         indent_input = ui.number(
-            'Indent size (spaces)', value=format_prefs['indent_size'], min=1, max=8, step=1,
+            'Indent size (spaces)', value=prefs['indent_size'], min=1, max=8, step=1,
         ).classes('w-full').bind_enabled_from(use_tabs_cb, 'value', backward=lambda v: not v)
 
         def do_save(_=None):
-            format_prefs['use_tabs'] = bool(use_tabs_cb.value)
+            prefs['use_tabs'] = bool(use_tabs_cb.value)
             try:
-                format_prefs['indent_size'] = max(int(indent_input.value), 1)
+                prefs['indent_size'] = max(int(indent_input.value), 1)
             except (TypeError, ValueError):
-                format_prefs['indent_size'] = 4
+                prefs['indent_size'] = 4
+            set_format_prefs(prefs)
             dlg.close()
             ui.notify('Preferences saved', color='positive')
 
@@ -203,11 +269,12 @@ def resolve_schema_for_xml(text: str):
     """Best-effort resolution of the schema for the current document.
     Order: explicitly chosen schema -> xsi:schemaLocation resolved next to the
     file -> same basename found anywhere under BASE_DIR. Returns a Path or None."""
-    chosen = current_schema.get('path')
+    sess = session()
+    chosen = chosen_schema_path()
     if chosen and Path(chosen).is_file():
         return Path(chosen)
 
-    doc_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    doc_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
     for loc in _detect_schema_locations(text):
         cand = (doc_dir / loc)
         if cand.is_file():
@@ -226,7 +293,7 @@ def _validation_panel_container():
     """The ui.column() inside the Validation Results expansion panel that gets
     cleared and repopulated on each validation run. None before index() has
     built the page."""
-    return globals().get('validation_results_container')
+    return session().validation_results_container
 
 
 def _reveal_validation_panel(scroll_into_view: bool = False):
@@ -235,7 +302,7 @@ def _reveal_validation_panel(scroll_into_view: bool = False):
     on a tall document it's off the bottom of the screen otherwise. Left
     alone on success so a passing validation doesn't yank the view away
     from wherever the user was working."""
-    panel = globals().get('validation_panel')
+    panel = session().validation_panel
     if panel is not None:
         panel.open()
         if scroll_into_view:
@@ -252,7 +319,7 @@ def clear_validation_panel():
     container = _validation_panel_container()
     if container is not None:
         container.clear()
-    panel = globals().get('validation_panel')
+    panel = session().validation_panel
     if panel is not None:
         panel.close()
 
@@ -277,7 +344,7 @@ def _children_of(parent_tid: str) -> list[str]:
     each other (even though descendants of different children interleave in
     the dict overall), so filtering by parent while preserving dict order
     reconstructs that per-parent ordering without needing a separate map."""
-    return [tid for tid, pid in xml_parent_map.items() if pid == parent_tid]
+    return [tid for tid, pid in session().xml_parent_map.items() if pid == parent_tid]
 
 
 def resolve_error_offset(path: str, child_index: int | None = None):
@@ -298,9 +365,10 @@ def resolve_error_offset(path: str, child_index: int | None = None):
 
     Returns None if the path/index can't be matched -- e.g. the document has
     changed shape since validation ran."""
+    sess = session()
     import re
     normalized = '/'.join(re.sub(r'^[\w.\-]+:', '', segment) for segment in path.split('/'))
-    tid = xml_path_to_id.get(normalized)
+    tid = sess.xml_path_to_id.get(normalized)
     if tid is None:
         return None
     if child_index is not None:
@@ -308,7 +376,7 @@ def resolve_error_offset(path: str, child_index: int | None = None):
         if not (0 <= child_index < len(children)):
             return None
         tid = children[child_index]
-    return xml_node_map.get(tid)
+    return sess.xml_node_map.get(tid)
 
 
 def goto_validation_error(path: str, child_index: int | None = None):
@@ -321,7 +389,7 @@ def goto_validation_error(path: str, child_index: int | None = None):
         ui.notify(f'Could not locate {path} in the current document', color='warning')
         return
     start, _end, _line = location
-    ui.run_javascript(f'window.mlwHighlightLine({editor.id}, {start});')
+    ui.run_javascript(f'window.mlwHighlightLine({session().editor.id}, {start});')
 
 
 def show_validation_errors(errors, schema_name: str):
@@ -352,7 +420,7 @@ def choose_schema(then_validate: bool = True):
     def picked(files):
         if not files:
             return
-        current_schema['path'] = str(Path(files[0]))
+        set_chosen_schema_path(str(Path(files[0])))
         set_schema_label()
         ui.notify(f'Schema: {Path(files[0]).name}', color='positive')
         if then_validate:
@@ -364,12 +432,12 @@ def choose_schema(then_validate: bool = True):
             self.close()
             super().submit(value)
 
-    start_dir = Path(current_schema['path']).parent if current_schema.get('path') else BASE_DIR
+    start_dir = Path(chosen_schema_path()).parent if chosen_schema_path() else BASE_DIR
     SchemaPicker(str(start_dir), upper_limit=None, allowed_extensions=['.xsd']).open()
 
 
 def clear_schema():
-    current_schema['path'] = None
+    set_chosen_schema_path(None)
     set_schema_label()
     ui.notify('Schema cleared (will auto-detect)', color='info')
 
@@ -476,9 +544,9 @@ def _confirm_export_despite_warnings(warnings: list[str], on_confirm):
 
 
 def set_schema_label():
-    lbl = globals().get('schema_label')
+    lbl = session().schema_label
     if lbl is not None:
-        p = current_schema.get('path')
+        p = chosen_schema_path()
         lbl.set_text(f'Schema: {Path(p).name}' if p else 'Schema: auto-detect')
 
 
@@ -508,16 +576,6 @@ def find_xml_files():
     return files
 
 # --- XML hierarchy tree helpers (module-level) ---
-xml_tree = None
-xml_node_map = {}
-xml_parent_map = {}
-# Maps an xmlschema-style element path (e.g.
-# "/ExposureSheet/Timeline/Frame[2]/Layers/Layer[2]", namespace prefixes
-# stripped) to the tree node id at that path -- lets Validation Results
-# entries jump to the offending element the same way Hierarchy tree clicks do.
-xml_path_to_id = {}
-_last_synced_node = {'id': None}
-
 def _describe_element_label(tag: str, elem) -> str:
     """Build a Hierarchy label that includes enough of an element's own
     attributes/text to tell same-tag siblings apart (e.g. which "Asset" or
@@ -642,12 +700,12 @@ def rebuild_tree_from_current():
     what's on screen the moment there's any unsaved edit (typing, Find &
     Replace, Undo/Redo, or Format), leaving every tree node's stored
     character offset pointing at the wrong place in the actual document."""
-    global xml_tree, xml_node_map, xml_parent_map, xml_path_to_id
+    sess = session()
     text = _editor_text()
     rebuild_xsheet_from_current()  # keep the XSheet tab's grid in sync too
-    items, xml_node_map, xml_parent_map, xml_path_to_id = parse_xml_to_tree(text)
+    items, sess.xml_node_map, sess.xml_parent_map, sess.xml_path_to_id = parse_xml_to_tree(text)
     # tree structure changed, so any previously tracked selection is stale
-    _last_synced_node['id'] = None
+    sess.last_synced_node['id'] = None
     # build ui-compatible nodes list using the keys ui.tree actually expects:
     # 'id', 'label' (default label_key), and 'children' -- applied recursively.
     def build_ui_tree(items):
@@ -661,25 +719,25 @@ def rebuild_tree_from_current():
 
     # debug
     try:
-        print(f'DEBUG: rebuild_tree_from_current: built {len(ui_items)} root nodes, xml_node_map size={len(xml_node_map)}')
+        print(f'DEBUG: rebuild_tree_from_current: built {len(ui_items)} root nodes, xml_node_map size={len(sess.xml_node_map)}')
     except Exception:
         pass
 
     # try to update existing tree widget
-    if xml_tree is not None:
+    if sess.xml_tree is not None:
         try:
             # NiceGUI's Tree element has no set_nodes()/set_items() API and plain
             # attribute assignment (xml_tree.nodes = ...) does NOT propagate to the
             # client. You must write into .props and then call .update().
-            xml_tree.props['nodes'] = ui_items
-            xml_tree.update()
+            sess.xml_tree.props['nodes'] = ui_items
+            sess.xml_tree.update()
             print(f'DEBUG: xml_tree updated via props with {len(ui_items)} root nodes')
             return
         except Exception as exc:
             print('DEBUG: failed to set tree nodes:', exc)
 
     # fallback: create a simple standalone tree (used only if caller requests it)
-    xml_tree = ui.tree(nodes=ui_items)
+    sess.xml_tree = ui.tree(nodes=ui_items)
 
 
 def expand_hierarchy_root():
@@ -689,10 +747,11 @@ def expand_hierarchy_root():
     rebuild_tree_from_current() itself, since that also runs on every
     ordinary edit, and resetting the user's own expansion state on each
     keystroke would be disruptive rather than helpful."""
-    tree = globals().get('xml_tree')
+    sess = session()
+    tree = sess.xml_tree
     if tree is None:
         return
-    root_id = next((tid for tid, parent in xml_parent_map.items() if parent is None), None)
+    root_id = next((tid for tid, parent in sess.xml_parent_map.items() if parent is None), None)
     if root_id is None:
         return
     tree.props['expanded'] = [root_id]
@@ -905,7 +964,7 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
     or more consecutive completely-empty rows get a '_toggle' marker on
     their first row (an up/down triangle) so the user can collapse them into
     a single summary row, or expand a previously-collapsed run back out.
-    Collapse state is tracked globally in `xsheet_collapsed_ranges`, keyed
+    Collapse state is tracked per session in `xsheet_collapsed_ranges`, keyed
     by the run's (start_frame, end_frame)."""
     display: list[dict] = []
     i, n = 0, len(rows)
@@ -927,7 +986,7 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
         else:
             start_frame, end_frame = run[0]['Frame'], run[-1]['Frame']
             key = (start_frame, end_frame)
-            if key in xsheet_collapsed_ranges:
+            if key in session().xsheet_collapsed_ranges:
                 summary = {lid: '' for lid in layer_ids}
                 summary['Frame'] = f'{start_frame}–{end_frame}'
                 summary['Camera'] = ''
@@ -957,8 +1016,9 @@ def rebuild_xsheet_from_current():
     """Rebuild the XSheet tab's Exposure Sheet grid from the editor's live
     (possibly unsaved) text -- called from rebuild_tree_from_current() so
     it always stays in step with the Hierarchy tree."""
-    grid = globals().get('xsheet_grid')
-    status = globals().get('xsheet_status_label')
+    sess = session()
+    grid = sess.xsheet_grid
+    status = sess.xsheet_status_label
     if grid is None:
         return
     layer_ids, rows, message = parse_exposure_sheet(_editor_text())
@@ -1000,6 +1060,7 @@ def handle_xsheet_toggle_click(e):
     '_toggle' column of a row that marks a collapsible/collapsed empty run
     (see _compute_xsheet_display_rows()), flipping that run's collapse
     state and rebuilding the grid."""
+    sess = session()
     args = e.args or {}
     if args.get('colId') != '_toggle':
         return
@@ -1008,47 +1069,47 @@ def handle_xsheet_toggle_click(e):
     if start_frame is None or end_frame is None:
         return
     key = (start_frame, end_frame)
-    if key in xsheet_collapsed_ranges:
-        xsheet_collapsed_ranges.discard(key)
+    if key in sess.xsheet_collapsed_ranges:
+        sess.xsheet_collapsed_ranges.discard(key)
     else:
-        xsheet_collapsed_ranges.add(key)
+        sess.xsheet_collapsed_ranges.add(key)
     rebuild_xsheet_from_current()
 
 
 def open_file(path: Path):
+    sess = session()
     try:
         text = path.read_text(encoding='utf-8')
     except Exception as exc:
         ui.notify(f'Failed to open {path}: {exc}', color='negative')
         return
-    current_file['path'] = str(path)
-    current_file['modified'] = False
-    current_file['saved_content'] = text
+    sess.current_file['path'] = str(path)
+    sess.current_file['modified'] = False
+    sess.current_file['saved_content'] = text
     set_filename_label(path.name)
-    xsheet_collapsed_ranges.clear()
+    sess.xsheet_collapsed_ranges.clear()
     # initialize undo/redo stacks
-    global undo_stack, redo_stack, last_editor_value, suppress_editor_change
-    undo_stack.clear()
-    redo_stack.clear()
-    last_editor_value = text
+    sess.undo_stack.clear()
+    sess.redo_stack.clear()
+    sess.last_editor_value = text
     # programmatic update — suppress change handler so initial load doesn't mark as modified
-    suppress_editor_change = True
+    sess.suppress_editor_change = True
     # try multiple ways to set editor content (CodeMirror variants differ)
     try:
-        if hasattr(editor, 'set_content'):
-            editor.set_content(text)
-        elif hasattr(editor, 'set_code'):
-            editor.set_code(text)
-        elif hasattr(editor, 'set_text'):
-            editor.set_text(text)
+        if hasattr(sess.editor, 'set_content'):
+            sess.editor.set_content(text)
+        elif hasattr(sess.editor, 'set_code'):
+            sess.editor.set_code(text)
+        elif hasattr(sess.editor, 'set_text'):
+            sess.editor.set_text(text)
         else:
-            editor.value = text
+            sess.editor.value = text
     except Exception:
         try:
-            editor.value = text
+            sess.editor.value = text
         except Exception:
             ui.notify('Failed to set editor content', color='warning')
-    suppress_editor_change = False
+    sess.suppress_editor_change = False
     # update xml tree for the opened file
     try:
         rebuild_tree_from_current()
@@ -1060,18 +1121,18 @@ def open_file(path: Path):
 
 
 def close_file():
-    current_file['path'] = None
-    current_file['modified'] = False
-    current_file['saved_content'] = ''
+    sess = session()
+    sess.current_file['path'] = None
+    sess.current_file['modified'] = False
+    sess.current_file['saved_content'] = ''
     set_filename_label('No file')
     set_validation_status('')
     clear_validation_panel()
-    xsheet_collapsed_ranges.clear()
+    sess.xsheet_collapsed_ranges.clear()
     # suppress change handler when clearing editor
-    global suppress_editor_change
-    suppress_editor_change = True
-    editor.value = ''
-    suppress_editor_change = False
+    sess.suppress_editor_change = True
+    sess.editor.value = ''
+    sess.suppress_editor_change = False
     try:
         rebuild_tree_from_current()
     except Exception:
@@ -1080,7 +1141,8 @@ def close_file():
 
 def close_with_check():
     """Close the current file, but prompt to save if modified."""
-    if not current_file.get('path') or not current_file.get('modified'):
+    sess = session()
+    if not sess.current_file.get('path') or not sess.current_file.get('modified'):
         close_file()
         return
     with ui.dialog() as confirm_dialog:
@@ -1091,10 +1153,10 @@ def close_with_check():
                     confirm_dialog.close()
                     close_file()
                 def do_yes(_=None):
-                    # Save then close
-                    save_file()
+                    # Save then close -- only once the save actually went
+                    # through, so declining an overwrite prompt keeps the file open
                     confirm_dialog.close()
-                    close_file()
+                    save_file(on_saved=close_file)
                 ui.button('No', on_click=do_no).props('outline')
                 ui.button('Yes', on_click=do_yes).classes('ml-2')
     confirm_dialog.open()
@@ -1104,16 +1166,16 @@ def _set_editor_text(new_text: str):
     """Programmatically replace the editor contents (used by Find & Replace),
     keeping undo/redo and modified-state tracking consistent -- same pattern
     as do_undo/do_redo."""
-    global undo_stack, redo_stack, last_editor_value, suppress_editor_change
-    if new_text == last_editor_value:
+    sess = session()
+    if new_text == sess.last_editor_value:
         return
-    undo_stack.append(last_editor_value)
-    redo_stack.clear()
-    suppress_editor_change = True
-    editor.value = new_text
-    suppress_editor_change = False
-    last_editor_value = new_text
-    current_file['modified'] = (new_text != current_file.get('saved_content', ''))
+    sess.undo_stack.append(sess.last_editor_value)
+    sess.redo_stack.clear()
+    sess.suppress_editor_change = True
+    sess.editor.value = new_text
+    sess.suppress_editor_change = False
+    sess.last_editor_value = new_text
+    sess.current_file['modified'] = (new_text != sess.current_file.get('saved_content', ''))
     set_filename_label()
     try:
         rebuild_tree_from_current()
@@ -1150,7 +1212,7 @@ def show_find_dialog():
         # editor.id addresses the live CodeMirror EditorView so the highlight
         # is positioned via CodeMirror's own APIs (see mlwSelectRange) instead
         # of guessing at which lines happen to be rendered in the DOM.
-        ui.run_javascript(f'window.mlwSelectRange({editor.id}, {m.start()}, {m.end()});')
+        ui.run_javascript(f'window.mlwSelectRange({session().editor.id}, {m.start()}, {m.end()});')
 
     def clear_highlight():
         ui.run_javascript('window.mlwClearFindHighlight && window.mlwClearFindHighlight();')
@@ -1246,19 +1308,52 @@ def show_find_dialog():
     dlg.open()
 
 
-def save_file():
-    if not current_file['path']:
+def save_file(on_saved=None):
+    """Write the editor back to the open file, then call on_saved() if the
+    save went through. Documents in BASE_DIR are shared between users, so if
+    the file on disk no longer matches what this session last opened or
+    saved -- someone else saved over it in the meantime -- ask before
+    overwriting their changes."""
+    sess = session()
+    if not sess.current_file['path']:
         save_as()
         return
-    path = Path(current_file['path'])
-    try:
-        path.write_text(editor.value, encoding='utf-8')
-        current_file['modified'] = False
-        current_file['saved_content'] = editor.value
+    path = Path(sess.current_file['path'])
+
+    def do_save():
+        try:
+            path.write_text(sess.editor.value, encoding='utf-8')
+        except Exception as exc:
+            ui.notify(f'Failed to save {path}: {exc}', color='negative')
+            return
+        sess.current_file['modified'] = False
+        sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
         ui.notify(f'Saved {path}', color='positive')
-    except Exception as exc:
-        ui.notify(f'Failed to save {path}: {exc}', color='negative')
+        if on_saved is not None:
+            on_saved()
+
+    try:
+        on_disk = path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        on_disk = None
+    except Exception:
+        on_disk = sess.current_file['saved_content']  # unreadable; let the write report it
+    if on_disk is None or on_disk == sess.current_file['saved_content']:
+        do_save()
+        return
+    with ui.dialog() as confirm_dialog, ui.card().classes('p-4'):
+        ui.label(f'{path.name} was changed on disk since you opened it, '
+                 'possibly by another user. Overwrite those changes?')
+        with ui.row().classes('mt-4 justify-end'):
+            def do_no(_=None):
+                confirm_dialog.close()
+            def do_yes(_=None):
+                confirm_dialog.close()
+                do_save()
+            ui.button('No', on_click=do_no).props('outline')
+            ui.button('Overwrite', on_click=do_yes).props('color=warning').classes('ml-2')
+    confirm_dialog.open()
 
 
 def _confirm_overwrite(path: Path, on_confirm):
@@ -1283,6 +1378,7 @@ def _confirm_overwrite(path: Path, on_confirm):
 
 
 def save_as():
+    sess = session()
     def file_selected_callback(files):
         if not files:
             return
@@ -1290,13 +1386,13 @@ def save_as():
 
         def do_save():
             try:
-                dest.write_text(editor.value, encoding='utf-8')
+                dest.write_text(sess.editor.value, encoding='utf-8')
             except Exception as exc:
                 ui.notify(f'Failed to save {dest}: {exc}', color='negative')
                 return
-            current_file['path'] = str(dest)
-            current_file['modified'] = False
-            current_file['saved_content'] = editor.value
+            sess.current_file['path'] = str(dest)
+            sess.current_file['modified'] = False
+            sess.current_file['saved_content'] = sess.editor.value
             set_filename_label(dest.name)
             ui.notify(f'Saved {dest}', color='positive')
             # keep the Hierarchy tree (and its editor-sync state) consistent
@@ -1315,8 +1411,8 @@ def save_as():
             self.close()
             super().submit(value)
 
-    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
-    start_name = Path(current_file['path']).name if current_file.get('path') else 'untitled.xml'
+    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    start_name = Path(sess.current_file['path']).name if sess.current_file.get('path') else 'untitled.xml'
     dialog = SaveFileWithCallback(
         str(start_dir),
         filename=start_name,
@@ -1329,11 +1425,12 @@ def save_as():
 def export_xdts():
     """Convert the current editor contents (an XSheet ExposureSheet document)
     to an XDTS JSON timesheet and save it via a Save As-style dialog."""
+    sess = session()
     text = _editor_text()
     if not text.strip():
         ui.notify('Nothing to export', color='warning')
         return
-    source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+    source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
     try:
         xdts_text = xsheet_to_xdts_extended.export_xdts_json(text, source_name=source_name)
     except Exception as exc:
@@ -1361,7 +1458,7 @@ def export_xdts():
             self.close()
             super().submit(value)
 
-    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
     start_name = f'{source_name}.xdts.json'
     dialog = ExportFileWithCallback(
         str(start_dir),
@@ -1380,14 +1477,15 @@ def export_to_pdf():
     proceeding (see _confirm_export_despite_warnings()) -- generation is
     cancelled outright if the user declines, and the resulting PDF carries a
     warning banner on its first page if they proceed anyway."""
+    sess = session()
     text = _editor_text()
     if not text.strip():
         ui.notify('Nothing to export', color='warning')
         return
 
     def do_generate(validation_warnings: list[str]):
-        doc_name = Path(current_file['path']).name if current_file.get('path') else 'untitled'
-        source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+        doc_name = Path(sess.current_file['path']).name if sess.current_file.get('path') else 'untitled'
+        source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
         try:
             pdf_bytes = export_pdf.generate_pdf(text, title=doc_name, warnings=validation_warnings)
         except Exception as exc:
@@ -1415,7 +1513,7 @@ def export_to_pdf():
                 self.close()
                 super().submit(value)
 
-        start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+        start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
         start_name = f'{source_name}.pdf'
         dialog = ExportPdfWithCallback(
             str(start_dir),
@@ -1436,14 +1534,15 @@ def export_xsheet():
     """Render the XSheet tab's Exposure Sheet grid (not the raw XML -- see
     export_to_pdf() for that) as a paginated landscape PDF table and save it
     via a Save As-style dialog."""
+    sess = session()
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
     if not rows:
         ui.notify(message or 'Nothing to export', color='warning')
         return
 
-    doc_name = Path(current_file['path']).name if current_file.get('path') else 'untitled'
-    source_name = Path(current_file['path']).stem if current_file.get('path') else 'untitled'
+    doc_name = Path(sess.current_file['path']).name if sess.current_file.get('path') else 'untitled'
+    source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
     try:
         pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text)
     except Exception as exc:
@@ -1471,7 +1570,7 @@ def export_xsheet():
             self.close()
             super().submit(value)
 
-    start_dir = Path(current_file['path']).parent if current_file.get('path') else BASE_DIR
+    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
     start_name = f'{source_name}-xsheet.pdf'
     dialog = ExportXSheetPdfWithCallback(
         str(start_dir),
@@ -1504,6 +1603,8 @@ def show_file_dialog():
 # Main content: editor and highlighted preview side-by-side
 @ui.page('/')
 def index():
+    sess = Session()
+    app.storage.client['session'] = sess
     # JS helpers bridging the editor and the Hierarchy tree.
     # - mlwGetCursorOffset: character offset of the cursor -> used to sync
     #   editor cursor movement to a tree selection.
@@ -1806,9 +1907,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             # XML menu with Validation -- only meaningful while the XML tab
             # is active (see on_main_tab_change() below), since it acts on
             # the editor's content.
-            global xml_menu_button
-            xml_menu_button = ui.dropdown_button('XML', auto_close=True).props('flat color=white')
-            with xml_menu_button:
+            sess.xml_menu_button = ui.dropdown_button('XML', auto_close=True).props('flat color=white')
+            with sess.xml_menu_button:
                 ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
                 ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema())
                 ui.separator()
@@ -1818,12 +1918,9 @@ window.mlwSelectRange = function(elementId, from, to) {
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
-            global filename_label
-            filename_label = ui.label('No file')
-            global validation_status_label
-            validation_status_label = ui.label('')
-            global schema_label
-            schema_label = ui.label('')
+            sess.filename_label = ui.label('No file')
+            sess.validation_status_label = ui.label('')
+            sess.schema_label = ui.label('')
             set_schema_label()
 
     async def on_main_tab_change(e):
@@ -1850,25 +1947,25 @@ window.mlwSelectRange = function(elementId, from, to) {
         # elsewhere in this file is given the element -- nicegui reports
         # client-originated tab changes by name.
         switching_to_xsheet = (new_value == 'XSheet')
-        if xml_menu_button is not None:
-            xml_menu_button.disable() if switching_to_xsheet else xml_menu_button.enable()
+        if sess.xml_menu_button is not None:
+            sess.xml_menu_button.disable() if switching_to_xsheet else sess.xml_menu_button.enable()
         try:
             if switching_to_xsheet:
-                offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({editor.id});')
+                offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
                 if offset is not None:
-                    tab_view_state['xml_cursor_offset'] = int(offset)
-                if xsheet_grid is not None and tab_view_state['xsheet_top_row'] is not None:
+                    sess.tab_view_state['xml_cursor_offset'] = int(offset)
+                if sess.xsheet_grid is not None and sess.tab_view_state['xsheet_top_row'] is not None:
                     import asyncio
                     rebuild_xsheet_from_current()
                     await asyncio.sleep(0.15)
-                    xsheet_grid.run_grid_method('ensureIndexVisible', tab_view_state['xsheet_top_row'], 'top')
+                    sess.xsheet_grid.run_grid_method('ensureIndexVisible', sess.tab_view_state['xsheet_top_row'], 'top')
             else:
-                if xsheet_grid is not None:
-                    top_row = await xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
+                if sess.xsheet_grid is not None:
+                    top_row = await sess.xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
                     if top_row is not None:
-                        tab_view_state['xsheet_top_row'] = int(top_row)
-                if tab_view_state['xml_cursor_offset'] is not None:
-                    ui.run_javascript(f"window.mlwHighlightLine({editor.id}, {tab_view_state['xml_cursor_offset']});")
+                        sess.tab_view_state['xsheet_top_row'] = int(top_row)
+                if sess.tab_view_state['xml_cursor_offset'] is not None:
+                    ui.run_javascript(f"window.mlwHighlightLine({sess.editor.id}, {sess.tab_view_state['xml_cursor_offset']});")
         except Exception:
             pass
 
@@ -1881,24 +1978,21 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.row().classes('gap-4 w-full flex-nowrap'):
                 with ui.column().style('flex:1; min-width:0'):
                     ui.label('XML Editor').classes('text-sm font-medium')
-                    # editor is created here; use global for simplicity
-                    global editor
                     # prefer built-in CodeMirror component if available for semantic highlighting
-                    editor = None
+                    sess.editor = None
                     def on_editor_change(e):
                         # ignore programmatic updates
-                        if globals().get('suppress_editor_change'):
+                        if sess.suppress_editor_change:
                             return
-                        global undo_stack, redo_stack, last_editor_value
                         new_val = e.value
                         # push previous value onto undo stack
-                        if last_editor_value != new_val:
-                            undo_stack.append(last_editor_value)
+                        if sess.last_editor_value != new_val:
+                            sess.undo_stack.append(sess.last_editor_value)
                             # clear redo stack on new edit
-                            redo_stack.clear()
-                            last_editor_value = new_val
+                            sess.redo_stack.clear()
+                            sess.last_editor_value = new_val
                         # mark document modified and update label
-                        current_file['modified'] = (new_val != current_file.get('saved_content', ''))
+                        sess.current_file['modified'] = (new_val != sess.current_file.get('saved_content', ''))
                         set_filename_label()
 
                     # wrapper to also rebuild XML tree on edits
@@ -1912,39 +2006,37 @@ window.mlwSelectRange = function(elementId, from, to) {
                                 pass
                     for comp in ('codemirror', 'code_mirror', 'codeMirror', 'CodeMirror'):
                         if hasattr(ui, comp):
-                            editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
+                            sess.editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                             break
                     # add Edit menu undo/redo after editor creation
                     def do_undo(_=None):
-                        global undo_stack, redo_stack, last_editor_value, suppress_editor_change
-                        if not undo_stack:
+                        if not sess.undo_stack:
                             ui.notify('Nothing to undo', color='info')
                             return
-                        prev = undo_stack.pop()
-                        redo_stack.append(last_editor_value)
-                        suppress_editor_change = True
-                        editor.value = prev
-                        suppress_editor_change = False
-                        last_editor_value = prev
-                        current_file['modified'] = (prev != current_file.get('saved_content', ''))
+                        prev = sess.undo_stack.pop()
+                        sess.redo_stack.append(sess.last_editor_value)
+                        sess.suppress_editor_change = True
+                        sess.editor.value = prev
+                        sess.suppress_editor_change = False
+                        sess.last_editor_value = prev
+                        sess.current_file['modified'] = (prev != sess.current_file.get('saved_content', ''))
                         set_filename_label()
 
                     def do_redo(_=None):
-                        global undo_stack, redo_stack, last_editor_value, suppress_editor_change
-                        if not redo_stack:
+                        if not sess.redo_stack:
                             ui.notify('Nothing to redo', color='info')
                             return
-                        nxt = redo_stack.pop()
-                        undo_stack.append(last_editor_value)
-                        suppress_editor_change = True
-                        editor.value = nxt
-                        suppress_editor_change = False
-                        last_editor_value = nxt
-                        current_file['modified'] = (nxt != current_file.get('saved_content', ''))
+                        nxt = sess.redo_stack.pop()
+                        sess.undo_stack.append(sess.last_editor_value)
+                        sess.suppress_editor_change = True
+                        sess.editor.value = nxt
+                        sess.suppress_editor_change = False
+                        sess.last_editor_value = nxt
+                        sess.current_file['modified'] = (nxt != sess.current_file.get('saved_content', ''))
                         set_filename_label()
-                    if editor is None:
+                    if sess.editor is None:
                         # fallback to textarea
-                        editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
+                        sess.editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                         ui.notify('CodeMirror component not found; using plain textarea', color='warning')
 
                 # create a right-side column for XML hierarchy as a sibling in the same row
@@ -1954,22 +2046,20 @@ window.mlwSelectRange = function(elementId, from, to) {
                     nid = e.value if hasattr(e, 'value') else e
                     if not nid:
                         return
-                    _last_synced_node['id'] = nid
-                    if nid in xml_node_map:
-                        start, _end, _line = xml_node_map.get(nid, (0, None, 0))
-                        ui.run_javascript(f'window.mlwHighlightLine({editor.id}, {start});')
+                    sess.last_synced_node['id'] = nid
+                    if nid in sess.xml_node_map:
+                        start, _end, _line = sess.xml_node_map.get(nid, (0, None, 0))
+                        ui.run_javascript(f'window.mlwHighlightLine({sess.editor.id}, {start});')
 
-                global xml_tree
                 with ui.column().style('width:320px; flex-shrink:0'):
                     ui.label('XML Hierarchy').classes('text-sm font-medium')
-                    xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
+                    sess.xml_tree = ui.tree(nodes=[], on_select=on_tree_select)
 
             # Validation Results panel: sits below the Editor/Hierarchy row, collapsed
             # by default, and expands automatically when a validation run completes
             # (see show_validation_message() / show_validation_errors() above).
-            global validation_panel, validation_results_container
-            with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as validation_panel:
-                validation_results_container = ui.column().classes('w-full gap-1')
+            with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as sess.validation_panel:
+                sess.validation_results_container = ui.column().classes('w-full gap-1')
         with ui.tab_panel(xsheet_tab):
             ui.label('Exposure Sheet').classes('text-sm font-medium')
             # Each row is a frame number (Production/StartFrame..EndFrame,
@@ -1978,9 +2068,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             # layers' cel values filled in -- see parse_exposure_sheet() -- so a
             # hold between two sparse <Frame> entries (e.g. frame 1 and the next
             # at frame 24) shows as blank boxes for frames 2-23.
-            global xsheet_status_label, xsheet_grid
-            xsheet_status_label = ui.label('').classes('text-sm text-gray-500')
-            xsheet_grid = ui.aggrid({
+            sess.xsheet_status_label = ui.label('').classes('text-sm text-gray-500')
+            sess.xsheet_grid = ui.aggrid({
                 'columnDefs': [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80,
                                 'lockPosition': 'left', 'suppressMovable': True}],
                 'rowData': [],
@@ -1993,7 +2082,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             # auto_size_columns=False: ui.aggrid defaults to stretching columns to
             # fill the grid's full width, which would override the deliberately
             # narrow per-column widths set above/in rebuild_xsheet_from_current().
-            xsheet_grid.on('cellClicked', handle_xsheet_toggle_click)
+            sess.xsheet_grid.on('cellClicked', handle_xsheet_toggle_click)
 
     # build initial tree from current editor value
     try:
@@ -2034,43 +2123,43 @@ window.mlwSelectRange = function(elementId, from, to) {
 
     # Periodic poll to sync editor cursor -> tree selection
     async def poll_cursor_and_select_tree():
-        if xml_tree is None:
+        if sess.xml_tree is None:
             return
         try:
             # run_javascript() only returns a value when awaited; the
             # response=True kwarg this used to use doesn't exist in the
             # installed nicegui version, so this was silently raising
             # (and doing nothing) on every single tick.
-            res = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({editor.id});')
+            res = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
             if res is None:
                 return
             pos = int(res)
             # find the innermost node whose start <= cursor position
             best = None
             best_start = -1
-            for nid, (s, _e, _line) in xml_node_map.items():
+            for nid, (s, _e, _line) in sess.xml_node_map.items():
                 if s is None:
                     continue
                 if s <= pos and s > best_start:
                     best = nid
                     best_start = s
-            if not best or best == _last_synced_node['id']:
+            if not best or best == sess.last_synced_node['id']:
                 return
-            _last_synced_node['id'] = best
+            sess.last_synced_node['id'] = best
             # walk up to the root so the selected node's ancestors are expanded
             # and it's actually visible in the tree
             ancestors = []
-            cur = xml_parent_map.get(best)
+            cur = sess.xml_parent_map.get(best)
             while cur is not None:
                 ancestors.append(cur)
-                cur = xml_parent_map.get(cur)
-            existing_expanded = xml_tree.props.get('expanded') or []
+                cur = sess.xml_parent_map.get(cur)
+            existing_expanded = sess.xml_tree.props.get('expanded') or []
             expanded = list(dict.fromkeys(list(existing_expanded) + ancestors))
             # same lesson as the earlier 'nodes' bug: write into .props then
             # .update() -- plain attribute assignment never reaches the client
-            xml_tree.props['expanded'] = expanded
-            xml_tree.props['selected'] = best
-            xml_tree.update()
+            sess.xml_tree.props['expanded'] = expanded
+            sess.xml_tree.props['selected'] = best
+            sess.xml_tree.update()
         except Exception:
             pass
 
@@ -2086,9 +2175,14 @@ def files_page():
 
 # Start server. Auto-reload is on by default for development; the production
 # image sets MLW_RELOAD=0.
+# MLW_STORAGE_SECRET signs the cookie that ties a browser to its
+# app.storage.user settings; the production compose file requires it to be
+# set. NICEGUI_STORAGE_PATH (default ./.nicegui) is where those settings are
+# written.
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(
         host=os.environ.get('MLW_HOST', '0.0.0.0'),
         port=int(os.environ.get('MLW_PORT', '8080')),
         reload=os.environ.get('MLW_RELOAD', '1') == '1',
+        storage_secret=os.environ.get('MLW_STORAGE_SECRET') or 'mlw-xsheet-dev-only',
     )

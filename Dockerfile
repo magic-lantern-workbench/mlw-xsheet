@@ -38,16 +38,17 @@ CMD ["python", "main.py"]
 FROM base AS prod
 RUN groupadd --system app \
     && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app \
-    && mkdir -p /data \
-    && chown app:app /data
+    && mkdir -p /data /state \
+    && chown app:app /data /state
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app . .
 ENV MLW_RELOAD=0 \
     MLW_DATA_DIR=/data \
-    MLW_PORT=8080
+    MLW_PORT=8080 \
+    NICEGUI_STORAGE_PATH=/state
 USER app
 EXPOSE 8080
-VOLUME ["/data"]
+VOLUME ["/data", "/state"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"MLW_PORT\"]}/', timeout=4)"
 CMD ["python", "main.py"]

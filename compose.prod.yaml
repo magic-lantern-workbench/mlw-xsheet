@@ -1,6 +1,10 @@
 # Production overrides. Use in place of compose.override.yaml:
 #   MLW_DOMAIN=xsheet.example.com docker compose -f compose.yaml -f compose.prod.yaml up -d --build
 #
+# MLW_STORAGE_SECRET is required: it signs the cookie that ties each browser
+# to its saved settings. Put it in .env (git-ignored) so every compose command
+# sees it, e.g.:  echo "MLW_STORAGE_SECRET=$(openssl rand -hex 32)" >> .env
+#
 # The app is only reachable through Caddy (see Caddyfile), which serves HTTPS
 # on 443 and redirects HTTP on 80.
 services:
@@ -15,10 +19,16 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    environment:
+      MLW_STORAGE_SECRET: ${MLW_STORAGE_SECRET:?set MLW_STORAGE_SECRET (see compose.prod.yaml)}
     volumes:
-      # User documents (open/save dialogs start here). Seed it with
-      # examples/ if you want them available: `docker compose cp examples/. xsheet:/data`
+      # User documents (open/save dialogs start here), shared by all users.
+      # To seed it with examples/ (the chown lets the non-root app save over them):
+      #   docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
+      #   docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
       - xsheet-data:/data
+      # Per-user settings (app.storage.user).
+      - xsheet-state:/state
     logging: &logging
       driver: json-file
       options:
@@ -46,5 +56,6 @@ services:
 
 volumes:
   xsheet-data:
+  xsheet-state:
   caddy-data:
   caddy-config:
