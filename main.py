@@ -1110,10 +1110,10 @@ def parse_exposure_sheet(text: str):
     return layer_ids, rows, f'{len(rows)} frame(s), {len(layer_ids)} layer(s).'
 
 
-def _row_is_empty(row: dict, layer_ids: list[str]) -> bool:
-    if any(row.get(lid) for lid in layer_ids):
-        return False
-    return not (row.get('Camera') or row.get('Dialogue') or row.get('Audio') or row.get('Notes'))
+def _row_values(row: dict, layer_ids: list[str]) -> tuple:
+    """A row's values in every column but Frame -- rows with equal values
+    form a collapsible run (see _compute_xsheet_display_rows())."""
+    return tuple(row.get(col, '') for col in (*layer_ids, 'Camera', 'Dialogue', 'Audio', 'Notes'))
 
 
 def _assign_xsheet_zebra_groups(rows: list[dict], layer_ids: list[str]) -> None:
@@ -1136,22 +1136,18 @@ def _assign_xsheet_zebra_groups(rows: list[dict], layer_ids: list[str]) -> None:
 
 def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list[dict]:
     """Expand `rows` into what the grid should actually display: runs of two
-    or more consecutive completely-empty rows get a '_toggle' marker on
-    their first row (an up/down triangle) so the user can collapse them into
-    a single summary row, or expand a previously-collapsed run back out.
-    Collapse state is tracked per session in `xsheet_collapsed_ranges`, keyed
-    by the run's (start_frame, end_frame)."""
+    or more consecutive rows with the same values in every column (e.g. the
+    'X' continuation marks through a camera move, or completely empty
+    frames) get a '_toggle' marker on their first row (an up/down triangle)
+    so the user can collapse them into a single summary row, or expand a
+    previously-collapsed run back out. Collapse state is tracked per session
+    in `xsheet_collapsed_ranges`, keyed by the run's (start_frame, end_frame)."""
     display: list[dict] = []
     i, n = 0, len(rows)
     while i < n:
-        if not _row_is_empty(rows[i], layer_ids):
-            row = dict(rows[i])
-            row['_toggle'] = ''
-            display.append(row)
-            i += 1
-            continue
-        j = i
-        while j < n and _row_is_empty(rows[j], layer_ids):
+        values = _row_values(rows[i], layer_ids)
+        j = i + 1
+        while j < n and _row_values(rows[j], layer_ids) == values:
             j += 1
         run = rows[i:j]
         if len(run) < 2:
@@ -1162,16 +1158,15 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
             start_frame, end_frame = run[0]['Frame'], run[-1]['Frame']
             key = (start_frame, end_frame)
             if key in session().xsheet_collapsed_ranges:
-                summary = {lid: '' for lid in layer_ids}
+                # Every row in the run has these values, so the summary row
+                # shows them too. The frame count is its hover hint (see the
+                # grid's tooltipValueGetter in index()).
+                summary = dict(run[0])
                 summary['Frame'] = f'{start_frame}–{end_frame}'
-                summary['Camera'] = ''
-                summary['Dialogue'] = f'({len(run)} empty frames)'
-                summary['Audio'] = ''
-                summary['Notes'] = ''
+                summary['_hint'] = f"{len(run)} {'identical' if any(values) else 'empty'} frames"
                 summary['_toggle'] = '▶'  # ▶ collapsed, click to expand
                 summary['_range_start'] = start_frame
                 summary['_range_end'] = end_frame
-                summary['_zebra'] = run[0].get('_zebra', 0)
                 display.append(summary)
             else:
                 first = dict(run[0])
@@ -2353,7 +2348,13 @@ window.mlwSelectRange = function(elementId, from, to) {
                 # Rows must stay in frame order -- an exposure sheet isn't
                 # meaningful sorted by cel name or dialogue text -- so
                 # disable ag-grid's default click-to-sort on every column.
-                'defaultColDef': {'sortable': False},
+                'defaultColDef': {
+                    'sortable': False,
+                    # Hovering over a collapsed run's summary row shows how
+                    # many frames it stands for (its '_hint'); other rows
+                    # have no hint, so no tooltip. ag-grid waits 2 s first.
+                    ':tooltipValueGetter': '(params) => params.data && params.data._hint',
+                },
             }, auto_size_columns=False).classes('w-full mlw-xsheet-grid').style('height: 75vh')
             # auto_size_columns=False: ui.aggrid defaults to stretching columns to
             # fill the grid's full width, which would override the deliberately

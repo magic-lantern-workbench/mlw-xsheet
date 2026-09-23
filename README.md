@@ -277,10 +277,13 @@ drawing (or cue) starts.
 - **Row shading** — rows are tinted in two alternating colors by "hold group": every row from
   one keyframe's Layer values to the next (including the blank hold rows in between) shares a
   tint, and each new group of distinct layer values flips to the other tint.
-- **Collapsing empty runs** — a run of two or more consecutive, completely blank rows (no
-  Layer, Camera, Dialogue, Audio, or Notes content) gets a ▼/▶ toggle next to Notes. Clicking
-  it collapses the run into a single summary row (e.g. `2–23`, `(22 empty frames)`), or
-  expands a collapsed run back out.
+- **Collapsing repeated runs** — a run of two or more consecutive rows with the same values in
+  every column (Layers, Camera, Dialogue, Audio, and Notes) gets a ▼/▶ toggle next to Notes.
+  That covers completely blank rows, and also the stretches of `X` continuation marks through
+  a camera move or audio cue. Clicking the toggle collapses the run into a single summary row
+  that keeps the shared values, with the frame range in Frame (e.g. `26–59`). Hover over a
+  collapsed row to see how many frames it stands for (e.g. `34 identical frames` or
+  `22 empty frames`). Click the toggle again to expand it back out.
 - Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
   text, so rows always stay in frame order.
 
