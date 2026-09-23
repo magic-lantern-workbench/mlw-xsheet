@@ -195,6 +195,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 |---|---|
 | Validate (well-formed) | Quick syntax check; result shown in the footer. |
 | Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in the Validation Results panel below the editor (which scrolls into view automatically on failure), each entry clickable to jump to it. |
+| Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
 | Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
 

@@ -456,6 +456,14 @@ def clear_validation_panel():
         panel.close()
 
 
+def clear_validation():
+    """XML > Clear Validation: empty and collapse the Validation Results
+    panel, and clear the footer's validation status, which describes the
+    same results."""
+    clear_validation_panel()
+    set_validation_status('')
+
+
 def show_validation_message(message: str, ok: bool = True):
     """Render a single-line validation outcome (success, or an error that
     stopped validation before it could produce a per-element list) into the
@@ -2118,6 +2126,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             with sess.xml_menu_button:
                 ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
                 ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema())
+                ui.menu_item('Clear Validation', on_click=lambda _: clear_validation())
                 ui.separator()
                 ui.menu_item('Select Schema…', on_click=lambda _: choose_schema())
                 ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
