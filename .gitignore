@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*~
+.nicegui/
+.env
+venv/
+.venv/

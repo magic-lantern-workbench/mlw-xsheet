@@ -71,6 +71,23 @@ python main.py
 
 Either way, open the app at `http://localhost:8080`.
 
+`docker compose up` is the **development** setup: it merges `compose.override.yaml`, which
+builds the `dev` image target, bind-mounts the working tree, and auto-reloads on edits.
+
+For a **production** container (non-root, read-only filesystem, no auto-reload, healthcheck,
+restart policy), use `compose.prod.yaml` instead of the override:
+
+```bash
+docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+```
+
+In production, the file dialogs open in `/data`, a named volume (`xsheet-data`), rather than
+the app directory. The bundled schemas in `xml/` are still found by auto-detection. The server
+reads these environment variables: `MLW_DATA_DIR` (file dialog root; defaults to the working
+directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), and `MLW_RELOAD`
+(`1`/`0`). On the host side, `MLW_HOST_PORT`, `MLW_IMAGE`, and `MLW_TAG` set the published
+port and the image name and tag.
+
 ### Layout
 
 - **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus, plus an `About` button.

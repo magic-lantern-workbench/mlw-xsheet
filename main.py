@@ -6,7 +6,13 @@ from save_file import save_file as SaveFileDialog
 from tools import xsheet_to_xdts_extended
 import export_pdf
 
-BASE_DIR = Path.cwd()
+# Directory the file dialogs start in and the /files route lists. Defaults to
+# the working directory (the repo, in development); the production image sets
+# MLW_DATA_DIR to a mounted volume so user documents live outside the code.
+BASE_DIR = Path(os.environ.get('MLW_DATA_DIR') or Path.cwd()).resolve()
+
+# Where the bundled schemas (xml/*.xsd) live, independent of BASE_DIR.
+APP_DIR = Path(__file__).resolve().parent
 
 current_file = {'path': None, 'modified': False, 'saved_content': ''}
 
@@ -209,9 +215,10 @@ def resolve_schema_for_xml(text: str):
         # examples often reference "xsheet-assets.xsd" while it lives in xml/;
         # fall back to a repo-wide search by basename.
         name = Path(loc).name
-        matches = sorted(BASE_DIR.rglob(name))
-        if matches:
-            return matches[0]
+        for search_dir in dict.fromkeys((BASE_DIR, APP_DIR / 'xml')):
+            matches = sorted(search_dir.rglob(name))
+            if matches:
+                return matches[0]
     return None
 
 
@@ -2077,6 +2084,11 @@ def files_page():
         ui.link(p.relative_to(BASE_DIR).as_posix(), f'/open?path={p}')
 
 
-# Start server (allow multiprocessing reloader)
+# Start server. Auto-reload is on by default for development; the production
+# image sets MLW_RELOAD=0.
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run()
+    ui.run(
+        host=os.environ.get('MLW_HOST', '0.0.0.0'),
+        port=int(os.environ.get('MLW_PORT', '8080')),
+        reload=os.environ.get('MLW_RELOAD', '1') == '1',
+    )

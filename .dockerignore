@@ -1,0 +1,19 @@
+# VCS / editor / local noise
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*~
+.nicegui
+last-claude-session.txt*
+.env
+venv/
+.venv/
+
+# Container build files aren't needed inside the image
+Dockerfile
+.dockerignore
+compose*.yaml
+
+# Generated outputs
+examples/*.pdf

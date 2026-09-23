@@ -1,0 +1,11 @@
+# Base service definition shared by dev and prod.
+#   Dev:  docker compose up                (also loads compose.override.yaml)
+#   Prod: docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+services:
+  xsheet:
+    image: ${MLW_IMAGE:-mlw-xsheet}:${MLW_TAG:-latest}
+    build:
+      context: .
+      target: prod
+    ports:
+      - "${MLW_HOST_PORT:-8080}:8080"

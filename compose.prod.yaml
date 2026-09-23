@@ -1,0 +1,22 @@
+# Production overrides. Use in place of compose.override.yaml:
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+services:
+  xsheet:
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      # User documents (open/save dialogs start here). Seed it with
+      # examples/ if you want them available: `docker compose cp examples/. xsheet:/data`
+      - xsheet-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  xsheet-data:
