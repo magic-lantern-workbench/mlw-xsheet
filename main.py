@@ -188,7 +188,8 @@ def rebuild_recent_menu() -> None:
             return
         for p in paths:
             path = Path(p)
-            ui.menu_item(path.name, on_click=lambda _, path=path: open_recent_file(path)).tooltip(str(path))
+            with ui.menu_item(path.name, on_click=lambda _, path=path: open_recent_file(path)):
+                ui.tooltip(str(path)).props('delay=2000')  # full path, after a 2 s hover
         ui.separator()
         ui.menu_item('Clear Recent Files', on_click=lambda _: clear_recent_files())
 
