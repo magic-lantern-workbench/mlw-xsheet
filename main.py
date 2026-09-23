@@ -71,38 +71,79 @@ class Session:
         self.xsheet_status_label = None
         self.xsheet_grid = None
 
+        # This user's app.storage.user, captured while index() still has the
+        # page request (event handlers and timers don't always carry one).
+        self.user_storage = None
+
 
 def session() -> Session:
     """The Session of the page the current event/timer belongs to."""
     return app.storage.client['session']
 
 
-# Per-user settings kept in app.storage.user, which NiceGUI persists per
-# browser (identified by a signed cookie) across reloads, tabs, and server
-# restarts -- unlike Session, which lives only as long as its page.
-#   'format_prefs':  XML/XSD pretty-print parameters, editable via
-#                    File > Preferences.
-#   'schema_path':   the .xsd chosen for semantic (schema) validation; None
-#                    means "auto-detect from the document's xsi:schemaLocation".
+# Per-user data kept in app.storage.user, which NiceGUI persists per browser
+# (identified by a signed cookie) across reloads, tabs, and server restarts --
+# unlike Session, which lives only as long as its page.
+#   'format_prefs':   XML/XSD pretty-print parameters, editable via
+#                     File > Preferences.
+#   'schema_path':    the .xsd chosen for semantic (schema) validation; None
+#                     means "auto-detect from the document's xsi:schemaLocation".
+#   'drafts':         unsaved edits, keyed by document path ('' for a
+#                     never-saved document): {'text': the editor's text,
+#                     'saved_content': the on-disk text it was based on}.
+#   'last_document':  key of the document this user last worked on, reopened
+#                     (with its draft, if any) when the page is reloaded; None
+#                     once they close it.
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
+
+
+def user_storage():
+    return session().user_storage
 
 
 def format_prefs() -> dict:
     """This user's format preferences, filled in with defaults. A copy --
     save changes with set_format_prefs()."""
-    return {**DEFAULT_FORMAT_PREFS, **app.storage.user.get('format_prefs', {})}
+    return {**DEFAULT_FORMAT_PREFS, **user_storage().get('format_prefs', {})}
 
 
 def set_format_prefs(prefs: dict) -> None:
-    app.storage.user['format_prefs'] = dict(prefs)
+    user_storage()['format_prefs'] = dict(prefs)
 
 
 def chosen_schema_path() -> str | None:
-    return app.storage.user.get('schema_path')
+    return user_storage().get('schema_path')
 
 
 def set_chosen_schema_path(path: str | None) -> None:
-    app.storage.user['schema_path'] = path
+    user_storage()['schema_path'] = path
+
+
+def _drafts() -> dict:
+    return dict(user_storage().get('drafts', {}))
+
+
+def forget_draft(key: str) -> None:
+    drafts = _drafts()
+    if drafts.pop(key, None) is not None:
+        user_storage()['drafts'] = drafts
+
+
+def remember_document() -> None:
+    """Record this session's document in the user's storage: its unsaved
+    text as a draft (or no draft, once it matches what's on disk again), and
+    that it's the document to reopen on reload. Called after every change to
+    the editor's text or the document's saved state."""
+    sess = session()
+    key = sess.current_file['path'] or ''
+    drafts = _drafts()
+    if sess.current_file['modified']:
+        drafts[key] = {'text': _editor_text(), 'saved_content': sess.current_file['saved_content']}
+    else:
+        drafts.pop(key, None)
+    store = user_storage()
+    store['drafts'] = drafts
+    store['last_document'] = key if (key or sess.current_file['modified']) else None
 
 
 def set_filename_label(name: str | None = None):
@@ -1076,21 +1117,22 @@ def handle_xsheet_toggle_click(e):
     rebuild_xsheet_from_current()
 
 
-def open_file(path: Path):
+def _load_document(path: str | None, text: str, saved_content: str):
+    """Show a document in this session's editor: `text` is what to edit,
+    `saved_content` the on-disk version it's based on (they differ when
+    restoring a draft, which then shows as modified, can be undone back to
+    the saved text, and is checked against the disk on save)."""
     sess = session()
-    try:
-        text = path.read_text(encoding='utf-8')
-    except Exception as exc:
-        ui.notify(f'Failed to open {path}: {exc}', color='negative')
-        return
-    sess.current_file['path'] = str(path)
-    sess.current_file['modified'] = False
-    sess.current_file['saved_content'] = text
-    set_filename_label(path.name)
+    sess.current_file['path'] = path
+    sess.current_file['modified'] = (text != saved_content)
+    sess.current_file['saved_content'] = saved_content
+    set_filename_label()
     sess.xsheet_collapsed_ranges.clear()
     # initialize undo/redo stacks
     sess.undo_stack.clear()
     sess.redo_stack.clear()
+    if sess.current_file['modified']:
+        sess.undo_stack.append(saved_content)
     sess.last_editor_value = text
     # programmatic update — suppress change handler so initial load doesn't mark as modified
     sess.suppress_editor_change = True
@@ -1117,11 +1159,57 @@ def open_file(path: Path):
     except Exception as exc:
         print('DEBUG: rebuild_tree_from_current failed:', exc)
         pass
+    remember_document()
+
+
+def open_file(path: Path, restore_draft: bool | None = None):
+    """Open `path` from disk. If this user has unsaved changes to it left
+    over from an earlier session, restore them: after asking when
+    restore_draft is None, or without asking when True (page reload)."""
+    try:
+        text = path.read_text(encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to open {path}: {exc}', color='negative')
+        return
+    key = str(path)
+    draft = _drafts().get(key)
+    _load_document(key, text, text)  # also drops the draft; restoring re-saves it
     ui.notify(f'Opened {path.name}', color='positive')
+    if not draft or draft['text'] == text:
+        return
+
+    def restore(_=None):
+        _load_document(key, draft['text'], draft['saved_content'])
+        ui.notify(f'Restored unsaved changes to {path.name}', color='positive')
+
+    if restore_draft:
+        restore()
+        return
+    with ui.dialog().props('persistent') as dlg, ui.card().classes('p-4'):
+        ui.label(f'You have unsaved changes to {path.name} from an earlier session. Restore them?')
+        with ui.row().classes('mt-4 justify-end'):
+            ui.button('Discard', on_click=dlg.close).props('outline')
+            ui.button('Restore', on_click=lambda: (dlg.close(), restore())).classes('ml-2')
+    dlg.open()
+
+
+def restore_last_document():
+    """On page load, reopen the document this user last worked on, with any
+    unsaved changes, so a reload (or a new tab) picks up where they left off."""
+    key = user_storage().get('last_document')
+    if key is None:
+        return
+    draft = _drafts().get(key)
+    if key and Path(key).is_file():
+        open_file(Path(key), restore_draft=True)
+    elif draft:  # never-saved document, or its file has since been removed
+        _load_document(key or None, draft['text'], draft['saved_content'])
+        ui.notify('Restored unsaved changes', color='positive')
 
 
 def close_file():
     sess = session()
+    forget_draft(sess.current_file['path'] or '')
     sess.current_file['path'] = None
     sess.current_file['modified'] = False
     sess.current_file['saved_content'] = ''
@@ -1137,6 +1225,7 @@ def close_file():
         rebuild_tree_from_current()
     except Exception:
         pass
+    remember_document()
 
 
 def close_with_check():
@@ -1177,6 +1266,7 @@ def _set_editor_text(new_text: str):
     sess.last_editor_value = new_text
     sess.current_file['modified'] = (new_text != sess.current_file.get('saved_content', ''))
     set_filename_label()
+    remember_document()
     try:
         rebuild_tree_from_current()
     except Exception:
@@ -1329,6 +1419,7 @@ def save_file(on_saved=None):
         sess.current_file['modified'] = False
         sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
+        remember_document()
         ui.notify(f'Saved {path}', color='positive')
         if on_saved is not None:
             on_saved()
@@ -1390,10 +1481,12 @@ def save_as():
             except Exception as exc:
                 ui.notify(f'Failed to save {dest}: {exc}', color='negative')
                 return
+            forget_draft(sess.current_file['path'] or '')
             sess.current_file['path'] = str(dest)
             sess.current_file['modified'] = False
             sess.current_file['saved_content'] = sess.editor.value
             set_filename_label(dest.name)
+            remember_document()
             ui.notify(f'Saved {dest}', color='positive')
             # keep the Hierarchy tree (and its editor-sync state) consistent
             # with the file's new name/location, even though the content is
@@ -1604,6 +1697,7 @@ def show_file_dialog():
 @ui.page('/')
 def index():
     sess = Session()
+    sess.user_storage = app.storage.user
     app.storage.client['session'] = sess
     # JS helpers bridging the editor and the Hierarchy tree.
     # - mlwGetCursorOffset: character offset of the cursor -> used to sync
@@ -1994,6 +2088,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                         # mark document modified and update label
                         sess.current_file['modified'] = (new_val != sess.current_file.get('saved_content', ''))
                         set_filename_label()
+                        remember_document()
 
                     # wrapper to also rebuild XML tree on edits
                     def on_editor_change_with_tree(e):
@@ -2021,6 +2116,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                         sess.last_editor_value = prev
                         sess.current_file['modified'] = (prev != sess.current_file.get('saved_content', ''))
                         set_filename_label()
+                        remember_document()
 
                     def do_redo(_=None):
                         if not sess.redo_stack:
@@ -2034,6 +2130,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                         sess.last_editor_value = nxt
                         sess.current_file['modified'] = (nxt != sess.current_file.get('saved_content', ''))
                         set_filename_label()
+                        remember_document()
                     if sess.editor is None:
                         # fallback to textarea
                         sess.editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
@@ -2089,6 +2186,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         rebuild_tree_from_current()
     except Exception:
         pass
+    restore_last_document()
 
     # Add keyboard shortcuts
     def handle_keyboard(e):

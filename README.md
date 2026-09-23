@@ -122,10 +122,17 @@ docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R
 ### Multiple users
 
 Several people can use one server at the same time. Every browser tab has its own editing
-session: the open document, unsaved edits, undo/redo history, validation results, and XSheet
-view. Preferences and the chosen schema are saved per user (per browser, via a cookie), so they
-survive reloads and carry over to that user's other tabs. The server keeps them in
-`NICEGUI_STORAGE_PATH`.
+session: the open document, undo/redo history, validation results, and XSheet view. Some things
+are saved per user (per browser, via a cookie), so they survive reloads and server restarts
+and carry over to that user's other tabs. The server keeps them in `NICEGUI_STORAGE_PATH`:
+
+- **Preferences** and the chosen schema.
+- **Unsaved changes.** Edits are saved as a draft as you type. Reloading the page (or opening
+  a new tab) reopens the document you were last working on, with your unsaved changes and the
+  `*` indicator; Undo takes you back to the saved text. Each file keeps its own draft, so if you
+  switch to another file without saving, reopening the first one asks whether to restore its
+  changes. A draft is removed when you save, or when you close the file and choose not to save.
+  A never-saved document is restored too.
 
 Documents are shared: everyone sees the same files in the data directory. If you save a file
 that someone else has saved since you opened it, you're asked before overwriting their changes.
