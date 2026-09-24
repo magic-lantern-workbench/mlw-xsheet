@@ -2151,7 +2151,13 @@ window.mlwSelectRange = function(elementId, from, to) {
 ''')
     # header with File menu and filename
     with ui.header():
-        with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto'):
+        # Scrolls sideways if the window is too narrow for the menus. Vertical
+        # overflow is hidden: with overflow-x set, CSS makes overflow-y 'auto'
+        # too, and a menu opening briefly makes the row a few px taller than
+        # itself -- enough to flash a tiny scrollbar (just its up/down arrows)
+        # at the row's right end. The dropdowns render outside the header, so
+        # hiding vertical overflow doesn't clip them.
+        with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto overflow-y-hidden'):
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
