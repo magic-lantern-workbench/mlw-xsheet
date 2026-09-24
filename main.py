@@ -4,7 +4,7 @@ import time
 from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
-from dialog_ui import titled_card
+from dialog_ui import titled_card, within
 import auth
 from tools import xsheet_to_xdts_extended
 import export_pdf
@@ -16,6 +16,19 @@ BASE_DIR = Path(os.environ.get('MLW_DATA_DIR') or Path.cwd()).resolve()
 
 # Where the bundled schemas (xml/*.xsd) live, independent of BASE_DIR.
 APP_DIR = Path(__file__).resolve().parent
+SCHEMA_DIR = APP_DIR / 'xml'
+
+
+# The file dialogs can only browse BASE_DIR (plus, read-only, the bundled
+# schemas for Select Schema), and every path the app opens, saves, or reads a
+# schema from is checked against these -- including paths remembered in user
+# storage from before, and paths sent back by the browser.
+def in_data_dir(path) -> bool:
+    return within(path, BASE_DIR)
+
+
+def is_readable_schema(path) -> bool:
+    return in_data_dir(path) or within(path, SCHEMA_DIR)
 
 
 
@@ -126,7 +139,8 @@ def set_format_prefs(prefs: dict) -> None:
 
 
 def chosen_schema_path() -> str | None:
-    return user_storage().get('schema_path')
+    path = user_storage().get('schema_path')
+    return path if path and is_readable_schema(path) else None
 
 
 def set_chosen_schema_path(path: str | None) -> None:
@@ -148,7 +162,8 @@ def set_recent_files_limit(limit: int) -> None:
 
 def recent_files() -> list[str]:
     """The files File > Open Recent lists, most recent first."""
-    return list(user_storage().get('recent_files', []))[:recent_files_limit()]
+    stored = [p for p in user_storage().get('recent_files', []) if in_data_dir(p)]
+    return stored[:recent_files_limit()]
 
 
 def _set_recent_files(paths: list[str]) -> None:
@@ -445,12 +460,12 @@ def resolve_schema_for_xml(text: str):
     doc_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
     for loc in _detect_schema_locations(text):
         cand = (doc_dir / loc)
-        if cand.is_file():
+        if cand.is_file() and is_readable_schema(cand):
             return cand
         # examples often reference "xsheet-assets.xsd" while it lives in xml/;
         # fall back to a repo-wide search by basename.
         name = Path(loc).name
-        for search_dir in dict.fromkeys((BASE_DIR, APP_DIR / 'xml')):
+        for search_dir in dict.fromkeys((BASE_DIR, SCHEMA_DIR)):
             matches = sorted(search_dir.rglob(name))
             if matches:
                 return matches[0]
@@ -609,7 +624,10 @@ def choose_schema(then_validate: bool = True):
             super().submit(value)
 
     start_dir = Path(chosen_schema_path()).parent if chosen_schema_path() else BASE_DIR
-    SchemaPicker(str(start_dir), title='Select Schema', upper_limit=None, allowed_extensions=['.xsd']).open()
+    roots = [('Data', str(BASE_DIR))]
+    if not within(SCHEMA_DIR, BASE_DIR):  # in production the app's schemas live outside /data
+        roots.append(('Bundled schemas', str(SCHEMA_DIR)))
+    SchemaPicker(str(start_dir), title='Select Schema', roots=roots, allowed_extensions=['.xsd']).open()
 
 
 def clear_schema():
@@ -1295,6 +1313,9 @@ def open_file(path: Path, restore_draft: bool | None = None):
     """Open `path` from disk. If this user has unsaved changes to it left
     over from an earlier session, restore them: after asking when
     restore_draft is None, or without asking when True (page reload)."""
+    if not in_data_dir(path):
+        ui.notify(f'{path.name} is outside the data folder and cannot be opened', color='warning')
+        return
     try:
         text = path.read_text(encoding='utf-8')
     except Exception as exc:
@@ -1327,7 +1348,7 @@ def restore_last_document():
     """On page load, reopen the document this user last worked on, with any
     unsaved changes, so a reload (or a new tab) picks up where they left off."""
     key = user_storage().get('last_document')
-    if key is None:
+    if key is None or (key and not in_data_dir(key)):
         return
     draft = _drafts().get(key)
     if key and Path(key).is_file():
@@ -1648,7 +1669,7 @@ def save_as(on_saved=None):
     dialog = SaveFileWithCallback(
         str(start_dir),
         filename=start_name,
-        upper_limit=None,
+        upper_limit=str(BASE_DIR),
         allowed_extensions=['.xml', '.xsd'],
     )
     dialog.open()
@@ -1696,7 +1717,7 @@ def export_xdts():
         str(start_dir),
         title='Export XDTS JSON',
         filename=start_name,
-        upper_limit=None,
+        upper_limit=str(BASE_DIR),
         allowed_extensions=['.json'],
     )
     dialog.open()
@@ -1752,7 +1773,7 @@ def export_to_pdf():
             str(start_dir),
             title='Generate Report',
             filename=start_name,
-            upper_limit=None,
+            upper_limit=str(BASE_DIR),
             allowed_extensions=['.pdf'],
         )
         dialog.open()
@@ -1810,7 +1831,7 @@ def export_xsheet():
         str(start_dir),
         title='Export XSheet',
         filename=start_name,
-        upper_limit=None,
+        upper_limit=str(BASE_DIR),
         allowed_extensions=['.pdf'],
     )
     dialog.open()
@@ -1835,7 +1856,7 @@ def show_file_dialog():
     start_dir = Path(user_storage().get('open_dir') or BASE_DIR)
     if not start_dir.is_dir():
         start_dir = BASE_DIR
-    picker = FilePickerWithCallback(str(start_dir), upper_limit=None, allowed_extensions=['.xml', '.xsd'])
+    picker = FilePickerWithCallback(str(start_dir), upper_limit=str(BASE_DIR), allowed_extensions=['.xml', '.xsd'])
     picker.open()
 
 

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from pathlib import Path
 
 from nicegui import ui
 
@@ -21,3 +22,13 @@ def titled_card(title: str, *, classes: str = '', body_classes: str = 'gap-4'):
         ui.label(title).classes('w-full px-4 py-2 text-lg font-medium bg-primary text-white')
         with ui.column().classes(f'w-full p-4 {body_classes}') as body:
             yield body
+
+
+def within(path, root) -> bool:
+    """Whether `path` is `root` or somewhere inside it, after resolving '..'
+    and symlinks -- so neither can be used to step outside `root`."""
+    try:
+        path, root = Path(path).resolve(), Path(root).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return path == root or root in path.parents

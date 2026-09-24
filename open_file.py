@@ -3,13 +3,14 @@ from pathlib import Path
 
 from nicegui import events, ui
 
-from dialog_ui import titled_card
+from dialog_ui import titled_card, within
 
 
 class open_file(ui.dialog):
 
     def __init__(self, directory: str, *, title: str = 'Open',
-                 upper_limit: str | None = ..., multiple: bool = False, show_hidden_files: bool = False,
+                 upper_limit: str | None = ..., roots: list[tuple[str, str]] | None = None,
+                 multiple: bool = False, show_hidden_files: bool = False,
                  allowed_extensions: list[str] | None = None) -> None:
         """Open File dialog
 
@@ -18,6 +19,10 @@ class open_file(ui.dialog):
         :param directory: The directory to start in.
         :param title: The dialog's title (e.g. 'Select Schema' when picking a schema).
         :param upper_limit: The directory to stop at (None: no limit, default: same as the starting directory).
+            Navigating or picking anything outside it is refused, including paths sent back by the
+            browser, so it's a real boundary rather than just a hidden ".." row.
+        :param roots: Instead of upper_limit, several (label, directory) areas to browse, with a toggle
+            to switch between them; each one is the upper limit while it's selected.
         :param multiple: Whether to allow multiple files to be selected.
         :param show_hidden_files: Whether to show hidden files.
         :param allowed_extensions: If set, only files with one of these extensions are listed (e.g. ['.xml', '.xsd']).
@@ -26,10 +31,16 @@ class open_file(ui.dialog):
         super().__init__()
 
         self.path = Path(directory).expanduser()
-        if upper_limit is None:
+        self.roots = [(label, Path(root).expanduser().resolve()) for label, root in roots] if roots else None
+        if self.roots:
+            self.upper_limit = next((r for _, r in self.roots if within(self.path, r)), self.roots[0][1])
+        elif upper_limit is None:
             self.upper_limit = None
         else:
-            self.upper_limit = Path(directory if upper_limit == ... else upper_limit).expanduser()
+            self.upper_limit = Path(directory if upper_limit == ... else upper_limit).expanduser().resolve()
+        if self.upper_limit is not None:
+            # start inside the limit, whatever directory was asked for
+            self.path = self.path.resolve() if within(self.path, self.upper_limit) else self.upper_limit
         self.show_hidden_files = show_hidden_files
         self.allowed_extensions = [e.lower() for e in allowed_extensions] if allowed_extensions else None
 
@@ -49,10 +60,23 @@ class open_file(ui.dialog):
         self.update_grid()
 
     def add_drives_toggle(self):
+        if self.roots:
+            if len(self.roots) > 1:
+                labels = {str(root): label for label, root in self.roots}
+                self.roots_toggle = ui.toggle(labels, value=str(self.upper_limit), on_change=self.update_root) \
+                    .props('dense no-caps')
+            return
         if platform.system() == 'Windows':
             import win32api
             drives = win32api.GetLogicalDriveStrings().split('\000')[:-1]
             self.drives_toggle = ui.toggle(drives, value=drives[0], on_change=self.update_drive)
+
+    def update_root(self):
+        self.upper_limit = self.path = Path(self.roots_toggle.value)
+        self.update_grid()
+
+    def _allowed(self, path: Path) -> bool:
+        return self.upper_limit is None or within(path, self.upper_limit)
 
     def update_drive(self):
         self.path = Path(self.drives_toggle.value).expanduser()
@@ -83,12 +107,15 @@ class open_file(ui.dialog):
         self.grid.update()
 
     def handle_double_click(self, e: events.GenericEventArguments) -> None:
-        self.path = Path(e.args['data']['path'])
-        if self.path.is_dir():
+        path = Path(e.args['data']['path'])
+        if not self._allowed(path):
+            return
+        if path.is_dir():
+            self.path = path.resolve() if self.upper_limit is not None else path
             self.update_grid()
         else:
-            self.submit([str(self.path)])
+            self.submit([str(path)])
 
     async def _handle_ok(self):
         rows = await self.grid.get_selected_rows()
-        self.submit([r['path'] for r in rows])
+        self.submit([r['path'] for r in rows if self._allowed(Path(r['path']))])

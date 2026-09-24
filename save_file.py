@@ -3,7 +3,7 @@ from pathlib import Path
 
 from nicegui import events, ui
 
-from dialog_ui import titled_card
+from dialog_ui import titled_card, within
 
 
 class save_file(ui.dialog):
@@ -20,7 +20,9 @@ class save_file(ui.dialog):
         :param directory: The directory to start in.
         :param title: The dialog's title (e.g. 'Export XSheet' when exporting).
         :param filename: The filename pre-filled in the rename field.
-        :param upper_limit: The directory to stop navigation at (None: no limit).
+        :param upper_limit: The directory to stop navigation at (None: no limit). Navigating or
+            saving anywhere outside it is refused, including paths sent back by the browser and
+            filenames like "../x", so it's a real boundary rather than just a hidden ".." row.
         :param show_hidden_files: Whether to show hidden files.
         :param allowed_extensions: If set, only files with one of these extensions are listed
             (e.g. ['.xml', '.xsd']). Directories are always listed regardless of this filter,
@@ -29,7 +31,10 @@ class save_file(ui.dialog):
         super().__init__()
 
         self.path = Path(directory).expanduser()
-        self.upper_limit = None if upper_limit is None else Path(upper_limit).expanduser()
+        self.upper_limit = None if upper_limit is None else Path(upper_limit).expanduser().resolve()
+        if self.upper_limit is not None:
+            # start inside the limit, whatever directory was asked for
+            self.path = self.path.resolve() if within(self.path, self.upper_limit) else self.upper_limit
         self.show_hidden_files = show_hidden_files
         self.allowed_extensions = [e.lower() for e in allowed_extensions] if allowed_extensions else None
 
@@ -92,6 +97,9 @@ class save_file(ui.dialog):
         self.grid.update()
         self.path_label.set_text(str(self.path))
 
+    def _allowed(self, path: Path) -> bool:
+        return self.upper_limit is None or within(path, self.upper_limit)
+
     def handle_click(self, e: events.GenericEventArguments) -> None:
         """Single click on a file fills the filename field, for easy overwrite of an existing file."""
         data = e.args['data']
@@ -102,8 +110,10 @@ class save_file(ui.dialog):
         """Double click on a directory navigates into it; on a file, fills the filename field."""
         data = e.args['data']
         p = Path(data['path'])
+        if not self._allowed(p):
+            return
         if p.is_dir():
-            self.path = p
+            self.path = p.resolve() if self.upper_limit is not None else p
             self.update_grid()
         else:
             self.filename_input.value = p.name
@@ -148,5 +158,11 @@ class save_file(ui.dialog):
         if not name:
             ui.notify('Please provide a filename', color='warning')
             return
+        if name in ('.', '..') or '/' in name or '\\' in name:
+            ui.notify('A filename cannot be "." or ".." or contain / or \\', color='warning')
+            return
         dest = self.path / name
+        if not self._allowed(dest):  # e.g. an existing symlink pointing outside
+            ui.notify(f'{name} is outside the folders you can save to', color='warning')
+            return
         self.submit([str(dest)])

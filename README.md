@@ -138,6 +138,17 @@ docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
 docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
 ```
 
+### File access
+
+Every file dialog (Open, Save As, Select Schema, and the exports) is limited to the data folder,
+`MLW_DATA_DIR`: `/data` in production, and the project directory when you run it directly or
+with the dev container. You can browse into subfolders but not above it. The server checks every
+path it opens or saves, not just what the dialogs show, so filenames like `../x`, symlinks
+pointing outside, and tampered requests are refused too. Paths remembered from before (Open
+Recent, the last Open folder, the reopened document) that fall outside it are ignored. The
+app's bundled schemas can still be read for validation, and Select Schema offers them
+alongside the data folder when they live outside it, as in production.
+
 ### Multiple users
 
 Several people can use one server at the same time. Every browser tab has its own editing
@@ -177,7 +188,7 @@ switching browsers starts fresh settings.
 
 | Item | What it does |
 |---|---|
-| Open | Browse the local filesystem and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
+| Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS JSON, Generate Report and Export XSheet have it too. |
@@ -216,7 +227,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 | Validate (well-formed) | Quick syntax check; result shown in the footer. |
 | Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in the Validation Results panel below the editor (which scrolls into view automatically on failure), each entry clickable to jump to it. |
 | Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
-| Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). |
+| Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). In production, a **Data / Bundled schemas** switch also lets you pick one of the app's own schemas. |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
 
 Schema resolution order for **Validate against Schema**:
