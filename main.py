@@ -745,15 +745,32 @@ def set_schema_label():
 
 
 def show_about_dialog():
-    """Show the About dialog with app name, author, version, and a link."""
-    with ui.dialog() as about_dialog, titled_card('Magic Lantern XSheet Viewer'):
-        ui.label('Author: Wizzer Works')
-        ui.label('Version: 1.0.0')
-        with ui.row().classes('items-center gap-1'):
-            ui.label('Please visit')
-            ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
-            ui.label('for more information about this tool.')
-        with ui.row().classes('w-full justify-end mt-4'):
+    """Show the About dialog: an About tab with the app's author, version and
+    a link, and a License tab with the LICENSE file in a scrollable box."""
+    try:
+        license_text = (APP_DIR / 'LICENSE').read_text(encoding='utf-8').rstrip()
+    except OSError:
+        license_text = 'The LICENSE file could not be found.'
+    with ui.dialog() as about_dialog, \
+            titled_card('Magic Lantern XSheet Viewer', classes='w-[680px] max-w-full', body_classes='gap-2'):
+        with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
+            about_tab = ui.tab('About')
+            license_tab = ui.tab('License')
+        with ui.tab_panels(tabs, value=about_tab).classes('w-full'):
+            with ui.tab_panel(about_tab).classes('px-0 gap-4'):
+                ui.label('Author: Wizzer Works')
+                ui.label('Version: 1.0.0')
+                with ui.row().classes('items-center gap-1'):
+                    ui.label('Please visit')
+                    ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
+                    ui.label('for more information about this tool.')
+            with ui.tab_panel(license_tab).classes('px-0'):
+                with ui.scroll_area().classes('w-full h-64 border rounded'):
+                    # Wide enough for the file's 80-column lines; still wraps
+                    # (at word breaks) on a narrower screen.
+                    ui.label(license_text).classes('font-mono text-xs p-2') \
+                        .style('white-space: pre-wrap; overflow-wrap: anywhere')
+        with ui.row().classes('w-full justify-end mt-2'):
             ui.button('Close', on_click=about_dialog.close).props('outline size=sm')
     about_dialog.open()
 

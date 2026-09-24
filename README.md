@@ -172,7 +172,7 @@ switching browsers starts fresh settings.
 
 ### Layout
 
-- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus and an `About` button on the
+- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus and an `About` button (app info, and the license in a scrollable tab) on the
   left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
   Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
