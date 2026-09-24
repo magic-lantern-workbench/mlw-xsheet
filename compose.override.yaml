@@ -1,0 +1,13 @@
+# Development overrides, merged automatically by `docker compose up`.
+# Mounts the working tree so edits are picked up by NiceGUI's auto-reload,
+# and re-installs requirements.txt on each start (see docker-entrypoint.sh).
+services:
+  xsheet:
+    image: mlw-xsheet:dev
+    container_name: nicegui_dev
+    build:
+      target: dev
+    volumes:
+      - .:/app
+    environment:
+      MLW_RELOAD: "1"

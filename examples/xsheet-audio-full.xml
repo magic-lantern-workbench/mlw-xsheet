@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AudioTracks xmlns="http://schemas.animation.org/xsheet/audio"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://schemas.animation.org/xsheet/audio xsheet-audio.xsd">
+    <Track id="VO1" type="Dialogue" file="vo1.wav"/>
+
+    <Track id="MUSIC1" type="Music" file="music1.wav">
+        <sourceURL>file:///home/msm/assets/audio/music1.wav</sourceURL>
+        <author>Wizzer Works</author>
+        <contact>support@wizzerworks.com</contact>
+        <contact>msm@wizzerworks.com</contact>
+    </Track>
+
+    <Track id="SFX1"
+           type="Effects" 
+           file="sfx1.wav"
+           description="Sound effect for Kerplop"/>
+
+</AudioTracks>

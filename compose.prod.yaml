@@ -1,0 +1,68 @@
+# Production overrides. Use in place of compose.override.yaml:
+#   MLW_DOMAIN=xsheet.example.com docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+#
+# MLW_STORAGE_SECRET is required: it signs the cookie that ties each browser
+# to its saved settings. Put it in .env (git-ignored) so every compose command
+# sees it, e.g.:  echo "MLW_STORAGE_SECRET=$(openssl rand -hex 32)" >> .env
+#
+# The app is only reachable through Caddy (see Caddyfile), which serves HTTPS
+# on 443 and redirects HTTP on 80.
+
+# Its own project name, so the production stack's containers, network and
+# volumes never collide with the development stack's ("mlw-xsheet", from the
+# directory name) -- both can run on one machine, and bringing either one
+# up or down leaves the other alone.
+name: mlw-xsheet-prod
+
+services:
+  xsheet:
+    # Not published on the host; Caddy reaches it on the compose network.
+    ports: !reset []
+    expose:
+      - "8080"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MLW_STORAGE_SECRET: ${MLW_STORAGE_SECRET:?set MLW_STORAGE_SECRET (see compose.prod.yaml)}
+    volumes:
+      # User documents (open/save dialogs start here), shared by all users.
+      # To seed it with examples/ (the chown lets the non-root app save over them):
+      #   docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
+      #   docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
+      - xsheet-data:/data
+      # Per-user settings (app.storage.user).
+      - xsheet-state:/state
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      xsheet:
+        condition: service_healthy
+    ports:
+      - "${MLW_HTTP_PORT:-80}:80"
+      - "${MLW_HTTPS_PORT:-443}:443"
+      - "${MLW_HTTPS_PORT:-443}:443/udp"  # HTTP/3
+    environment:
+      MLW_DOMAIN: ${MLW_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account; keep this volume so certs aren't re-issued.
+      - caddy-data:/data
+      - caddy-config:/config
+    logging: *logging
+
+volumes:
+  xsheet-data:
+  xsheet-state:
+  caddy-data:
+  caddy-config:

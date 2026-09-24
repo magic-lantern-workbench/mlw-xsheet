@@ -71,9 +71,98 @@ python main.py
 
 Either way, open the app at `http://localhost:8080`.
 
+### Logging in
+
+The app asks you to log in first. For now there's a single account for the whole server:
+user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).
+Change it before exposing the server to anyone else. The password is stored only as a salted
+hash, in `NICEGUI_STORAGE_PATH`.
+
+- Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
+  opens a menu with **Logout**, which logs them all out and returns to the login page.
+- After 30 minutes without keyboard, mouse or touch activity in any of the browser's tabs,
+  you're logged out and the login page says why. The time-out is also set in Preferences. Your
+  unsaved changes are kept as a draft and come back when you log in again.
+- A wrong password is rejected after a short delay, to slow down guessing.
+
+`docker compose up` is the **development** setup: it merges `compose.override.yaml`, which
+builds the `dev` image target, bind-mounts the working tree, and auto-reloads on edits.
+
+For a **production** deployment (non-root, read-only filesystem, no auto-reload, healthcheck,
+restart policy, HTTPS), use `compose.prod.yaml` instead of the override:
+
+```bash
+MLW_DOMAIN=xsheet.example.com docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+```
+
+The production stack runs as its own Compose project, `mlw-xsheet-prod`, separate from the
+development stack (`mlw-xsheet`). Both can run on the same machine, and starting or stopping
+one leaves the other alone. Its volumes are named with that prefix, e.g.
+`mlw-xsheet-prod_xsheet-data`.
+
+Production serves the app over **HTTPS** through a [Caddy](https://caddyserver.com/) reverse
+proxy (see [`Caddyfile`](Caddyfile)). The app's own port isn't published, and HTTP on port 80
+redirects to HTTPS on 443.
+
+- **Public domain:** set `MLW_DOMAIN` to a hostname whose DNS points at the server, with ports
+  80 and 443 reachable from the internet. Caddy gets and renews a Let's Encrypt certificate
+  automatically.
+- **Local or internal:** leave `MLW_DOMAIN` unset (it defaults to `localhost`) or use an
+  internal name. Caddy then issues a certificate from its own local CA, which browsers warn
+  about unless you trust that CA. You can copy it out with
+  `docker compose -f compose.yaml -f compose.prod.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt .`
+- `MLW_HTTP_PORT` and `MLW_HTTPS_PORT` change the host ports (default `80`/`443`). Let's Encrypt
+  needs the defaults.
+- Certificates are kept in the `caddy-data` volume, so don't delete it between deploys.
+
+In production, the file dialogs open in `/data`, a named volume (`xsheet-data`), rather than
+the app directory. The bundled schemas in `xml/` are still found by auto-detection. The server
+reads these environment variables: `MLW_DATA_DIR` (file dialog root; defaults to the working
+directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), `MLW_RELOAD`
+(`1`/`0`), `MLW_STORAGE_SECRET` (signs the per-user settings cookie), and
+`NICEGUI_STORAGE_PATH` (where per-user settings are saved; `/state` in production).
+`MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the host port in
+development.
+
+Production requires `MLW_STORAGE_SECRET`. Generate it once and keep it in `.env` (git-ignored),
+which compose reads automatically. Changing it signs everyone out of their saved settings.
+
+```bash
+echo "MLW_STORAGE_SECRET=$(openssl rand -hex 32)" >> .env
+```
+
+To put the example documents in the production data volume:
+
+```bash
+docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
+docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
+```
+
+### Multiple users
+
+Several people can use one server at the same time. Every browser tab has its own editing
+session: the open document, undo/redo history, validation results, and XSheet view. Some things
+are saved per user (per browser, via a cookie), so they survive reloads and server restarts
+and carry over to that user's other tabs. The server keeps them in `NICEGUI_STORAGE_PATH`:
+
+- **Preferences** and the chosen schema.
+- **Recent files** (File > Open Recent) and the folder File > Open starts in.
+- **Unsaved changes.** Edits are saved as a draft as you type. Reloading the page (or opening
+  a new tab) reopens the document you were last working on, with your unsaved changes and the
+  `*` indicator; Undo takes you back to the saved text. Each file keeps its own draft, so if you
+  switch to another file without saving, reopening the first one asks whether to restore its
+  changes. A draft is removed when you save, or when you close the file and choose not to save.
+  A never-saved document is restored too.
+
+Documents are shared: everyone sees the same files in the data directory. If you save a file
+that someone else has saved since you opened it, you're asked before overwriting their changes.
+There are no user accounts, so a "user" is a browser, not a person. Clearing cookies or
+switching browsers starts fresh settings.
+
 ### Layout
 
-- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus, plus an `About` button.
+- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus and an `About` button on the
+  left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
   Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
 - **Tabs** — `XML` (Editor + Hierarchy tree) and `XSheet` (the Exposure Sheet grid).
@@ -88,10 +177,11 @@ Either way, open the app at `http://localhost:8080`.
 
 | Item | What it does |
 |---|---|
-| Open | Browse the local filesystem (starting at the project directory) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. |
-| Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. |
+| Open | Browse the local filesystem and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
+| Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
+| Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. |
-| Close | Close the current document; prompts to save first if there are unsaved changes. |
+| Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export XDTS JSON… | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
 
@@ -104,9 +194,11 @@ Either way, open the app at `http://localhost:8080`.
 | Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
 
 **Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex.
-The first row (Find Next / Find Previous) jumps between matches, each scrolled to and
-highlighted; the second row has Replace / Replace All (substitute text, with regex
-replacements supporting `\1`-style backreferences) on the left and Close on the right.
+One row of buttons holds Find Next / Find Previous (jump between matches, each scrolled to and
+highlighted) and Replace / Replace All (substitute text, with regex replacements supporting
+`\1`-style backreferences). Close is on its own row below. The dialog sits at the right edge
+of the window, over the Hierarchy panel, so it doesn't cover the matches it highlights, and
+you can keep working in the editor while it's open.
 
 ### XSheet menu
 
@@ -123,6 +215,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 |---|---|
 | Validate (well-formed) | Quick syntax check; result shown in the footer. |
 | Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in the Validation Results panel below the editor (which scrolls into view automatically on failure), each entry clickable to jump to it. |
+| Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
 | Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
 
@@ -136,10 +229,20 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**; controls the **Format** command:
+Opened from **File > Preferences…**. The dialog has three tabs. Format and Recent Files are
+saved per user; Login applies to everyone using the server:
 
-- **Use tabs for indentation** — tabs instead of spaces.
-- **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
+- **Format** — controls the **Format** command:
+  - **Use tabs for indentation** — tabs instead of spaces.
+  - **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
+- **Recent Files** — controls **File > Open Recent**:
+  - **Number of recent files to list** — 1–20, default 5. Lowering it hides older entries
+    rather than deleting them (up to 20 are kept), so raising it again brings them back.
+- **Login** — the server's single account (see [Logging in](#logging-in)):
+  - **Log out after this many idle minutes** — 1–1440, default 30.
+  - **Change password** — enter the current password and the new one twice. Leave all three
+    blank to keep the password. If something's wrong, nothing is saved and the dialog stays
+    open.
 
 ### Hierarchy tree
 
@@ -174,10 +277,13 @@ drawing (or cue) starts.
 - **Row shading** — rows are tinted in two alternating colors by "hold group": every row from
   one keyframe's Layer values to the next (including the blank hold rows in between) shares a
   tint, and each new group of distinct layer values flips to the other tint.
-- **Collapsing empty runs** — a run of two or more consecutive, completely blank rows (no
-  Layer, Camera, Dialogue, Audio, or Notes content) gets a ▼/▶ toggle next to Notes. Clicking
-  it collapses the run into a single summary row (e.g. `2–23`, `(22 empty frames)`), or
-  expands a collapsed run back out.
+- **Collapsing repeated runs** — a run of two or more consecutive rows with the same values in
+  every column (Layers, Camera, Dialogue, Audio, and Notes) gets a ▼/▶ toggle next to Notes.
+  That covers completely blank rows, and also the stretches of `X` continuation marks through
+  a camera move or audio cue. Clicking the toggle collapses the run into a single summary row
+  that keeps the shared values, with the frame range in Frame (e.g. `26–59`). Hover over a
+  collapsed row to see how many frames it stands for (e.g. `34 identical frames` or
+  `22 empty frames`). Click the toggle again to expand it back out.
 - Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
   text, so rows always stay in frame order.
 

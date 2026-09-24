@@ -1,0 +1,16 @@
+# TLS-terminating reverse proxy for the production stack (compose.prod.yaml).
+#
+# MLW_DOMAIN is the public hostname. For a real domain whose DNS points at this
+# host (with ports 80/443 reachable), Caddy obtains and renews a Let's Encrypt
+# certificate automatically. For "localhost" or an internal name it issues a
+# certificate from its own local CA instead. HTTP is redirected to HTTPS, and
+# the NiceGUI WebSocket connection is proxied as-is.
+{$MLW_DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy xsheet:8080
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

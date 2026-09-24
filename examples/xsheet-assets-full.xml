@@ -3,5 +3,10 @@
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://schemas.animation.org/xsheet/assets xsheet-assets.xsd">
   <Asset id="bg01" name="BG Plate" category="Background" version="1"/>
-  <Asset id="rg01" name="Hero Rig" category="Character" version="1"/>
+  <Asset id="rg01" name="Hero Rig" category="Character" version="1">
+      <sourceURL>file:///home/msm/assets/rg01.fbx</sourceURL>
+      <author>Wizzer Works</author>
+      <contact>support@wizzerworks.com</contact>
+      <contact>msm@wizzerworks.com</contact>
+  </Asset>
 </Assets>

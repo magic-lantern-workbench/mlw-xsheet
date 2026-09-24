@@ -3,10 +3,12 @@ from pathlib import Path
 
 from nicegui import events, ui
 
+from dialog_ui import titled_card
+
 
 class save_file(ui.dialog):
 
-    def __init__(self, directory: str, *, filename: str = '', upper_limit: str | None = None,
+    def __init__(self, directory: str, *, title: str = 'Save As', filename: str = '', upper_limit: str | None = None,
                  show_hidden_files: bool = False, allowed_extensions: list[str] | None = None) -> None:
         """Save File dialog
 
@@ -16,6 +18,7 @@ class save_file(ui.dialog):
         so callers can reuse the same "subclass and override submit()" pattern.
 
         :param directory: The directory to start in.
+        :param title: The dialog's title (e.g. 'Export XSheet' when exporting).
         :param filename: The filename pre-filled in the rename field.
         :param upper_limit: The directory to stop navigation at (None: no limit).
         :param show_hidden_files: Whether to show hidden files.
@@ -30,8 +33,7 @@ class save_file(ui.dialog):
         self.show_hidden_files = show_hidden_files
         self.allowed_extensions = [e.lower() for e in allowed_extensions] if allowed_extensions else None
 
-        with self, ui.card():
-            ui.label('Save As').classes('text-lg font-medium')
+        with self, titled_card(title):
             self.add_drives_toggle()
             self.path_label = ui.label(str(self.path)).classes('text-caption text-grey')
             self.grid = ui.aggrid({
@@ -46,8 +48,8 @@ class save_file(ui.dialog):
                 .on('cellDoubleClicked', self.handle_double_click)
             self.filename_input = ui.input('Filename', value=filename).classes('w-full')
             with ui.row().classes('w-full justify-end'):
-                ui.button('Cancel', on_click=self.close).props('outline')
-                ui.button('Save', on_click=self._handle_save)
+                ui.button('Cancel', on_click=self.close).props('outline size=sm')
+                ui.button('Save', on_click=self._handle_save).props('size=sm')
         self.update_grid()
 
     def add_drives_toggle(self):
