@@ -47,9 +47,12 @@ class save_file(ui.dialog):
                 .on('cellClicked', self.handle_click) \
                 .on('cellDoubleClicked', self.handle_double_click)
             self.filename_input = ui.input('Filename', value=filename).classes('w-full')
-            with ui.row().classes('w-full justify-end'):
-                ui.button('Cancel', on_click=self.close).props('outline size=sm')
-                ui.button('Save', on_click=self._handle_save).props('size=sm')
+            with ui.row().classes('w-full items-center justify-between'):
+                ui.button('New Folder', icon='create_new_folder', on_click=self._prompt_new_folder) \
+                    .props('outline size=sm')
+                with ui.row().classes('gap-2'):
+                    ui.button('Cancel', on_click=self.close).props('outline size=sm')
+                    ui.button('Save', on_click=self._handle_save).props('size=sm')
         self.update_grid()
 
     def add_drives_toggle(self):
@@ -104,6 +107,41 @@ class save_file(ui.dialog):
             self.update_grid()
         else:
             self.filename_input.value = p.name
+
+    def _prompt_new_folder(self, _=None) -> None:
+        """Ask for a name, create that folder in the one being shown, and move
+        into it, so the file gets saved there."""
+        with ui.dialog() as dlg, titled_card('New Folder', classes='w-[340px] max-w-full', body_classes='gap-2'):
+            ui.label(f'In {self.path}').classes('text-caption text-grey')
+            name_input = ui.input('Folder name').classes('w-full').props('autofocus')
+
+            def create(_=None):
+                name = (name_input.value or '').strip()
+                if not name:
+                    ui.notify('Please provide a folder name', color='warning')
+                    return
+                if name in ('.', '..') or '/' in name or '\\' in name:
+                    ui.notify('A folder name cannot be "." or ".." or contain / or \\', color='warning')
+                    return
+                folder = self.path / name
+                if folder.exists():
+                    ui.notify(f'{name} already exists', color='warning')
+                    return
+                try:
+                    folder.mkdir()
+                except OSError as exc:
+                    ui.notify(f'Could not create {name}: {exc.strerror or exc}', color='negative')
+                    return
+                dlg.close()
+                self.path = folder
+                self.update_grid()
+                ui.notify(f'Created folder {name}', color='positive')
+
+            name_input.on('keydown.enter', create)
+            with ui.row().classes('w-full justify-end gap-2'):
+                ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+                ui.button('Create', on_click=create).props('size=sm')
+        dlg.open()
 
     def _handle_save(self, _=None) -> None:
         name = self.filename_input.value.strip()

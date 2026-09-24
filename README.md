@@ -180,7 +180,7 @@ switching browsers starts fresh settings.
 | Open | Browse the local filesystem and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
-| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. |
+| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS JSON, Generate Report and Export XSheet have it too. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export XDTS JSON… | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
