@@ -1358,8 +1358,9 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str],
     """Expand `rows` into what the grid should actually display: runs of two
     or more consecutive rows with the same values in every column (e.g. the
     'X' continuation marks through a camera move, or completely empty
-    frames) get a '_toggle' marker on their first row (an up/down triangle)
-    so the user can collapse them into a single summary row, or expand a
+    frames) get a '_toggle' marker on their first row -- shown as a ▼/▶ icon
+    in the frame column (FRAME_CELL_RENDERER) -- so the user can collapse
+    them into a single summary row, or expand a
     previously-collapsed run back out. Collapse state is tracked per session
     in `xsheet_collapsed_ranges`, keyed by the run's (start_frame, end_frame)."""
     display: list[dict] = []
@@ -1403,6 +1404,25 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str],
     return display
 
 
+# Cell renderer for the frame-number column of either XSheet style: the frame
+# number first, then -- on the first row of a run of identical rows, or a
+# collapsed run -- a ▼/▶ icon at the cell's far right. Clicking the icon (not
+# the number, which selects the frame) sends the run's range to
+# handle_xsheet_run_toggle() as a page event.
+FRAME_CELL_RENDERER = (
+    '(params) => { const d = params.data || {};'
+    ' if (!d._toggle) return String(params.value ?? "");'
+    ' const el = document.createElement("span"); el.className = "mlw-frame-cell";'
+    ' const icon = document.createElement("span");'
+    ' icon.className = "mlw-run-toggle"; icon.textContent = d._toggle;'
+    ' icon.title = d._toggle === "▶" ? "Expand these frames" : "Collapse these identical frames";'
+    ' icon.addEventListener("click", (e) => { e.stopPropagation();'
+    '   emitEvent("mlw_xsheet_toggle", {start: d._range_start, end: d._range_end}); });'
+    ' el.append(document.createTextNode(String(params.value ?? "")), icon);'
+    ' return el; }'
+)
+
+
 def rebuild_xsheet_from_current():
     """Rebuild the XSheet tab's Exposure Sheet grid from the editor's live
     (possibly unsaved) text -- called from rebuild_tree_from_current() so
@@ -1438,8 +1458,11 @@ def rebuild_xsheet_from_current():
         # keep Frame from being drag-reordered away from being the first
         # column -- it's the sheet's anchor, so every other column's
         # position is read relative to it.
-        {'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80, 'cellDataType': 'text',
-         'lockPosition': 'left', 'suppressMovable': True},
+        # The collapse icon of a run of identical rows sits at the right of
+        # this column (FRAME_CELL_RENDERER), wide enough for "100–120 ▶".
+        {'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 96, 'cellDataType': 'text',
+         'lockPosition': 'left', 'suppressMovable': True, 'cellClass': 'mlw-classic-fr',
+         ':cellRenderer': FRAME_CELL_RENDERER},
     ]
     # layer columns have a pencil: clicking the heading renames the layer in
     # the document (see handle_xsheet_header_clicked())
@@ -1450,8 +1473,6 @@ def rebuild_xsheet_from_current():
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
-        {'field': '_toggle', 'headerName': '', 'width': 50, 'sortable': False,
-         'cellStyle': {'cursor': 'pointer', 'textAlign': 'center', 'border': 'none'}},
     ]
     grid.options['columnDefs'] = column_defs
     grid.options['rowData'] = _compute_xsheet_display_rows(rows, layer_ids or []) if rows else []
@@ -1491,23 +1512,9 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
         return {'field': 'Frame', 'colId': col_id, 'headerName': 'Fr', 'width': 64,
                 'cellClass': 'mlw-trad-fr', 'cellDataType': 'text'}
 
-    # The first Fr column also carries the collapse icon of a run of identical
-    # rows: the frame number first (centred, like every other row), the icon
-    # at the cell's far right. Clicking the icon (not the number, which selects
-    # the frame) sends the run's range to handle_xsheet_run_toggle() via a
-    # page event.
-    first_frame_col = {**frame_col('fr_left'), 'width': 96, ':cellRenderer': (
-        '(params) => { const d = params.data || {};'
-        ' if (!d._toggle) return String(params.value ?? "");'
-        ' const el = document.createElement("span"); el.className = "mlw-trad-fr-cell";'
-        ' const icon = document.createElement("span");'
-        ' icon.className = "mlw-trad-toggle"; icon.textContent = d._toggle;'
-        ' icon.title = d._toggle === "▶" ? "Expand these frames" : "Collapse these identical frames";'
-        ' icon.addEventListener("click", (e) => { e.stopPropagation();'
-        '   emitEvent("mlw_xsheet_toggle", {start: d._range_start, end: d._range_end}); });'
-        ' el.append(document.createTextNode(String(params.value ?? "")), icon);'
-        ' return el; }'
-    )}
+    # The first Fr column carries the collapse icons (FRAME_CELL_RENDERER);
+    # the number stays centred like every other row.
+    first_frame_col = {**frame_col('fr_left'), 'width': 96, ':cellRenderer': FRAME_CELL_RENDERER}
 
     centered = {'cellStyle': {'textAlign': 'center'}}
     # long notes wrap onto more lines, and their row grows to fit
@@ -1574,8 +1581,8 @@ def _fit_pencil_headings_js(column_defs: list[dict]) -> str:
 
 
 def handle_xsheet_run_toggle(e):
-    """Collapse or expand a run of identical rows from its icon in the
-    traditional sheet's first Fr column (same state as the classic toggles)."""
+    """Collapse or expand a run of identical rows from its icon in the frame
+    column (either XSheet style; both share which runs are collapsed)."""
     args = e.args or {}
     try:
         key = (int(args.get('start')), int(args.get('end')))
@@ -1666,27 +1673,6 @@ def _prompt_rename_layer(old: str) -> None:
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
             ui.button('Rename', on_click=rename).props('size=sm')
     dlg.open()
-
-
-def handle_xsheet_toggle_click(e):
-    """Handles clicks anywhere in the XSheet grid; only acts on the
-    '_toggle' column of a row that marks a collapsible/collapsed empty run
-    (see _compute_xsheet_display_rows()), flipping that run's collapse
-    state and rebuilding the grid."""
-    sess = session()
-    args = e.args or {}
-    if args.get('colId') != '_toggle':
-        return
-    data = args.get('data') or {}
-    start_frame, end_frame = data.get('_range_start'), data.get('_range_end')
-    if start_frame is None or end_frame is None:
-        return
-    key = (start_frame, end_frame)
-    if key in sess.xsheet_collapsed_ranges:
-        sess.xsheet_collapsed_ranges.discard(key)
-    else:
-        sess.xsheet_collapsed_ranges.add(key)
-    rebuild_xsheet_from_current()
 
 
 def _load_document(path: str | None, text: str, saved_content: str):
@@ -2328,14 +2314,6 @@ def index():
     border-right: 1px solid var(--ag-border-color, #d0d0d0);
 }
 
-/* The collapse/expand toggle column is a UI control, not sheet data -- no
-   column rule or header border next to it. (Its cells also get
-   cellStyle: {border: 'none'} in rebuild_xsheet_from_current() to drop
-   the row separator line too.) */
-.mlw-xsheet-grid .ag-header-cell[col-id="_toggle"] {
-    border-right: none;
-}
-
 /* Alternating hold-group shading: every row between one keyframe's Layer
    values and the next -- including the blank hold rows in between -- gets
    the same light tint, and each new group (a frame whose layer values
@@ -2389,12 +2367,15 @@ def index():
     padding-left: 4px;   /* room for the icon plus a collapsed range like 100-120 */
     padding-right: 4px;
 }
-.mlw-xsheet-traditional .mlw-trad-fr-cell {
+.mlw-xsheet-grid .mlw-frame-cell {
     position: relative;
-    display: block;
-    text-align: center;
+    display: block;   /* number aligned like the column (centred in traditional, left in classic) */
 }
-.mlw-xsheet-traditional .mlw-trad-toggle {
+.mlw-xsheet-grid .ag-cell.mlw-classic-fr {
+    padding-left: 12px;
+    padding-right: 4px;
+}
+.mlw-xsheet-grid .mlw-run-toggle {
     position: absolute;
     right: 0;
     width: 14px;
@@ -2878,10 +2859,9 @@ window.mlwSelectRange = function(elementId, from, to) {
             # auto_size_columns=False: ui.aggrid defaults to stretching columns to
             # fill the grid's full width, which would override the deliberately
             # narrow per-column widths set above/in rebuild_xsheet_from_current().
-            sess.xsheet_grid.on('cellClicked', handle_xsheet_toggle_click)
             sess.xsheet_grid.on('cellClicked', handle_xsheet_row_clicked)  # rowClicked isn't forwarded
             sess.xsheet_grid.on('columnHeaderClicked', handle_xsheet_header_clicked)
-            ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # traditional sheet's collapse icons
+            ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
 
     # build initial tree from current editor value
     try:

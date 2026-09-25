@@ -297,12 +297,12 @@ drawing (or cue) starts.
   one keyframe's Layer values to the next (including the blank hold rows in between) shares a
   tint, and each new group of distinct layer values flips to the other tint.
 - **Collapsing repeated runs** — a run of two or more consecutive rows with the same values in
-  every column (Layers, Camera, Dialogue, Audio, and Notes) gets a ▼/▶ toggle next to Notes.
-  That covers completely blank rows, and also the stretches of `X` continuation marks through
-  a camera move or audio cue. Clicking the toggle collapses the run into a single summary row
-  that keeps the shared values, with the frame range in Frame (e.g. `26–59`). Hover over a
-  collapsed row to see how many frames it stands for (e.g. `34 identical frames` or
-  `22 empty frames`). Click the toggle again to expand it back out.
+  every column (Layers, Camera, Dialogue, Audio, and Notes) gets a ▼ icon at the right of its
+  **Frame** cell. That covers completely blank rows, and also the stretches of `X` continuation
+  marks through a camera move or audio cue. Click the icon (clicking the number does nothing) to
+  collapse the run into a single summary row that keeps the shared values, with the frame range
+  in Frame (e.g. `26–59 ▶`). Hover over a collapsed row to see how many frames it stands for
+  (e.g. `34 identical frames` or `22 empty frames`). Click ▶ to expand it back out.
 - Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
   text, so rows always stay in frame order.
 
@@ -321,7 +321,7 @@ Laid out like a paper exposure sheet, one compact row per frame. Columns, left t
 - One column per **layer**, headed with the layer name — the cel or scene file exposed.
 - **Camera Moves** — `<CameraMove>` type and range, `X` through the move.
 
-Runs of two or more identical rows can be collapsed, as in the classic grid: the first row of a
+Runs of two or more identical rows can be collapsed, in the same way as the classic grid: the first row of a
 run has a ▼ icon at the far right of its first **Fr** cell, after the frame number. Click the
 icon (clicking the number just selects the frame) to collapse the run into one row showing the
 frame range (e.g. `26–59 ▶`); hover over it for the frame count, and click ▶ to expand it again. Both styles
