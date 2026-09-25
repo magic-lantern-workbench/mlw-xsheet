@@ -313,23 +313,140 @@ def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | No
     return bytes(pdf.output())
 
 
+# Production fields shown above the grid, as in the XSheet view.
+XSHEET_PRODUCTION_FIELDS = (('ProjectID', 'Project ID'), ('SequenceID', 'Sequence ID'), ('SceneID', 'Scene ID'),
+                            ('Title', 'Title'), ('FrameRate', 'Frame Rate'))
+
+
+def _write_grid_header(pdf: FPDF, root: ET.Element | None, layer_ids: list[str], rows: list[dict]) -> None:
+    """The same header the XSheet view shows above its grid: "Exposure
+    Sheet" with the frame/layer counts, then the Production info line."""
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(pdf.get_string_width('Exposure Sheet') + 8, 16, 'Exposure Sheet')
+    pdf.set_font('Helvetica', '', 9)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(0, 16, _sanitize(f'{len(rows)} frame(s), {len(layer_ids)} layer(s).'), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    production = next((c for c in root if _strip_ns(c.tag) == 'Production'), None) if root is not None else None
+    if production is not None:
+        values = {_strip_ns(f.tag): ' '.join((f.text or '').split()) for f in production}
+        for key, caption in XSHEET_PRODUCTION_FIELDS:
+            value = values.get(key) or '-'
+            if key == 'FrameRate' and value != '-':
+                value = f'{value} fps'
+            pdf.set_font('Helvetica', '', 9)
+            pdf.set_text_color(110, 110, 110)
+            pdf.cell(pdf.get_string_width(f'{caption}: ') + 1, 14, _sanitize(f'{caption}: '))
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(pdf.get_string_width(_sanitize(value)) + 18, 14, _sanitize(value))
+        pdf.ln(14)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(6)
+
+
+def _draw_traditional_table(pdf: FPDF, columns: list[dict], rows: list[dict]) -> None:
+    """Draw the traditional exposure-sheet table by hand, like the XSheet
+    view: centred bold headings (repeated on each page), rows that grow to
+    fit wrapped text, alternating shading, grey frame-number columns, and a
+    heavier rule after the last frame of each second (rows with _second).
+    Each column: key, header, weight (relative width), align, wrap."""
+    font_size, line_h, pad = 7.5, 9.0, 2.5
+    usable = pdf.w - pdf.l_margin - pdf.r_margin
+    total = sum(c['weight'] for c in columns)
+    widths = [usable * c['weight'] / total for c in columns]
+    bottom = pdf.h - pdf.b_margin
+    grid, rule, shade, frame_fill = (208, 208, 208), (85, 85, 85), (247, 247, 247), (241, 241, 241)
+
+    def text_lines(text: str, width: float) -> list[str]:
+        if not text:
+            return ['']
+        return pdf.multi_cell(width - 2 * pad, line_h, _sanitize(text), dry_run=True, output='LINES')
+
+    def draw_header():
+        pdf.set_font('Helvetica', 'B', font_size)
+        y, x = pdf.get_y(), pdf.l_margin
+        height = line_h + 2 * pad
+        for col, width in zip(columns, widths):
+            pdf.set_fill_color(240, 240, 240)
+            pdf.set_draw_color(*grid)
+            pdf.rect(x, y, width, height, style='DF')
+            pdf.set_xy(x, y + pad)
+            pdf.cell(width, line_h, _sanitize(col['header']), align='C')
+            x += width
+        pdf.set_y(y + height)
+        pdf.set_font('Helvetica', '', font_size)
+
+    # The heavier second rules sit on the edge shared with the next row, so
+    # they're drawn once a page is complete -- otherwise the next row's
+    # filled background paints over them.
+    rules: list[float] = []
+
+    def draw_rules():
+        pdf.set_draw_color(*rule)
+        pdf.set_line_width(1.4)
+        for y in rules:
+            pdf.line(pdf.l_margin, y, pdf.l_margin + usable, y)
+        pdf.set_line_width(0.4)
+        rules.clear()
+
+    pdf.set_auto_page_break(False)
+    draw_header()
+    for index, row in enumerate(rows):
+        cells = []
+        for col, width in zip(columns, widths):
+            value = str(row.get(col['key'], '') or '')
+            lines = text_lines(value, width) if col.get('wrap') else [value]
+            cells.append(lines)
+        height = max(len(lines) for lines in cells) * line_h + 2 * pad
+        if pdf.get_y() + height > bottom:
+            draw_rules()
+            pdf.add_page()
+            draw_header()
+        y, x = pdf.get_y(), pdf.l_margin
+        for col, width, lines in zip(columns, widths, cells):
+            fill = frame_fill if col.get('frame') else (shade if index % 2 else (255, 255, 255))
+            pdf.set_fill_color(*fill)
+            pdf.set_draw_color(*grid)
+            pdf.set_line_width(0.4)
+            pdf.rect(x, y, width, height, style='DF')
+            for n, line in enumerate(lines):
+                pdf.set_xy(x + pad, y + pad + n * line_h)
+                pdf.cell(width - 2 * pad, line_h, _sanitize(line), align='C' if col.get('align') == 'C' else 'L')
+            x += width
+        if row.get('_second'):
+            rules.append(y + height)
+        pdf.set_y(y + height)
+    draw_rules()
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_auto_page_break(True, margin=MARGIN)
+
+
 def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
-                         title: str = 'Untitled', source_text: str | None = None) -> bytes:
+                        title: str = 'Untitled', source_text: str | None = None,
+                        style: str = 'classic', headings: dict[str, str] | None = None) -> bytes:
     """Render the Exposure Sheet grid (as already computed by main.py's
-    parse_exposure_sheet()) as a paginated, landscape table PDF: one row per
-    frame number, one column per layer plus Camera/Dialogue/Audio/Notes --
-    the same shape as the XSheet tab's on-screen grid, including its blank
-    hold rows between sparse <Frame> entries. Used by main.py's XSheet >
-    Export XSheet menu item (see export_xsheet() there).
+    parse_exposure_sheet()) as a paginated, landscape PDF, in either XSheet
+    style -- the same shape as the XSheet tab's on-screen grid, including
+    the blank hold rows between sparse <Frame> entries (every frame is
+    printed; runs aren't collapsed). Used by main.py's XSheet > Export
+    XSheet menu item (see export_xsheet() there).
+
+    style: 'classic' (Frame, one column per layer, Camera, Dialogue, Audio,
+    Notes) or 'traditional' (Action/Description, Fr, Audio, Dialogue,
+    Sound FX, Tech. Notes, the layers, Fr, Camera Moves, with alternating
+    shading and a heavier rule after each second). headings: the user's own
+    names for the traditional Sound FX / Tech. Notes columns ('soundfx',
+    'technotes').
 
     `source_text` (the same raw document export_xsheet() parsed to build
-    layer_ids/rows) is used, best-effort, to also show the document's
-    <Production> and <VersionControl> fields on page 1; the grid table
-    itself always starts on page 2 regardless of whether that info was
-    available."""
+    layer_ids/rows) is used, best-effort, to show the document's
+    <Production> and <VersionControl> fields on page 1, and the view's
+    header (counts and Production info) above the grid, which always starts
+    on page 2."""
     pdf = _new_pdf(orientation='L')
     _write_title_block(pdf, f'{title} - Exposure Sheet')
 
+    root = None
     if source_text:
         try:
             root = ET.fromstring(source_text)
@@ -342,6 +459,23 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
                 _write_section(pdf, version_control)
 
     pdf.add_page()
+    _write_grid_header(pdf, root, layer_ids, rows)
+
+    if style == 'traditional':
+        headings = headings or {}
+        columns = [
+            {'key': 'Notes', 'header': 'Action/Description', 'weight': 2.4, 'wrap': True},
+            {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
+            {'key': 'AudioTrack', 'header': 'Audio', 'weight': 1.0, 'align': 'C'},
+            {'key': 'Dialogue', 'header': 'Dialogue', 'weight': 1.3, 'wrap': True},
+            {'key': 'SoundFX', 'header': headings.get('soundfx', 'Sound FX'), 'weight': 0.9, 'align': 'C'},
+            {'key': 'TechNotes', 'header': headings.get('technotes', 'Tech. Notes'), 'weight': 1.5, 'wrap': True},
+            *({'key': lid, 'header': lid, 'weight': 0.8, 'align': 'C'} for lid in layer_ids),
+            {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
+            {'key': 'Camera', 'header': 'Camera Moves', 'weight': 1.1, 'align': 'C'},
+        ]
+        _draw_traditional_table(pdf, columns, rows)
+        return bytes(pdf.output())
 
     headers = ['Frame', *layer_ids, 'Camera', 'Dialogue', 'Audio', 'Notes']
     centered = {'Frame', 'Camera', 'Audio', *layer_ids}

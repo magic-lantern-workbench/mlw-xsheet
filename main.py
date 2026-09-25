@@ -2337,8 +2337,8 @@ def export_to_pdf():
 
 def export_xsheet():
     """Render the XSheet tab's Exposure Sheet grid (not the raw XML -- see
-    export_to_pdf() for that) as a paginated landscape PDF table and save it
-    via a Save As-style dialog."""
+    export_to_pdf() for that) as a paginated landscape PDF, in the XSheet
+    style being viewed, and save it via a Save As-style dialog."""
     sess = session()
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
@@ -2348,16 +2348,20 @@ def export_xsheet():
 
     doc_name = Path(sess.current_file['path']).name if sess.current_file.get('path') else 'untitled'
     source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
-    try:
-        pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text)
-    except Exception as exc:
-        ui.notify(f'XSheet PDF export failed: {exc}', color='negative')
-        return
+
+    style = sess.xsheet_style  # export what's on screen
 
     def file_selected_callback(files):
         if not files:
             return
         dest = Path(files[0])
+        headings = {key: xsheet_column_name(key, default) for key, default in RENAMABLE_XSHEET_COLUMNS.items()}
+        try:
+            pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text,
+                                                       style=style, headings=headings)
+        except Exception as exc:
+            ui.notify(f'XSheet PDF export failed: {exc}', color='negative')
+            return
 
         def do_export():
             try:
@@ -2365,7 +2369,7 @@ def export_xsheet():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
-            ui.notify(f'Exported {dest}', color='positive')
+            ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]})', color='positive')
 
         _confirm_overwrite(dest, do_export)
 
