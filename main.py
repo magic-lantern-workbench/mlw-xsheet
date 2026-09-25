@@ -119,7 +119,7 @@ class Session:
         # taken from the user's preference whenever a document is opened (see
         # _load_document() / close_file()), so changing the preference doesn't
         # restyle a document that's already open.
-        self.xsheet_style = 'classic'
+        self.xsheet_style = 'traditional'  # replaced from the user's preference when the page loads
         # Frame highlighted in the traditional sheet's Fr columns; kept here
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
@@ -155,9 +155,10 @@ def session() -> Session:
 #                     limit again brings them back.
 #   'open_dir':       folder of the file this user last picked in File > Open,
 #                     where the Open dialog starts next time.
-#   'xsheet_style':   'classic' (the v1.0.0 grid) or 'traditional' (a paper
-#                     exposure-sheet layout), used for documents opened from
-#                     then on; set in File > Preferences > XSheet.
+#   'xsheet_style':   'traditional' (a paper exposure-sheet layout, the
+#                     default) or 'classic' (the v1.0.0 grid), used for
+#                     documents opened from then on; set in File >
+#                     Preferences > XSheet.
 #   'xsheet_column_names': the user's own headings for the traditional
 #                     sheet's Sound FX and Tech. Notes columns, by column id
 #                     ('soundfx', 'technotes'). Layer columns are renamed in
@@ -190,16 +191,17 @@ def set_chosen_schema_path(path: str | None) -> None:
     user_storage()['schema_path'] = path
 
 
-XSHEET_STYLES = {'classic': 'Classic (v1.0.0)', 'traditional': 'Traditional exposure sheet'}
+XSHEET_STYLES = {'traditional': 'Traditional exposure sheet', 'classic': 'Classic (v1.0.0)'}
+DEFAULT_XSHEET_STYLE = 'traditional'  # for users who haven't chosen one in Preferences
 
 
 def xsheet_style_pref() -> str:
-    style = user_storage().get('xsheet_style', 'classic')
-    return style if style in XSHEET_STYLES else 'classic'
+    style = user_storage().get('xsheet_style', DEFAULT_XSHEET_STYLE)
+    return style if style in XSHEET_STYLES else DEFAULT_XSHEET_STYLE
 
 
 def set_xsheet_style_pref(style: str) -> None:
-    user_storage()['xsheet_style'] = style if style in XSHEET_STYLES else 'classic'
+    user_storage()['xsheet_style'] = style if style in XSHEET_STYLES else DEFAULT_XSHEET_STYLE
 
 
 def xsheet_column_name(col_id: str, default: str) -> str:
@@ -2750,10 +2752,14 @@ window.mlwSelectRange = function(elementId, from, to) {
             pass
 
     with ui.tabs(on_change=on_main_tab_change).classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
-        xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+1')
-        xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+2')
+        # XSheet first; the shortcuts follow the tabs' positions
+        xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
+        xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
 
-    with ui.tab_panels(main_tabs, value=xml_tab).classes('w-full'):
+    # The XSheet tab is showing when the page opens; the XML menu acts on the
+    # editor, so it starts disabled until the XML tab is chosen.
+    sess.xml_menu_button.disable()
+    with ui.tab_panels(main_tabs, value=xsheet_tab).classes('w-full'):
         with ui.tab_panel(xml_tab):
             with ui.row().classes('gap-4 w-full flex-nowrap'):
                 with ui.column().style('flex:1; min-width:0'):
@@ -2907,9 +2913,9 @@ window.mlwSelectRange = function(elementId, from, to) {
         elif e.key == 'y' and e.modifiers.ctrl:
             do_redo()
         elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'XML'
-        elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'XSheet'
+        elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
+            main_tabs.value = 'XML'
     ui.keyboard(on_key=handle_keyboard)
 
 

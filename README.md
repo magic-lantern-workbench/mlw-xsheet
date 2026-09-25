@@ -23,8 +23,8 @@ tool (or in OpenToonz) can migrate between the two.
 
 ## Features
 
-- **Two tabs**: **XML** (the text editor and Hierarchy tree) and **XSheet** (a traditional
-  exposure-sheet grid rendered from the same document). Your place in each — editor cursor
+- **Two tabs**: **XSheet** (a traditional exposure-sheet grid rendered from the document) and
+  **XML** (the text editor and Hierarchy tree). Your place in each — editor cursor
   line, XSheet scroll position — is remembered when you switch away and back.
 - **Text editor** with XML syntax highlighting (CodeMirror), Undo/Redo, and Find & Replace
   (case-sensitive and/or regex, with match highlighting and Replace/Replace All).
@@ -176,8 +176,8 @@ switching browsers starts fresh settings.
   left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
   Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
-- **Tabs** — `XML` (Editor + Hierarchy tree) and `XSheet` (the Exposure Sheet grid).
-  `Ctrl+Alt+1`/`Ctrl+Alt+2` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
+- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, and `XML`
+  (Editor + Hierarchy tree). `Ctrl+Alt+1`/`Ctrl+Alt+2` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
 - **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
   collapsible tree mirroring the document's element structure.
 - **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
@@ -249,8 +249,8 @@ are saved per user; Login applies to everyone using the server:
 - **Recent Files** — controls **File > Open Recent**:
   - **Number of recent files to list** — 1–20, default 5. Lowering it hides older entries
     rather than deleting them (up to 20 are kept), so raising it again brings them back.
-- **XSheet** — the style of the XSheet tab: **Classic (v1.0.0)** (the default) or **Traditional
-  exposure sheet** (see [Traditional style](#traditional-style)). The style is applied when a
+- **XSheet** — the style of the XSheet tab: **Traditional exposure sheet** (the default; see
+  [Traditional style](#traditional-style)) or **Classic (v1.0.0)**. The style is applied when a
   document is opened. If you save a new style while a document is open, you're asked whether to
   switch its view now (**Change view**) or keep it until you next open a document (**Not now**).
 - **Login** — the server's single account (see [Logging in](#logging-in)):
@@ -269,8 +269,8 @@ are saved per user; Login applies to everyone using the server:
 ### XSheet tab
 
 The Exposure Sheet grid, rebuilt from the same live document as the Hierarchy tree. It comes in
-two styles, chosen in **File > Preferences… > XSheet**: the classic grid described here, and a
-[traditional exposure sheet](#traditional-style). In the classic grid, each row
+two styles, chosen in **File > Preferences… > XSheet**: a [traditional exposure
+sheet](#traditional-style) (the default), and the classic v1.0.0 grid described here. In the classic grid, each row
 is a frame number, spanning `Production/StartFrame`–`EndFrame` (widened to cover any `<Frame
 number="...">` outside that range). Columns, left to right:
 
@@ -346,8 +346,8 @@ Export XSheet still produces the classic layout.
 
 - `Ctrl+Z` — Undo
 - `Ctrl+Y` — Redo
-- `Ctrl+Alt+1` — Switch to the XML tab
-- `Ctrl+Alt+2` — Switch to the XSheet tab
+- `Ctrl+Alt+1` — Switch to the XSheet tab
+- `Ctrl+Alt+2` — Switch to the XML tab
 
 (`Ctrl+O` and `Ctrl+S` are intentionally not bound — browsers reserve those shortcuts for
 their own Open/Save dialogs and won't let a web page override them. Use the File menu instead.
