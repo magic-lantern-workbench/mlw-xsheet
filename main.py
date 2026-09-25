@@ -25,6 +25,7 @@
 # COPYRIGHT_END
 
 from pathlib import Path
+import json
 import os
 import time
 from nicegui import app, ui
@@ -114,6 +115,15 @@ class Session:
         self.xsheet_grid = None
         self.recent_menu = None
 
+        # XSheet tab style for the open document ('classic' or 'traditional'),
+        # taken from the user's preference whenever a document is opened (see
+        # _load_document() / close_file()), so changing the preference doesn't
+        # restyle a document that's already open.
+        self.xsheet_style = 'classic'
+        # Frame highlighted in the traditional sheet's Fr columns; kept here
+        # so it survives the grid being rebuilt as the document changes.
+        self.xsheet_current_frame = None
+
         # This user's app.storage.user, captured while index() still has the
         # page request (event handlers and timers don't always carry one).
         self.user_storage = None
@@ -145,6 +155,13 @@ def session() -> Session:
 #                     limit again brings them back.
 #   'open_dir':       folder of the file this user last picked in File > Open,
 #                     where the Open dialog starts next time.
+#   'xsheet_style':   'classic' (the v1.0.0 grid) or 'traditional' (a paper
+#                     exposure-sheet layout), used for documents opened from
+#                     then on; set in File > Preferences > XSheet.
+#   'xsheet_column_names': the user's own headings for the traditional
+#                     sheet's Sound FX and Tech. Notes columns, by column id
+#                     ('soundfx', 'technotes'). Layer columns are renamed in
+#                     the document itself instead.
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
@@ -171,6 +188,32 @@ def chosen_schema_path() -> str | None:
 
 def set_chosen_schema_path(path: str | None) -> None:
     user_storage()['schema_path'] = path
+
+
+XSHEET_STYLES = {'classic': 'Classic (v1.0.0)', 'traditional': 'Traditional exposure sheet'}
+
+
+def xsheet_style_pref() -> str:
+    style = user_storage().get('xsheet_style', 'classic')
+    return style if style in XSHEET_STYLES else 'classic'
+
+
+def set_xsheet_style_pref(style: str) -> None:
+    user_storage()['xsheet_style'] = style if style in XSHEET_STYLES else 'classic'
+
+
+def xsheet_column_name(col_id: str, default: str) -> str:
+    return user_storage().get('xsheet_column_names', {}).get(col_id) or default
+
+
+def set_xsheet_column_name(col_id: str, name: str | None) -> None:
+    """Save the user's heading for a renamable column; None or blank restores the default."""
+    names = dict(user_storage().get('xsheet_column_names', {}))
+    if name and name.strip():
+        names[col_id] = name.strip()
+    else:
+        names.pop(col_id, None)
+    user_storage()['xsheet_column_names'] = names
 
 
 def recent_files_limit() -> int:
@@ -386,12 +429,14 @@ def format_xml():
 
 def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
-    (Edit > Format), a Recent Files tab for File > Open Recent, and a Login
-    tab for the server's password and inactivity time-out (see auth.py)."""
+    (Edit > Format), a Recent Files tab for File > Open Recent, an XSheet tab
+    for the Exposure Sheet style, and a Login tab for the server's password
+    and inactivity time-out (see auth.py)."""
     with ui.dialog() as dlg, titled_card('Preferences', classes='w-[380px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
+            xsheet_tab = ui.tab('XSheet')
             login_tab = ui.tab('Login')
         with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
@@ -407,6 +452,11 @@ def show_preferences_dialog():
                     f'Number of recent files to list (1–{MAX_RECENT_FILES_LIMIT})',
                     value=recent_files_limit(), min=1, max=MAX_RECENT_FILES_LIMIT, step=1, format='%d',
                 ).classes('w-full')
+            with ui.tab_panel(xsheet_tab).classes('px-0 gap-2'):
+                ui.label('Style of the XSheet tab, used for documents you open from now on').classes('text-sm text-gray-500')
+                style_radio = ui.radio(XSHEET_STYLES, value=xsheet_style_pref())
+                ui.label('In the traditional style, click a heading with a pencil to rename that column.') \
+                    .classes('text-xs text-gray-500')
             with ui.tab_panel(login_tab).classes('px-0 gap-2'):
                 ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
                 timeout_input = ui.number(
@@ -445,16 +495,49 @@ def show_preferences_dialog():
             except (TypeError, ValueError):
                 prefs['indent_size'] = 4
             set_format_prefs(prefs)
+            set_xsheet_style_pref(style_radio.value)
             try:
                 set_recent_files_limit(int(recent_input.value))
             except (TypeError, ValueError):
                 set_recent_files_limit(DEFAULT_RECENT_FILES_LIMIT)
             dlg.close()
             ui.notify('Preferences saved' + (' (password changed)' if changing_password else ''), color='positive')
+            _offer_xsheet_style_change(xsheet_style_pref())
 
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
             ui.button('Save', on_click=do_save).props('size=sm')
+    dlg.open()
+
+
+def _apply_xsheet_style(style: str) -> None:
+    sess = session()
+    sess.xsheet_style = style
+    sess.xsheet_current_frame = None
+    rebuild_xsheet_from_current()
+
+
+def _offer_xsheet_style_change(style: str) -> None:
+    """After Preferences are saved: the XSheet style normally applies to
+    documents opened from then on, so if the open document is showing a
+    different style, ask whether to switch its view now as well. With no
+    document open there's nothing to ask about, so just switch."""
+    if session().xsheet_style == style:
+        return
+    if not _editor_text().strip():
+        _apply_xsheet_style(style)
+        return
+    with ui.dialog().props('persistent') as dlg, titled_card('Change XSheet View', classes='w-[380px] max-w-full'):
+        ui.label(f'Show the open document in the {XSHEET_STYLES[style]} style now? '
+                 'Otherwise it will be used for documents you open from now on.')
+        with ui.row().classes('w-full justify-end gap-2'):
+            ui.button('Not now', on_click=dlg.close).props('outline size=sm')
+
+            def change(_=None):
+                dlg.close()
+                _apply_xsheet_style(style)
+                ui.notify(f'XSheet view changed to {XSHEET_STYLES[style]}', color='positive')
+            ui.button('Change view', on_click=change).props('size=sm')
     dlg.open()
 
 
@@ -1045,11 +1128,11 @@ def parse_exposure_sheet(text: str):
         return None, None, 'No <Timeline> found in the current document.'
 
     production = next((c for c in root if strip_ns(c.tag) == 'Production'), None)
-    start_frame = end_frame = None
+    start_frame = end_frame = frame_rate = None
     if production is not None:
         for field in production:
             name = strip_ns(field.tag)
-            if name not in ('StartFrame', 'EndFrame'):
+            if name not in ('StartFrame', 'EndFrame', 'FrameRate'):
                 continue
             try:
                 value = int((field.text or '').strip())
@@ -1057,8 +1140,10 @@ def parse_exposure_sheet(text: str):
                 continue
             if name == 'StartFrame':
                 start_frame = value
-            else:
+            elif name == 'EndFrame':
                 end_frame = value
+            else:
+                frame_rate = value
 
     # (start_frame, end_frame, type) for every <CameraMove> under the
     # top-level <Camera> element -- a sibling of <Timeline>, so this is
@@ -1081,6 +1166,36 @@ def parse_exposure_sheet(text: str):
     # the Timeline, regardless of which <Frame> it's nested under -- a cue's
     # XML location only marks where it starts, not every frame it covers.
     audio_refs: list[tuple[int, int, str]] = []
+    # Track id -> type ('Dialogue' / 'Music' / 'Effects'), so the traditional
+    # sheet can split sound effects into their own column.
+    track_types: dict[str, str] = {}
+    audio_tracks_el = next((c for c in root if strip_ns(c.tag) == 'AudioTracks'), None)
+    if audio_tracks_el is not None:
+        for track_el in audio_tracks_el:
+            if track_el.get('id'):
+                track_types[track_el.get('id')] = track_el.get('type') or ''
+    # Technical notes for the traditional sheet: camera keyframe notes and
+    # review comments, by frame number.
+    tech_notes: dict[int, list[str]] = {}
+    if camera_el is not None:
+        for key_el in camera_el:
+            if strip_ns(key_el.tag) == 'Keyframe' and key_el.get('note'):
+                try:
+                    tech_notes.setdefault(int(key_el.get('frame')), []).append(key_el.get('note'))
+                except (TypeError, ValueError):
+                    pass
+    reviews_el = next((c for c in root if strip_ns(c.tag) == 'Reviews'), None)
+    if reviews_el is not None:
+        for review_el in reviews_el:
+            comment_el = next((c for c in review_el if strip_ns(c.tag) == 'Comment'), None)
+            comment = ' '.join((comment_el.text or '').split()) if comment_el is not None else ''
+            status = review_el.get('status') or ''
+            try:
+                frame_no = int(review_el.get('frame'))
+            except (TypeError, ValueError):
+                continue
+            if comment or status:
+                tech_notes.setdefault(frame_no, []).append(f'{status}: {comment}' if status and comment else (status or comment))
     for frame_el in timeline:
         if strip_ns(frame_el.tag) != 'Frame':
             continue
@@ -1166,15 +1281,56 @@ def parse_exposure_sheet(text: str):
         row['Dialogue'] = dialogue
         row['Audio'] = _span_text_for_frame(n, audio_refs)
         row['Notes'] = notes
+        # Extra fields for the traditional sheet (the classic grid and the
+        # PDF export only read the columns above).
+        row['AudioTrack'] = _span_text_for_frame(n, [r for r in audio_refs if track_types.get(r[2]) != 'Effects'])
+        row['SoundFX'] = _span_text_for_frame(n, [r for r in audio_refs if track_types.get(r[2]) == 'Effects'])
+        row['TechNotes'] = '; '.join(tech_notes.get(n, []))
+        row['_second'] = bool(frame_rate) and n % frame_rate == 0  # heavier rule after each second
         rows.append(row)
 
     return layer_ids, rows, f'{len(rows)} frame(s), {len(layer_ids)} layer(s).'
 
 
-def _row_values(row: dict, layer_ids: list[str]) -> tuple:
-    """A row's values in every column but Frame -- rows with equal values
-    form a collapsible run (see _compute_xsheet_display_rows())."""
-    return tuple(row.get(col, '') for col in (*layer_ids, 'Camera', 'Dialogue', 'Audio', 'Notes'))
+INVALID_LAYER_NAME_CHARS = set('"\'<>&')
+
+
+def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
+    """Rename animation layer `old` to `new` in ExposureSheet XML text: the
+    `id` attribute of every <Layer> element, and `xsheetLayer` on OTIO
+    <TrackMap> elements that refer to it. Works on the text itself (not a
+    re-serialised tree) so formatting and comments are kept. Returns the new
+    text and the number of Layer and TrackMap attributes changed."""
+    import re
+    attr_value = re.escape(old)
+
+    def rename_in_tags(text: str, tag: str, attr: str) -> tuple[str, int]:
+        tag_re = re.compile(r'<(?:[\w.-]+:)?' + tag + r'(?=[\s/>])[^>]*>')
+        attr_re = re.compile(r'(\s' + attr + r'\s*=\s*)(["\'])' + attr_value + r'\2')
+        count = 0
+
+        def fix_tag(m):
+            nonlocal count
+            new_tag, n = attr_re.subn(lambda a: f'{a.group(1)}{a.group(2)}{new}{a.group(2)}', m.group(0))
+            count += n
+            return new_tag
+        return tag_re.sub(fix_tag, text), count
+
+    text, layers = rename_in_tags(text, 'Layer', 'id')
+    text, track_maps = rename_in_tags(text, 'TrackMap', 'xsheetLayer')
+    return text, layers, track_maps
+
+
+# Columns (besides the layers) compared to find runs of identical rows in each
+# XSheet style -- whatever that style shows, other than the frame number.
+CLASSIC_RUN_COLUMNS = ('Camera', 'Dialogue', 'Audio', 'Notes')
+TRADITIONAL_RUN_COLUMNS = ('Notes', 'AudioTrack', 'Dialogue', 'SoundFX', 'TechNotes', 'Camera')
+
+
+def _row_values(row: dict, layer_ids: list[str], columns: tuple = CLASSIC_RUN_COLUMNS) -> tuple:
+    """A row's values in every shown column but Frame -- rows with equal
+    values form a collapsible run (see _compute_xsheet_display_rows())."""
+    return tuple(row.get(col, '') for col in (*layer_ids, *columns))
 
 
 def _assign_xsheet_zebra_groups(rows: list[dict], layer_ids: list[str]) -> None:
@@ -1195,7 +1351,8 @@ def _assign_xsheet_zebra_groups(rows: list[dict], layer_ids: list[str]) -> None:
         row['_zebra'] = group % 2
 
 
-def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list[dict]:
+def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str],
+                                 columns: tuple = CLASSIC_RUN_COLUMNS) -> list[dict]:
     """Expand `rows` into what the grid should actually display: runs of two
     or more consecutive rows with the same values in every column (e.g. the
     'X' continuation marks through a camera move, or completely empty
@@ -1206,9 +1363,9 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
     display: list[dict] = []
     i, n = 0, len(rows)
     while i < n:
-        values = _row_values(rows[i], layer_ids)
+        values = _row_values(rows[i], layer_ids, columns)
         j = i + 1
-        while j < n and _row_values(rows[j], layer_ids) == values:
+        while j < n and _row_values(rows[j], layer_ids, columns) == values:
             j += 1
         run = rows[i:j]
         if len(run) < 2:
@@ -1224,6 +1381,7 @@ def _compute_xsheet_display_rows(rows: list[dict], layer_ids: list[str]) -> list
                 # grid's tooltipValueGetter in index()).
                 summary = dict(run[0])
                 summary['Frame'] = f'{start_frame}–{end_frame}'
+                summary['_second'] = any(r.get('_second') for r in run)  # keep a second's rule inside the run
                 summary['_hint'] = f"{len(run)} {'identical' if any(values) else 'empty'} frames"
                 summary['_toggle'] = '▶'  # ▶ collapsed, click to expand
                 summary['_range_start'] = start_frame
@@ -1255,6 +1413,15 @@ def rebuild_xsheet_from_current():
     layer_ids, rows, message = parse_exposure_sheet(_editor_text())
     if status is not None:
         status.set_text(message)
+    if sess.xsheet_style == 'traditional':
+        _build_traditional_xsheet(sess, grid, layer_ids or [], rows or [])
+        return
+    # classic (v1.0.0) grid: clear anything the traditional layout set
+    grid.classes(remove='mlw-xsheet-traditional')
+    for key in ('rowSelection', ':getRowId'):
+        grid.options.pop(key, None)
+    grid.options['rowHeight'] = 24     # compact rows, the same as the traditional style
+    grid.options['headerHeight'] = 28
     if rows:
         _assign_xsheet_zebra_groups(rows, layer_ids or [])
     grid.options[':getRowClass'] = (
@@ -1272,7 +1439,10 @@ def rebuild_xsheet_from_current():
         {'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80, 'cellDataType': 'text',
          'lockPosition': 'left', 'suppressMovable': True},
     ]
-    column_defs += [{'field': lid, 'headerName': lid, 'width': 110} for lid in (layer_ids or [])]
+    # layer columns have a pencil: clicking the heading renames the layer in
+    # the document (see handle_xsheet_header_clicked())
+    column_defs += [{'field': lid, 'colId': f'layer:{lid}', 'headerName': f'{lid} ✏️', 'width': 110,
+                     'headerTooltip': 'Click to rename this layer in the document'} for lid in (layer_ids or [])]
     column_defs += [
         {'field': 'Camera', 'headerName': 'Camera', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
@@ -1283,7 +1453,217 @@ def rebuild_xsheet_from_current():
     ]
     grid.options['columnDefs'] = column_defs
     grid.options['rowData'] = _compute_xsheet_display_rows(rows, layer_ids or []) if rows else []
+    grid.options[':onGridReady'] = f'(params) => {{ {_fit_pencil_headings_js(column_defs)} }}'
     grid.update()
+
+
+# Traditional sheet columns whose headings the user can rename (pencil icon).
+RENAMABLE_XSHEET_COLUMNS = {'soundfx': 'Sound FX', 'technotes': 'Tech. Notes'}
+
+
+def _xsheet_column_default(col_id: str) -> str | None:
+    if col_id.startswith('layer:'):
+        return col_id[len('layer:'):]
+    return RENAMABLE_XSHEET_COLUMNS.get(col_id)
+
+
+def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]) -> None:
+    """Lay the grid out like a paper exposure sheet: Action/Description,
+    frame numbers, audio, dialogue, sound effects, technical notes, one
+    column per animation layer, the frame numbers again, and camera moves.
+    Runs of identical rows can be collapsed with the ▼/▶ icon in the first Fr
+    column, rows alternate shading, a heavier rule marks the end of each
+    second, and the selected frame is highlighted in both Fr columns."""
+    grid.classes(add='mlw-xsheet-traditional')
+
+    def renamable(field: str, col_id: str, width: int, **extra) -> dict:
+        is_layer = col_id.startswith('layer:')
+        # a layer column shows the layer's own name from the document;
+        # renaming it renames the layer (see handle_xsheet_header_clicked())
+        name = _xsheet_column_default(col_id) if is_layer else xsheet_column_name(col_id, _xsheet_column_default(col_id))
+        return {'field': field, 'colId': col_id, 'width': width, 'headerName': f'{name} ✏️',
+                'headerTooltip': 'Click to rename this layer in the document' if is_layer else 'Click to rename this column',
+                **extra}
+
+    def frame_col(col_id: str) -> dict:
+        return {'field': 'Frame', 'colId': col_id, 'headerName': 'Fr', 'width': 64,
+                'cellClass': 'mlw-trad-fr', 'cellDataType': 'text'}
+
+    # The first Fr column also carries the collapse icon of a run of identical
+    # rows: the frame number first (centred, like every other row), the icon
+    # at the cell's far right. Clicking the icon (not the number, which selects
+    # the frame) sends the run's range to handle_xsheet_run_toggle() via a
+    # page event.
+    first_frame_col = {**frame_col('fr_left'), 'width': 96, ':cellRenderer': (
+        '(params) => { const d = params.data || {};'
+        ' if (!d._toggle) return String(params.value ?? "");'
+        ' const el = document.createElement("span"); el.className = "mlw-trad-fr-cell";'
+        ' const icon = document.createElement("span");'
+        ' icon.className = "mlw-trad-toggle"; icon.textContent = d._toggle;'
+        ' icon.title = d._toggle === "▶" ? "Expand these frames" : "Collapse these identical frames";'
+        ' icon.addEventListener("click", (e) => { e.stopPropagation();'
+        '   emitEvent("mlw_xsheet_toggle", {start: d._range_start, end: d._range_end}); });'
+        ' el.append(document.createTextNode(String(params.value ?? "")), icon);'
+        ' return el; }'
+    )}
+
+    centered = {'cellStyle': {'textAlign': 'center'}}
+    # long notes wrap onto more lines, and their row grows to fit
+    wrapped = {'wrapText': True, 'autoHeight': True, 'cellClass': 'mlw-trad-wrap'}
+    column_defs = [
+        {'field': 'Notes', 'colId': 'action', 'headerName': 'Action/Description', 'width': 320, **wrapped},
+        first_frame_col,
+        {'field': 'AudioTrack', 'colId': 'audio', 'headerName': 'Audio', 'width': 160, **centered},
+        {'field': 'Dialogue', 'colId': 'dialogue', 'headerName': 'Dialogue', 'width': 190},
+        renamable('SoundFX', 'soundfx', 115, **centered),
+        renamable('TechNotes', 'technotes', 160, **wrapped),
+        *(renamable(lid, f'layer:{lid}', 115, **centered) for lid in layer_ids),
+        frame_col('fr_right'),
+        {'field': 'Camera', 'colId': 'camera', 'headerName': 'Camera Moves', 'minWidth': 180, 'flex': 1, **centered},
+    ]
+    if sess.xsheet_current_frame is None and rows:
+        sess.xsheet_current_frame = rows[0]['Frame']
+    grid.options['columnDefs'] = column_defs
+    grid.options['rowData'] = _compute_xsheet_display_rows(rows, layer_ids, TRADITIONAL_RUN_COLUMNS) if rows else []
+    grid.options['rowSelection'] = {'mode': 'singleRow', 'checkboxes': False, 'enableClickSelection': True}
+    grid.options['rowHeight'] = 24     # compact rows, like a printed sheet (the classic style matches)
+    grid.options['headerHeight'] = 28
+    grid.options[':getRowId'] = '(params) => String(params.data.Frame)'
+    # alternate row shading, and a heavier rule after the last frame of each second
+    grid.options[':getRowClass'] = (
+        "(params) => [params.node.rowIndex % 2 ? 'mlw-trad-odd' : '',"
+        " params.data && params.data._second ? 'mlw-trad-second' : ''].join(' ')"
+    )
+    # Once the grid is (re)built: re-select the current frame, and fit the
+    # pencil headings (see _fit_pencil_headings_js()).
+    frame = json.dumps(str(sess.xsheet_current_frame)) if sess.xsheet_current_frame is not None else 'null'
+    grid.options[':onGridReady'] = (
+        '(params) => {'
+        f' const frame = {frame}; const n = frame === null ? null : params.api.getRowNode(frame); if (n) n.setSelected(true);'
+        f' {_fit_pencil_headings_js(column_defs)}'
+        '}'
+    )
+    grid.update()
+
+
+def _fit_pencil_headings_js(column_defs: list[dict]) -> str:
+    """JavaScript for a grid's onGridReady that widens each pencil column
+    whose heading (e.g. a longer layer name) doesn't fit, so the whole name
+    and the pencil stay visible. Sized from the heading only, never narrower
+    than the column's usual width, and not from the cells (Tech. Notes would
+    otherwise grow to its longest comment). Used by both XSheet styles."""
+    fit = json.dumps({c['colId']: c['width'] for c in column_defs if c.get('headerTooltip')})
+    return (
+        f'const fit = {fit};'
+        ' requestAnimationFrame(() => {'
+        '  const root = document.querySelector(".mlw-xsheet-grid");'
+        '  const widths = [];'
+        '  for (const [key, base] of Object.entries(fit)) {'
+        '   const cell = root && root.querySelector(`.ag-header-cell[col-id="${CSS.escape(key)}"]`);'
+        '   const text = cell && cell.querySelector(".ag-header-cell-text");'
+        '   if (!text) continue;'
+        '   const style = getComputedStyle(cell);'
+        '   const need = Math.ceil(text.scrollWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 12);'
+        '   if (need > base) widths.push({key, newWidth: need});'
+        '  }'
+        '  if (widths.length) params.api.setColumnWidths(widths);'
+        ' });'
+    )
+
+
+def handle_xsheet_run_toggle(e):
+    """Collapse or expand a run of identical rows from its icon in the
+    traditional sheet's first Fr column (same state as the classic toggles)."""
+    args = e.args or {}
+    try:
+        key = (int(args.get('start')), int(args.get('end')))
+    except (TypeError, ValueError):
+        return
+    ranges = session().xsheet_collapsed_ranges
+    ranges.discard(key) if key in ranges else ranges.add(key)
+    rebuild_xsheet_from_current()
+
+
+def handle_xsheet_row_clicked(e):
+    """Remember which frame is selected in the traditional sheet (from any
+    cell click in its row)."""
+    data = (e.args or {}).get('data') or {}
+    if 'Frame' in data:
+        session().xsheet_current_frame = data['Frame']
+
+
+def handle_xsheet_header_clicked(e):
+    """Clicking a pencil heading: a layer column (in either style) renames the
+    layer in the document; Sound FX / Tech. Notes (traditional style) rename
+    that column's heading for this user."""
+    sess = session()
+    col_id = (e.args or {}).get('colId') or ''
+    default = _xsheet_column_default(col_id)
+    if default is None:
+        return
+    if col_id.startswith('layer:'):  # both styles: rename the layer in the document
+        _prompt_rename_layer(default)
+        return
+    if sess.xsheet_style != 'traditional':
+        return
+    with ui.dialog() as dlg, titled_card('Rename Column', classes='w-[340px] max-w-full', body_classes='gap-2'):
+        ui.label(f'Default heading: {default}').classes('text-caption text-grey')
+        name_input = ui.input('Column heading', value=xsheet_column_name(col_id, default)).classes('w-full') \
+            .props('autofocus')
+
+        def save(_=None, name=None):
+            set_xsheet_column_name(col_id, name_input.value if name is None else name)
+            dlg.close()
+            rebuild_xsheet_from_current()
+
+        name_input.on('keydown.enter', save)
+        with ui.row().classes('w-full items-center justify-between'):
+            ui.button('Reset to default', on_click=lambda: save(name='')).props('flat size=sm')
+            with ui.row().classes('gap-2'):
+                ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+                ui.button('Save', on_click=save).props('size=sm')
+    dlg.open()
+
+
+def _prompt_rename_layer(old: str) -> None:
+    """Rename an animation layer in the open document, from its column
+    heading in the traditional sheet. The edit goes through the editor like
+    any other, so it marks the document modified and can be undone."""
+    with ui.dialog() as dlg, titled_card('Rename Layer', classes='w-[360px] max-w-full', body_classes='gap-2'):
+        ui.label('Renames the layer on every frame of the document (and in the OTIO track map). '
+                 'Undo with Ctrl+Z.').classes('text-caption text-grey')
+        name_input = ui.input('Layer name', value=old).classes('w-full').props('autofocus')
+
+        def rename(_=None):
+            new = (name_input.value or '').strip()
+            if new == old:
+                dlg.close()
+                return
+            if not new:
+                ui.notify('Please provide a layer name', color='warning')
+                return
+            if INVALID_LAYER_NAME_CHARS & set(new):
+                ui.notify('A layer name cannot contain " \' < > or &', color='warning')
+                return
+            text = _editor_text()
+            existing, _rows, _msg = parse_exposure_sheet(text)
+            if new in (existing or []):
+                ui.notify(f'There is already a layer named {new}', color='warning')
+                return
+            new_text, layers, track_maps = rename_layer_in_text(text, old, new)
+            if not layers:
+                ui.notify(f'Layer {old} was not found in the document', color='warning')
+                return
+            dlg.close()
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            detail = f'{layers} frame(s)' + (f' and {track_maps} OTIO track map(s)' if track_maps else '')
+            ui.notify(f'Renamed layer {old} to {new} in {detail}', color='positive')
+
+        name_input.on('keydown.enter', rename)
+        with ui.row().classes('w-full justify-end gap-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Rename', on_click=rename).props('size=sm')
+    dlg.open()
 
 
 def handle_xsheet_toggle_click(e):
@@ -1313,6 +1693,8 @@ def _load_document(path: str | None, text: str, saved_content: str):
     restoring a draft, which then shows as modified, can be undone back to
     the saved text, and is checked against the disk on save)."""
     sess = session()
+    sess.xsheet_style = xsheet_style_pref()  # a newly opened document gets the preferred XSheet style
+    sess.xsheet_current_frame = None
     sess.current_file['path'] = path
     sess.current_file['modified'] = (text != saved_content)
     sess.current_file['saved_content'] = saved_content
@@ -1404,6 +1786,8 @@ def restore_last_document():
 def close_file():
     sess = session()
     forget_draft(sess.current_file['path'] or '')
+    sess.xsheet_style = xsheet_style_pref()  # the next (new) document gets the preferred XSheet style
+    sess.xsheet_current_frame = None
     sess.current_file['path'] = None
     sess.current_file['modified'] = False
     sess.current_file['saved_content'] = ''
@@ -1910,6 +2294,7 @@ def index():
     sess = Session()
     sess.user_storage = app.storage.user
     app.storage.client['session'] = sess
+    sess.xsheet_style = xsheet_style_pref()
     # JS helpers bridging the editor and the Hierarchy tree.
     # - mlwGetCursorOffset: character offset of the cursor -> used to sync
     #   editor cursor movement to a tree selection.
@@ -1963,6 +2348,63 @@ def index():
 .mlw-xsheet-grid .ag-row.mlw-xsheet-row-b,
 .mlw-xsheet-grid .ag-row.mlw-xsheet-row-b .ag-cell {
     background-color: #fdf2e6;
+}
+
+/* Both XSheet styles use the same compact 12px text in cells and headings. */
+.mlw-xsheet-grid .ag-cell,
+.mlw-xsheet-grid .ag-header-cell-label {
+    font-size: 12px;
+}
+
+/* Traditional exposure-sheet style (see _build_traditional_xsheet()):
+   centred bold headings, alternating row shading, a heavier rule after the
+   last frame of each second, grey Fr columns, and the selected frame shown
+   in green in both Fr columns rather than as a whole highlighted row. */
+.mlw-xsheet-traditional .ag-header-cell-label {
+    justify-content: center;
+    font-weight: 700;
+}
+.mlw-xsheet-traditional .ag-row,
+.mlw-xsheet-traditional .ag-row .ag-cell {
+    background-color: #ffffff;
+}
+.mlw-xsheet-traditional .ag-row.mlw-trad-odd,
+.mlw-xsheet-traditional .ag-row.mlw-trad-odd .ag-cell {
+    background-color: #f7f7f7;
+}
+.mlw-xsheet-traditional .ag-cell.mlw-trad-wrap {
+    line-height: 17px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    word-break: normal;
+}
+.mlw-xsheet-traditional .ag-row.mlw-trad-second {
+    border-bottom: 2px solid #555555;
+}
+.mlw-xsheet-traditional .ag-cell.mlw-trad-fr {
+    text-align: center;
+    background-color: #f1f1f1;
+    padding-left: 4px;   /* room for the icon plus a collapsed range like 100-120 */
+    padding-right: 4px;
+}
+.mlw-xsheet-traditional .mlw-trad-fr-cell {
+    position: relative;
+    display: block;
+    text-align: center;
+}
+.mlw-xsheet-traditional .mlw-trad-toggle {
+    position: absolute;
+    right: 0;
+    width: 14px;
+    text-align: center;
+    cursor: pointer;
+    color: #2b5d8a;
+}
+.mlw-xsheet-traditional .ag-row.ag-row-selected::before {
+    background-color: transparent;
+}
+.mlw-xsheet-traditional .ag-row.ag-row-selected .ag-cell.mlw-trad-fr {
+    background-color: #c8e6c9;
 }
 
 /* Classic "manila folder" tab look for the XML/XSheet selector: bordered,
@@ -2430,6 +2872,9 @@ window.mlwSelectRange = function(elementId, from, to) {
             # fill the grid's full width, which would override the deliberately
             # narrow per-column widths set above/in rebuild_xsheet_from_current().
             sess.xsheet_grid.on('cellClicked', handle_xsheet_toggle_click)
+            sess.xsheet_grid.on('cellClicked', handle_xsheet_row_clicked)  # rowClicked isn't forwarded
+            sess.xsheet_grid.on('columnHeaderClicked', handle_xsheet_header_clicked)
+            ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # traditional sheet's collapse icons
 
     # build initial tree from current editor value
     try:

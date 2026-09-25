@@ -240,8 +240,8 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**. The dialog has three tabs. Format and Recent Files are
-saved per user; Login applies to everyone using the server:
+Opened from **File > Preferences…**. The dialog has four tabs. Format, Recent Files and XSheet
+are saved per user; Login applies to everyone using the server:
 
 - **Format** — controls the **Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
@@ -249,6 +249,10 @@ saved per user; Login applies to everyone using the server:
 - **Recent Files** — controls **File > Open Recent**:
   - **Number of recent files to list** — 1–20, default 5. Lowering it hides older entries
     rather than deleting them (up to 20 are kept), so raising it again brings them back.
+- **XSheet** — the style of the XSheet tab: **Classic (v1.0.0)** (the default) or **Traditional
+  exposure sheet** (see [Traditional style](#traditional-style)). The style is applied when a
+  document is opened. If you save a new style while a document is open, you're asked whether to
+  switch its view now (**Change view**) or keep it until you next open a document (**Not now**).
 - **Login** — the server's single account (see [Logging in](#logging-in)):
   - **Log out after this many idle minutes** — 1–1440, default 30.
   - **Change password** — enter the current password and the new one twice. Leave all three
@@ -264,13 +268,17 @@ saved per user; Login applies to everyone using the server:
 
 ### XSheet tab
 
-The Exposure Sheet grid, rebuilt from the same live document as the Hierarchy tree. Each row
+The Exposure Sheet grid, rebuilt from the same live document as the Hierarchy tree. It comes in
+two styles, chosen in **File > Preferences… > XSheet**: the classic grid described here, and a
+[traditional exposure sheet](#traditional-style). In the classic grid, each row
 is a frame number, spanning `Production/StartFrame`–`EndFrame` (widened to cover any `<Frame
 number="...">` outside that range). Columns, left to right:
 
 - **Frame** — the frame number (or, for a collapsed run, its range — see below). Pinned first
   and locked in place; it can't be drag-reordered like the other columns.
-- One column per **Layer** (ordered by `zOrder`) — that frame's `cel`/`sceneFile`, if any.
+- One column per **Layer** (ordered by `zOrder`) — that frame's `cel`/`sceneFile`, if any. The
+  heading has a pencil: click it to rename the layer in the document, exactly as in the
+  [traditional style](#traditional-style), and the column widens to fit a longer name.
 - **Camera** — the top-level `<Camera>` element's `<CameraMove type="..." startFrame="..."
   endFrame="...">` entries: the move's type and frame range on its starting frame (e.g.
   `HOLD [1-24]`), and a centered `X` on every frame it continues through.
@@ -297,6 +305,42 @@ drawing (or cue) starts.
   `22 empty frames`). Click the toggle again to expand it back out.
 - Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
   text, so rows always stay in frame order.
+
+#### Traditional style
+
+Laid out like a paper exposure sheet, one compact row per frame. Columns, left to right:
+
+- **Action/Description** — that frame's `<Notes>` text.
+- **Fr** — the frame number (repeated before Camera Moves).
+- **Audio** — dialogue and music cues (`<AudioRef>` to tracks that aren't Effects):
+  `track [start-end]` on the first frame and `X` through the cue.
+- **Dialogue** — the `<Dialogue>` phoneme and text.
+- **Sound FX** — cues on Effects tracks, in the same form.
+- **Tech. Notes** — camera `<Keyframe>` notes and `<Review>` comments (with their status) on
+  that frame.
+- One column per **layer**, headed with the layer name — the cel or scene file exposed.
+- **Camera Moves** — `<CameraMove>` type and range, `X` through the move.
+
+Runs of two or more identical rows can be collapsed, as in the classic grid: the first row of a
+run has a ▼ icon at the far right of its first **Fr** cell, after the frame number. Click the
+icon (clicking the number just selects the frame) to collapse the run into one row showing the
+frame range (e.g. `26–59 ▶`); hover over it for the frame count, and click ▶ to expand it again. Both styles
+share which runs are collapsed.
+
+Long text in Action/Description and Tech. Notes wraps onto more lines, and that frame's row
+grows to fit. Rows alternate shading, a heavier rule marks the end of each second (every
+`FrameRate` frames),
+and the selected frame is shown in green in both Fr columns (click a row to move it). Headings
+with a pencil can be renamed by clicking them:
+
+- **Layer columns** rename the layer in the document itself: its `id` on every `<Layer>`, and
+  `xsheetLayer` on any OTIO `<TrackMap>` that refers to it. The change is an ordinary edit (the
+  file shows as modified, and **Ctrl+Z** undoes it). A blank name, a name another layer already
+  uses, and names containing `"` `'` `<` `>` or `&` are refused.
+- **Sound FX** and **Tech. Notes** are just headings: your names are remembered per user, and
+  **Reset to default** restores the original.
+
+Export XSheet still produces the classic layout.
 
 ### Keyboard shortcuts
 
