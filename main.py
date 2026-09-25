@@ -112,6 +112,8 @@ class Session:
         self.validation_panel = None
         self.validation_results_container = None
         self.xsheet_status_label = None
+        self.xsheet_production_row = None     # Production info line above the grid
+        self.xsheet_production_values = {}   # Production field -> its value label
         self.xsheet_grid = None
         self.recent_menu = None
 
@@ -1423,6 +1425,135 @@ FRAME_CELL_RENDERER = (
 )
 
 
+# Production fields shown above the XSheet grid, with their captions.
+XSHEET_PRODUCTION_FIELDS = (('ProjectID', 'Project ID'), ('SequenceID', 'Sequence ID'), ('SceneID', 'Scene ID'),
+                            ('Title', 'Title'), ('FrameRate', 'Frame Rate'))
+
+
+def read_production_info(text: str) -> dict | None:
+    """The <Production> fields of an ExposureSheet document, by element name
+    (missing ones left out); None if the text isn't a well-formed
+    ExposureSheet."""
+    import xml.etree.ElementTree as ET
+
+    def local(tag):
+        return tag.split('}', 1)[-1]
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    if local(root.tag) != 'ExposureSheet':
+        return None
+    production = next((c for c in root if local(c.tag) == 'Production'), None)
+    if production is None:
+        return {}
+    return {local(f.tag): ' '.join((f.text or '').split()) for f in production}
+
+
+def update_production_in_text(text: str, changes: dict[str, str]) -> tuple[str, list[str]]:
+    """Set <Production> fields in ExposureSheet XML text, by element name.
+    Edits the text inside the existing elements (so formatting and comments
+    are kept) and escapes the values for XML. Returns the new text and the
+    fields that couldn't be found (left unchanged)."""
+    import re
+    from xml.sax.saxutils import escape
+    production = re.search(r'<((?:[\w.-]+:)?)Production(\s[^>]*)?>(.*?)</\1Production\s*>', text, re.S)
+    if not production:
+        return text, list(changes)
+    body, missing = production.group(3), []
+    for field, value in changes.items():
+        field_re = re.compile(r'<((?:[\w.-]+:)?)' + re.escape(field) + r'(\s[^>]*?)?\s*(?:/>|>.*?</\1' + re.escape(field) + r'\s*>)', re.S)
+        m = field_re.search(body)
+        if not m:
+            missing.append(field)
+            continue
+        prefix, attrs = m.group(1), m.group(2) or ''
+        body = body[:m.start()] + f'<{prefix}{field}{attrs}>{escape(value)}</{prefix}{field}>' + body[m.end():]
+    return text[:production.start(3)] + body + text[production.end(3):], missing
+
+
+def _prompt_edit_production(focus: str | None = None) -> None:
+    """Edit the Production info shown above the XSheet grid. Nothing changes
+    until the user confirms the listed changes; then the XML is updated as
+    an ordinary (undoable) edit."""
+    info = read_production_info(_editor_text())
+    if info is None:
+        return
+    with ui.dialog() as dlg, titled_card('Edit Production Info', classes='w-[400px] max-w-full', body_classes='gap-2'):
+        inputs = {}
+        for key, caption in XSHEET_PRODUCTION_FIELDS:
+            inputs[key] = ui.input(caption, value=info.get(key, '')).classes('w-full')
+            if key == focus:
+                inputs[key].props('autofocus')
+
+        def review(_=None):
+            new = {key: (field.value or '').strip() for key, field in inputs.items()}
+            changes = {key: value for key, value in new.items() if value != info.get(key, '')}
+            if not changes:
+                dlg.close()
+                ui.notify('No changes', color='info')
+                return
+            blank = [caption for key, caption in XSHEET_PRODUCTION_FIELDS if key in changes and not changes[key]]
+            if blank:
+                ui.notify(f'{", ".join(blank)} cannot be blank', color='warning')
+                return
+            if 'FrameRate' in changes and not (changes['FrameRate'].isdigit() and int(changes['FrameRate']) >= 1):
+                ui.notify('Frame Rate must be a whole number of 1 or more', color='warning')
+                return
+            _confirm_production_changes(info, changes, dlg)
+
+        for field in inputs.values():
+            field.on('keydown.enter', review)
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Update Document', on_click=review).props('size=sm')
+    dlg.open()
+
+
+def _confirm_production_changes(info: dict, changes: dict[str, str], edit_dialog) -> None:
+    """Ask before modifying the document, listing each change."""
+    captions = dict(XSHEET_PRODUCTION_FIELDS)
+    with ui.dialog() as dlg, titled_card('Modify Document?', classes='w-[440px] max-w-full', body_classes='gap-2'):
+        ui.label('Update these Production values in the XML document?')
+        for key, value in changes.items():
+            with ui.row().classes('items-baseline gap-2 no-wrap'):
+                ui.label(f'{captions[key]}:').classes('text-gray-500')
+                ui.label(info.get(key) or '(none)').classes('line-through text-gray-500')
+                ui.label('→')
+                ui.label(value).classes('font-medium')
+
+        def modify(_=None):
+            new_text, missing = update_production_in_text(_editor_text(), changes)
+            dlg.close()
+            edit_dialog.close()
+            done = [captions[k] for k in changes if k not in missing]
+            if done:
+                _set_editor_text(new_text)  # undoable; marks modified; refreshes the grid and this line
+                ui.notify(f'Updated {", ".join(done)} in the document', color='positive')
+            if missing:
+                ui.notify(f'The document has no <{">, <".join(missing)}> in Production; '
+                          'add it in the XML tab', color='warning')
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Modify', on_click=modify).props('size=sm')
+    dlg.open()
+
+
+def _update_xsheet_production_info(text: str) -> None:
+    sess = session()
+    row = sess.xsheet_production_row
+    if row is None:
+        return
+    info = read_production_info(text)
+    row.set_visibility(info is not None)
+    for key, label in sess.xsheet_production_values.items():
+        value = (info or {}).get(key) or '—'
+        if key == 'FrameRate' and value != '—':
+            value = f'{value} fps'
+        label.set_text(value)
+
+
 def rebuild_xsheet_from_current():
     """Rebuild the XSheet tab's Exposure Sheet grid from the editor's live
     (possibly unsaved) text -- called from rebuild_tree_from_current() so
@@ -1432,9 +1563,13 @@ def rebuild_xsheet_from_current():
     status = sess.xsheet_status_label
     if grid is None:
         return
-    layer_ids, rows, message = parse_exposure_sheet(_editor_text())
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if not text.strip():
+        message = 'No document open.'  # rather than an empty editor's "not well-formed" error
     if status is not None:
         status.set_text(message)
+    _update_xsheet_production_info(text)
     if sess.xsheet_style == 'traditional':
         _build_traditional_xsheet(sess, grid, layer_ids or [], rows or [])
         return
@@ -2367,6 +2502,9 @@ def index():
     padding-left: 4px;   /* room for the icon plus a collapsed range like 100-120 */
     padding-right: 4px;
 }
+.mlw-production-value:hover {
+    text-decoration: underline dotted;
+}
 .mlw-xsheet-grid .mlw-frame-cell {
     position: relative;
     display: block;   /* number aligned like the column (centred in traditional, left in classic) */
@@ -2831,15 +2969,30 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full').props('dense') \
                     as sess.validation_panel:
                 sess.validation_results_container = ui.column().classes('w-full gap-1')
-        with ui.tab_panel(xsheet_tab):
-            ui.label('Exposure Sheet').classes('text-sm font-medium')
+        with ui.tab_panel(xsheet_tab).classes('gap-2'):
+            # "Exposure Sheet" with the frame/layer count beside it, then the
+            # document's Production info on the line below.
+            with ui.row().classes('items-baseline gap-3'):
+                ui.label('Exposure Sheet').classes('text-sm font-medium')
+                sess.xsheet_status_label = ui.label('').classes('text-sm text-gray-500')
+            # Click a value (or the pencil) to edit the Production info.
+            with ui.row().classes('items-baseline gap-x-6 gap-y-1 text-sm') as sess.xsheet_production_row:
+                for key, caption in XSHEET_PRODUCTION_FIELDS:
+                    with ui.row().classes('items-baseline gap-1 no-wrap'):
+                        ui.label(f'{caption}:').classes('text-gray-500')
+                        sess.xsheet_production_values[key] = ui.label('—') \
+                            .classes('font-medium cursor-pointer mlw-production-value') \
+                            .tooltip(f'Click to edit {caption}') \
+                            .on('click', lambda _, key=key: _prompt_edit_production(key))
+                ui.button('✏️', on_click=lambda: _prompt_edit_production()).props('flat dense size=sm') \
+                    .tooltip('Edit Production info')
+            sess.xsheet_production_row.set_visibility(False)
             # Each row is a frame number (Production/StartFrame..EndFrame,
             # widened to fit any <Frame> outside that range); each column is a
             # layer. Only frame numbers with an actual <Frame> element get their
             # layers' cel values filled in -- see parse_exposure_sheet() -- so a
             # hold between two sparse <Frame> entries (e.g. frame 1 and the next
             # at frame 24) shows as blank boxes for frames 2-23.
-            sess.xsheet_status_label = ui.label('').classes('text-sm text-gray-500')
             sess.xsheet_grid = ui.aggrid({
                 'columnDefs': [{'field': 'Frame', 'headerName': 'Frame', 'pinned': 'left', 'width': 80,
                                 'lockPosition': 'left', 'suppressMovable': True}],

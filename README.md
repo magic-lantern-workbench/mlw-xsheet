@@ -268,7 +268,14 @@ are saved per user; Login applies to everyone using the server:
 
 ### XSheet tab
 
-The Exposure Sheet grid, rebuilt from the same live document as the Hierarchy tree. It comes in
+The Exposure Sheet grid, rebuilt from the same live document as the Hierarchy tree. Above it,
+next to the **Exposure Sheet** heading, are the frame and layer counts, and on the line below,
+the document's Project ID, Sequence ID, Scene ID, Title and Frame Rate (from `<Production>`).
+These update as you edit, and are hidden when the document isn't an ExposureSheet. Click a value
+(or the ✏️ at the end of the line) to edit them in **Edit Production Info**. **Update Document**
+lists each change (old → new) and asks before modifying the XML; **Modify** applies them as an
+ordinary edit (the file shows as modified, and **Ctrl+Z** undoes it). Blank values, and a Frame
+Rate that isn't a whole number of 1 or more, are refused. The grid comes in
 two styles, chosen in **File > Preferences… > XSheet**: a [traditional exposure
 sheet](#traditional-style) (the default), and the classic v1.0.0 grid described here. In the classic grid, each row
 is a frame number, spanning `Production/StartFrame`–`EndFrame` (widened to cover any `<Frame
