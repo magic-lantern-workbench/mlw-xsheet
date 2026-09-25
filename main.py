@@ -2760,7 +2760,7 @@ window.mlwSelectRange = function(elementId, from, to) {
     # editor, so it starts disabled until the XML tab is chosen.
     sess.xml_menu_button.disable()
     with ui.tab_panels(main_tabs, value=xsheet_tab).classes('w-full'):
-        with ui.tab_panel(xml_tab):
+        with ui.tab_panel(xml_tab).classes('gap-1'):  # little space between the editor and Validation Results
             with ui.row().classes('gap-4 w-full flex-nowrap'):
                 with ui.column().style('flex:1; min-width:0'):
                     ui.label('XML Editor').classes('text-sm font-medium')
@@ -2847,7 +2847,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             # Validation Results panel: sits below the Editor/Hierarchy row, collapsed
             # by default, and expands automatically when a validation run completes
             # (see show_validation_message() / show_validation_errors() above).
-            with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full mt-4') as sess.validation_panel:
+            with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full').props('dense') \
+                    as sess.validation_panel:
                 sess.validation_results_container = ui.column().classes('w-full gap-1')
         with ui.tab_panel(xsheet_tab):
             ui.label('Exposure Sheet').classes('text-sm font-medium')
