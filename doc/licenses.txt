@@ -1,0 +1,565 @@
+====================================================================================================
+mlw-xsheet 1.0.0 -- Licenses and Copyright Notices
+====================================================================================================
+
+This file lists the license and copyright of mlw-xsheet itself and of every third-party component it
+uses or ships: the Python packages installed in its Docker image, the browser libraries bundled with
+NiceGUI, fonts, container base images, and third-party material in the repository.
+
+Generated on 2026-09-25 from the v1.0.0 release (commit 4d38308) and its production Docker image.
+Python dependency versions are the ones that image installed: requirements.txt gives minimum
+versions, so a later build may pick up newer releases with the same licenses.
+
+This is a best-effort inventory, not legal advice. Each component's own license file is
+authoritative.
+
+CONTENTS
+  1. mlw-xsheet
+  2. Summary by license
+  3. Python packages
+  4. Browser libraries (bundled with NiceGUI)
+  5. Fonts
+  6. Container images
+  7. Third-party material in the repository
+  8. Notes on copyleft licenses
+  9. NOTICE files (Apache-2.0)
+  10. mlw-xsheet license text
+
+====================================================================================================
+1. mlw-xsheet
+====================================================================================================
+
+mlw-xsheet (Magic Lantern XSheet Viewer): MIT License, Copyright (c) 2026 Wizzer Works. This covers
+all of the project's own code, schemas (xml/*.xsd), examples and documentation. The full text is in
+section 10 and in the LICENSE file; every Python source file and XML example carries the same notice
+between COPYRIGHT_BEGIN and COPYRIGHT_END markers.
+
+====================================================================================================
+2. Summary by license
+====================================================================================================
+
+Components of sections 3 and 4 (used by mlw-xsheet), grouped by license:
+
+License                               Count  Components
+------------------------------------  -----  -------------------------------------------------------
+MIT                                   29     @uiw/codemirror-themes-all, AG Grid Community,
+                                             annotated-doc, annotated-types, anyio, attrs,
+                                             CodeMirror 6 (codemirror, @codemirror/*, @lezer/*),
+                                             elementpath, fastapi, fonttools, h11, httptools,
+                                             ifaddr, markdown2, nicegui, pydantic, pydantic_core,
+                                             python-engineio, python-socketio, PyYAML, Quasar,
+                                             simple-websocket, Socket.IO client, Tailwind CSS,
+                                             typing-inspection, Vue, watchfiles, wsproto, xmlschema
+BSD-3-Clause                          8      click, httpcore, idna, MarkupSafe, python-dotenv,
+                                             starlette, uvicorn, websockets
+Apache-2.0                            7      aiofiles, aiosignal, frozenlist, multidict, propcache,
+                                             python-multipart, yarl
+BSD (variant per package)             5      httpx, itsdangerous, Jinja2, tinycss2, webencodings
+PSF-2.0                               3      aiohappyeyeballs, defusedxml, typing_extensions
+MPL-2.0                               2      bidict, certifi
+Apache-2.0 AND MIT                    1      aiohttp
+Apache-2.0 OR MIT                     1      uvloop
+Apache-2.0 OR MPL-2.0                 1      DOMPurify
+BSD-2-Clause                          1      Pygments
+LGPL-3.0-only                         1      fpdf2
+MIT-CMU                               1      pillow
+MPL-2.0 AND (Apache-2.0 OR MIT)       1      orjson
+Public Domain / BSD-2-Clause / GPL    1      docutils
+(parts)
+
+====================================================================================================
+3. Python packages
+====================================================================================================
+
+Installed in the Docker image by pip from requirements.txt. Direct requirements are marked with *;
+the rest are installed because a direct requirement depends on them.
+
+  aiofiles 25.1.0
+    License:   Apache-2.0
+    Copyright: Copyright 2016 Tin Tvrtkovic
+    Source:    https://github.com/Tinche/aiofiles
+
+  aiohappyeyeballs 2.7.1
+    License:   PSF-2.0
+    Copyright: J. Nick Koston
+    Source:    https://github.com/aio-libs/aiohappyeyeballs
+
+  aiohttp 3.14.3
+    License:   Apache-2.0 AND MIT
+    Copyright: The aio-libs contributors
+    Source:    https://github.com/aio-libs/aiohttp
+
+  aiosignal 1.4.0
+    License:   Apache-2.0
+    Copyright: The aio-libs contributors
+    Source:    https://github.com/aio-libs/aiosignal
+
+  annotated-doc 0.0.5
+    License:   MIT
+    Copyright: Copyright (c) 2025 Sebastián Ramírez
+    Source:    https://github.com/fastapi/annotated-doc
+
+  annotated-types 0.8.0
+    License:   MIT
+    Copyright: Copyright (c) 2022 the contributors
+    Source:    https://github.com/annotated-types/annotated-types
+
+  anyio 4.15.1
+    License:   MIT
+    Copyright: Copyright (c) 2018 Alex Grönholm
+    Source:    https://anyio.readthedocs.io/en/stable/versionhistory.html
+
+  attrs 26.1.0
+    License:   MIT
+    Copyright: Copyright (c) 2015 Hynek Schlawack and the attrs contributors
+    Source:    https://www.attrs.org/en/stable/changelog.html
+
+  bidict 0.24.1
+    License:   MPL-2.0
+    Copyright: Copyright 2009-2026 Joshua Bronson. All rights reserved.
+    Source:    https://github.com/jab/bidict
+
+  certifi 2026.7.22
+    License:   MPL-2.0
+    Copyright: Kenneth Reitz
+    Source:    https://github.com/certifi/python-certifi
+
+  click 8.5.0
+    License:   BSD-3-Clause
+    Copyright: Copyright 2014 Pallets
+    Source:    https://github.com/pallets/click/
+
+  defusedxml 0.7.1
+    License:   PSF-2.0
+    Copyright: Christian Heimes
+    Source:    https://github.com/tiran/defusedxml
+
+  docutils 0.23
+    License:   Public Domain / BSD-2-Clause / GPL (parts)
+    Copyright: David Goodger and contributors (much of it placed in the public domain)
+    Source:    https://docutils.sourceforge.io
+
+  elementpath 5.1.4
+    License:   MIT
+    Copyright: Copyright (c), 2018-2026, SISSA (Scuola Internazionale Superiore di Studi Avanzati)
+    Source:    https://github.com/sissaschool/elementpath
+
+  fastapi 0.141.1
+    License:   MIT
+    Copyright: Copyright (c) 2018 Sebastián Ramírez
+    Source:    https://github.com/fastapi/fastapi
+
+  fonttools 4.65.0
+    License:   MIT
+    Copyright: Copyright (c) 2017 Just van Rossum
+    Source:    http://github.com/fonttools/fonttools
+
+* fpdf2 2.8.8
+    License:   LGPL-3.0-only
+    Copyright: Olivier Plathey (FPDF) and the fpdf2 contributors
+    Source:    https://py-pdf.github.io/fpdf2/
+
+  frozenlist 1.8.0
+    License:   Apache-2.0
+    Copyright: The aio-libs contributors
+    Source:    https://github.com/aio-libs/frozenlist
+
+  h11 0.16.0
+    License:   MIT
+    Copyright: Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors
+    Source:    https://github.com/python-hyper/h11
+
+  httpcore 1.0.9
+    License:   BSD-3-Clause
+    Copyright: Copyright © 2020, Encode OSS Ltd.
+    Source:    https://www.encode.io/httpcore/
+
+  httptools 0.8.0
+    License:   MIT
+    Copyright: Copyright (c) 2015 MagicStack Inc. http://magic.io
+    Source:    https://github.com/MagicStack/httptools
+
+  httpx 0.28.1
+    License:   BSD (variant per package)
+    Copyright: Copyright © 2019, Encode OSS Ltd.
+    Source:    https://github.com/encode/httpx
+
+  idna 3.20
+    License:   BSD-3-Clause
+    Copyright: Copyright (c) 2013-2026, Kim Davies and contributors.
+    Source:    https://github.com/kjd/idna
+
+  ifaddr 0.2.0
+    License:   MIT
+    Copyright: Copyright (c) 2014 Stefan C. Mueller
+    Source:    https://github.com/pydron/ifaddr
+
+  itsdangerous 2.2.0
+    License:   BSD (variant per package)
+    Copyright: Copyright 2011 Pallets
+    Source:    https://github.com/pallets/itsdangerous/
+
+  Jinja2 3.1.6
+    License:   BSD (variant per package)
+    Copyright: Copyright 2007 Pallets
+    Source:    https://github.com/pallets/jinja/
+
+  markdown2 2.5.5
+    License:   MIT
+    Copyright: Copyright (c) 2012 Trent Mick
+    Source:    https://github.com/trentm/python-markdown2
+
+  MarkupSafe 3.0.3
+    License:   BSD-3-Clause
+    Copyright: Copyright 2010 Pallets
+    Source:    https://github.com/pallets/markupsafe/
+
+  multidict 6.9.1
+    License:   Apache-2.0
+    Copyright: Andrew Svetlov and the aio-libs contributors
+    Source:    https://github.com/aio-libs/multidict
+
+* nicegui 3.17.1
+    License:   MIT
+    Copyright: Copyright (c) 2021 Zauberzeug GmbH
+    Source:    https://nicegui.io
+
+  orjson 3.12.0
+    License:   MPL-2.0 AND (Apache-2.0 OR MIT)
+    Copyright: ijl
+    Source:    https://github.com/ijl/orjson
+
+  pillow 12.3.0
+    License:   MIT-CMU
+    Copyright: Copyright © 1997-2011 by Secret Labs AB
+    Source:    https://python-pillow.github.io
+
+  propcache 0.5.4
+    License:   Apache-2.0
+    Copyright: Copyright 2016-2021, Andrew Svetlov and aio-libs team
+    Source:    https://github.com/aio-libs/propcache
+
+  pydantic 2.13.5
+    License:   MIT
+    Copyright: Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors.
+    Source:    https://github.com/pydantic/pydantic
+
+  pydantic_core 2.46.5
+    License:   MIT
+    Copyright: Copyright (c) 2022 Samuel Colvin
+    Source:    https://github.com/pydantic
+
+  Pygments 2.21.0
+    License:   BSD-2-Clause
+    Copyright: Copyright (c) 2006-2022 by the respective authors (see AUTHORS file).
+    Source:    https://pygments.org
+
+  python-dotenv 1.2.3
+    License:   BSD-3-Clause
+    Copyright: Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken (django-dotenv-
+               rw), 2013, Jacob Kaplan-Moss (django-dotenv)
+    Source:    https://github.com/theskumar/python-dotenv
+
+  python-engineio 4.14.0
+    License:   MIT
+    Copyright: Copyright (c) 2015 Miguel Grinberg
+    Source:    https://code.miguelgrinberg.com/miguelgrinberg/python-engineio
+
+  python-multipart 0.0.32
+    License:   Apache-2.0
+    Copyright: Andrew Dunham and contributors
+    Source:    https://github.com/Kludex/python-multipart
+
+  python-socketio 5.17.0
+    License:   MIT
+    Copyright: Copyright (c) 2015 Miguel Grinberg
+    Source:    https://code.miguelgrinberg.com/miguelgrinberg/python-socketio
+
+  PyYAML 6.0.3
+    License:   MIT
+    Copyright: Copyright (c) 2017-2021 Ingy döt Net
+    Source:    https://pyyaml.org/
+
+  simple-websocket 1.1.0
+    License:   MIT
+    Copyright: Copyright (c) 2021 Miguel Grinberg
+    Source:    https://github.com/miguelgrinberg/simple-websocket
+
+  starlette 1.7.0
+    License:   BSD-3-Clause
+    Copyright: Copyright © 2018, Encode OSS Ltd.
+    Source:    https://github.com/Kludex/starlette
+
+  tinycss2 1.5.1
+    License:   BSD (variant per package)
+    Copyright: Copyright (c) 2013-2020, Simon Sapin and contributors.
+    Source:    https://www.courtbouillon.org/tinycss2
+
+  typing-inspection 0.4.4
+    License:   MIT
+    Copyright: Copyright (c) Pydantic Services Inc. 2025 to present
+    Source:    https://github.com/pydantic/typing-inspection
+
+  typing_extensions 4.16.0
+    License:   PSF-2.0
+    Copyright: Python Software Foundation; Guido van Rossum, Jukka Lehtosalo, Lukasz Langa, Michael
+               Lee
+    Source:    https://github.com/python/typing_extensions
+
+* uvicorn 0.53.0
+    License:   BSD-3-Clause
+    Copyright: Copyright © 2017-present, Encode OSS Ltd.
+    Source:    https://uvicorn.dev/
+
+  uvloop 0.22.1
+    License:   Apache-2.0 OR MIT
+    Copyright: Copyright (C) 2016-present the uvloop authors and contributors.
+    Source:    https://github.com/MagicStack/uvloop
+
+  watchfiles 1.3.0
+    License:   MIT
+    Copyright: Copyright (c) 2017 to present Samuel Colvin
+    Source:    https://github.com/samuelcolvin/watchfiles
+
+  webencodings 0.6.1
+    License:   BSD (variant per package)
+    Copyright: Copyright (c) 2012, Simon Sapin
+    Source:    https://github.com/CourtBouillon/webencodings
+
+  websockets 17.1
+    License:   BSD-3-Clause
+    Copyright: Copyright (c) Aymeric Augustin and contributors
+    Source:    https://github.com/python-websockets/websockets
+
+  wsproto 1.3.2
+    License:   MIT
+    Copyright: Copyright (c) 2017 Benno Rice and contributors
+    Source:    https://github.com/python-hyper/wsproto/
+
+* xmlschema 4.3.2
+    License:   MIT
+    Copyright: Copyright (c), 2016-2026, SISSA (Scuola Internazionale Superiore di Studi Avanzati)
+    Source:    https://github.com/sissaschool/xmlschema
+
+  yarl 1.25.1
+    License:   Apache-2.0
+    Copyright: Copyright 2016-2021, Andrew Svetlov and aio-libs team
+    Source:    https://github.com/aio-libs/yarl
+
+====================================================================================================
+4. Browser libraries (bundled with NiceGUI)
+====================================================================================================
+
+NiceGUI ships these JavaScript libraries inside its Python package, and serves them to the browser.
+Versions are read from the bundled files and NiceGUI's element package locks.
+
+4.1 Used by mlw-xsheet
+
+  Vue 3.5.22
+    License:   MIT
+    Copyright: Copyright (c) 2018-present, Yuxi (Evan) You and Vue contributors
+    Used for:  UI framework
+    Source:    https://vuejs.org
+
+  Quasar 2.18.5
+    License:   MIT
+    Copyright: Copyright (c) 2015-present Razvan Stoenescu
+    Used for:  UI components (menus, dialogs, tabs, tree)
+    Source:    https://quasar.dev
+
+  Tailwind CSS 4.1.13
+    License:   MIT
+    Copyright: Copyright (c) Tailwind Labs, Inc.
+    Used for:  CSS utility classes
+    Source:    https://tailwindcss.com
+
+  Socket.IO client 4.8.1
+    License:   MIT
+    Copyright: Copyright (c) 2014-2024 Guillermo Rauch
+    Used for:  browser-server connection
+    Source:    https://socket.io
+
+  DOMPurify 3.4.13
+    License:   Apache-2.0 OR MPL-2.0
+    Copyright: Copyright (c) Cure53 and other contributors
+    Used for:  HTML sanitising
+    Source:    https://github.com/cure53/DOMPurify
+
+  AG Grid Community 34.2.0
+    License:   MIT
+    Copyright: Copyright (c) AG GRID LTD
+    Used for:  XSheet grid and file dialogs
+    Source:    https://www.ag-grid.com
+
+  CodeMirror 6 (codemirror, @codemirror/*, @lezer/*) 6.0.2
+    License:   MIT
+    Copyright: Copyright (c) Marijn Haverbeke and others
+    Used for:  XML editor
+    Source:    https://codemirror.net
+
+  @uiw/codemirror-themes-all 4.25.2
+    License:   MIT
+    Copyright: Copyright (c) Kenny Wong and contributors
+    Used for:  editor themes
+    Source:    https://github.com/uiwjs/react-codemirror
+
+4.2 Shipped in NiceGUI but not used by mlw-xsheet
+
+  These are part of the NiceGUI package in the image, so they are redistributed with it, but mlw-
+  xsheet never loads them. Their copyright notices are in NiceGUI's bundled files and their own
+  projects.
+
+Library                   Version     License
+------------------------  ----------  --------------------
+Apache ECharts            6.1.0       Apache-2.0
+ECharts GL                2.1.0       MIT
+Leaflet                   1.9.4       BSD-2-Clause
+Leaflet.draw              1.0.4       MIT
+Mermaid                   11.16.1     MIT
+plotly.js                 3.1.1       MIT
+three.js                  0.180.0     MIT
+tween.js                  25.0.0      MIT
+SortableJS                1.15.7      MIT
+nipplejs                  0.10.2      MIT
+vanilla-jsoneditor        3.10.0      ISC
+ajv-formats               3.0.1       MIT
+Dart Sass                 (bundled)   MIT
+Immutable.js              5.1.9       MIT
+UnoCSS runtime            (bundled)   MIT
+
+====================================================================================================
+5. Fonts
+====================================================================================================
+
+Served by NiceGUI for the user interface.
+
+  Roboto
+    License:   SIL Open Font License 1.1
+    Copyright: Copyright The Roboto Project Authors (Google)
+
+  Material Icons / Material Symbols
+    License:   Apache-2.0
+    Copyright: Copyright Google LLC
+
+====================================================================================================
+6. Container images
+====================================================================================================
+
+  python:3.11-slim (base of the application image)
+    Contents:  Debian GNU/Linux 13 (trixie) with CPython 3.11.16
+    Licenses:  CPython: PSF-2.0, Copyright (c) 2001-present Python Software Foundation. Debian
+               packages: various free-software licenses, including GPL and LGPL; each package's
+               terms are in /usr/share/doc/<package>/copyright in the image.
+
+  caddy:2-alpine (production HTTPS proxy)
+    Contents:  Caddy 2.11.4 on Alpine Linux 3.23
+    Licenses:  Caddy: Apache-2.0, Copyright (c) Matthew Holt and The Caddy Authors. Alpine packages:
+               various free-software licenses (see the image's package database).
+
+  Development image only
+    Contents:  build-essential, git, curl
+    Licenses:  GPL and other free-software licenses. Used only in the development image; not part of
+               the production image.
+
+====================================================================================================
+7. Third-party material in the repository
+====================================================================================================
+
+  doc/XDTSFileFormat_en.pdf and tools/xdts-20261206.json
+    The XDTS ("exchangeDigitalTimeSheet Save Data") timesheet file format specification, dated
+    2018/11/29, and the JSON Schema it contains. This material was not written by Wizzer Works, and
+    the document states no copyright holder or license. Confirm its redistribution terms with the
+    format's publisher before distributing it outside the project.
+
+  tools/xdts.schema.json, tools/xdts-extended.schema.json, tools/xdts-extended.example.json
+    Written for this project to describe XDTS data; covered by the mlw-xsheet MIT License.
+
+====================================================================================================
+8. Notes on copyleft licenses
+====================================================================================================
+
+  fpdf2 (LGPL-3.0-only)
+    mlw-xsheet uses fpdf2 unmodified, as a separately installed Python library that users can
+    replace with another version, which the LGPL permits. Its license text is installed with the
+    package in the image, and its source is available from https://github.com/py-pdf/fpdf2.
+    Modifying fpdf2 itself would require releasing those changes under the LGPL.
+
+  MPL-2.0 (bidict, certifi; orjson in part; DOMPurify as an option)
+    The Mozilla Public License applies file by file. These components are used unmodified and their
+    source is available from their projects; changes to their files would have to be shared under
+    the MPL.
+
+  docutils (installed as a NiceGUI dependency)
+    Most of docutils is in the public domain or under BSD-2-Clause; a few optional parts are under
+    the GPL. mlw-xsheet does not use docutils directly.
+
+  Debian and Alpine packages in the container images
+    Include GPL and LGPL software, used unmodified. Source is available from the Debian and Alpine
+    projects; per-package terms are in the images.
+
+====================================================================================================
+9. NOTICE files (Apache-2.0)
+====================================================================================================
+
+The Apache License 2.0 asks that NOTICE files be passed on. These are reproduced from the packages:
+
+  --- aiofiles ---
+    Asyncio support for files
+    Copyright 2016 Tin Tvrtkovic
+
+  --- propcache ---
+    Copyright 2016-2021, Andrew Svetlov and aio-libs team
+
+       Licensed under the Apache License, Version 2.0 (the "License");
+       you may not use this file except in compliance with the License.
+       You may obtain a copy of the License at
+
+           http://www.apache.org/licenses/LICENSE-2.0
+
+       Unless required by applicable law or agreed to in writing, software
+       distributed under the License is distributed on an "AS IS" BASIS,
+       WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+       See the License for the specific language governing permissions and
+       limitations under the License.
+
+  --- yarl ---
+    Copyright 2016-2021, Andrew Svetlov and aio-libs team
+
+       Licensed under the Apache License, Version 2.0 (the "License");
+       you may not use this file except in compliance with the License.
+       You may obtain a copy of the License at
+
+           http://www.apache.org/licenses/LICENSE-2.0
+
+       Unless required by applicable law or agreed to in writing, software
+       distributed under the License is distributed on an "AS IS" BASIS,
+       WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+       See the License for the specific language governing permissions and
+       limitations under the License.
+
+====================================================================================================
+10. mlw-xsheet license text
+====================================================================================================
+
+MIT License
+
+Copyright (c) 2026 Wizzer Works
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
