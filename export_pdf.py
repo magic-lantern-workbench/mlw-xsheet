@@ -243,33 +243,51 @@ def _is_xsheet_document(root: ET.Element) -> bool:
     return root.tag == f'{{{XSHEET_CORE_NS}}}ExposureSheet'
 
 
-def _render_xsheet_template(pdf: FPDF, root: ET.Element, title: str, raw_text: str) -> None:
+# The top-level ExposureSheet sections a report can include or leave out
+# (see generate_pdf()'s `sections`). Production and VersionControl are
+# always included.
+REPORT_SECTIONS = ('Assets', 'AudioTracks', 'Camera', 'Timeline', 'Reviews', 'OTIO')
+ALWAYS_REPORTED = ('Production', 'VersionControl')
+
+
+def _render_xsheet_template(pdf: FPDF, root: ET.Element, title: str, raw_text: str, *,
+                            sections: set[str] | None = None, include_raw: bool = True) -> None:
     """Production information, then VersionControl, both on page 1 (right
     under the title), a clickable Table of Contents starting on page 2,
     every other top-level element as its own titled, spaced-out section,
-    then the raw source as an appendix."""
+    then the raw source as an appendix.
+
+    sections: which of the optional top-level elements (REPORT_SECTIONS) to
+    include (None: all); Production and VersionControl are always included.
+    include_raw: whether to add the appendix, which lists the whole
+    document."""
+    def included(elem):
+        tag = _strip_ns(elem.tag)
+        return sections is None or tag in ALWAYS_REPORTED or tag in sections
+
     _write_title_block(pdf, title)
     _write_production_block(pdf, root)
 
     version_control = next((c for c in root if _strip_ns(c.tag) == 'VersionControl'), None)
-    if version_control is not None:
+    if version_control is not None and included(version_control):
         _write_section(pdf, version_control)
 
-    pdf.add_page()
-    pdf.insert_toc_placeholder(_render_toc, pages=1)
+    body = [c for c in root if _strip_ns(c.tag) not in ('Production', 'VersionControl') and included(c)]
+    if body or include_raw:
+        pdf.add_page()
+        pdf.insert_toc_placeholder(_render_toc, pages=1)
 
-    for child in root:
-        if _strip_ns(child.tag) in ('Production', 'VersionControl'):
-            continue  # already shown above
+    for child in body:
         _write_section(pdf, child)
 
-    pdf.add_page()
-    pdf.start_section('Appendix: Raw XML', level=0)
-    _write_heading(pdf, 'Appendix: Raw XML')
-    _write_raw_listing(pdf, raw_text)
+    if include_raw:
+        pdf.add_page()
+        pdf.start_section('Appendix: Raw XML', level=0)
+        _write_heading(pdf, 'Appendix: Raw XML')
+        _write_raw_listing(pdf, raw_text)
 
 
-def _render_default_template(pdf: FPDF, root: ET.Element | None, title: str, raw_text: str) -> None:
+def _render_default_template(pdf: FPDF, root: ET.Element | None, title: str, raw_text: str, **_options) -> None:
     """Fallback for anything that isn't a recognized schema (a plain .xsd
     file, some other XML vocabulary, or text that doesn't even parse) --
     the plain listing this module always produced before templates existed."""
@@ -285,14 +303,20 @@ _TEMPLATES = [
 ]
 
 
-def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | None = None) -> bytes:
+def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | None = None,
+                 sections: set[str] | None = None, include_raw: bool = True) -> bytes:
     """Render `text` as a PDF and return the raw PDF bytes, using whichever
     registered template's `matches()` accepts the parsed document (falling
     back to a plain source listing when none do, or the text isn't
     well-formed XML). When `warnings` is non-empty, a prominent notice is
     stamped onto the first page, above the title, before that template's
     own content -- see main.py's export_to_pdf(), which populates this from
-    the document's own well-formedness/schema-validation problems."""
+    the document's own well-formedness/schema-validation problems.
+
+    sections / include_raw: for ExposureSheet documents, which optional
+    top-level elements to include (None: all; see REPORT_SECTIONS --
+    Production and VersionControl are always included) and whether to add
+    the raw XML appendix of the whole document. Other documents ignore them."""
     pdf = _new_pdf()
     if warnings:
         _write_warning_banner(pdf, warnings)
@@ -306,7 +330,7 @@ def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | No
     if root is not None:
         for matches, render in _TEMPLATES:
             if matches(root):
-                render(pdf, root, title, text)
+                render(pdf, root, title, text, sections=sections, include_raw=include_raw)
                 return bytes(pdf.output())
 
     _render_default_template(pdf, root, title, text)

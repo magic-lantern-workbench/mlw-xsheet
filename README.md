@@ -216,7 +216,7 @@ you can keep working in the editor while it's open.
 | Item | What it does |
 |---|---|
 | Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). The traditional layout matches the view: wrapped Action/Description and Tech. Notes, alternating shading, a heavier rule after each second, and your own Sound FX / Tech. Notes headings. Every frame is printed (collapsed runs are expanded). |
-| Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). |
+| Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
 Both PDFs show the export date and a UTC creation timestamp under the title on page 1.
 
@@ -240,8 +240,8 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**. The dialog has four tabs. Format, Recent Files and XSheet
-are saved per user; Login applies to everyone using the server:
+Opened from **File > Preferences…**. The dialog has five tabs. Format, Recent Files, XSheet and
+Report are saved per user; Login applies to everyone using the server:
 
 - **Format** — controls the **Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
@@ -253,6 +253,12 @@ are saved per user; Login applies to everyone using the server:
   [Traditional style](#traditional-style)) or **Classic (v1.0.0)**. The style is applied when a
   document is opened. If you save a new style while a document is open, you're asked whether to
   switch its view now (**Change view**) or keep it until you next open a document (**Not now**).
+- **Report** — what **XSheet > Generate Report** includes for ExposureSheet documents: a checkbox
+  for each optional top-level section (Assets, AudioTracks, Camera, Timeline, Reviews, OTIO; all by
+  default, with Select all / Clear all), and whether to add the whole document's raw XML as an
+  appendix. Production and VersionControl are always included. A left-out section doesn't appear
+  as a section or in the table of contents (the appendix, if added, is still the complete
+  document).
 - **Login** — the server's single account (see [Logging in](#logging-in)):
   - **Log out after this many idle minutes** — 1–1440, default 30.
   - **Change password** — enter the current password and the new one twice. Leave all three

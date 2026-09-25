@@ -161,6 +161,12 @@ def session() -> Session:
 #                     default) or 'classic' (the v1.0.0 grid), used for
 #                     documents opened from then on; set in File >
 #                     Preferences > XSheet.
+#   'report_sections': the optional top-level ExposureSheet elements XSheet >
+#                     Generate Report includes (default: all of
+#                     export_pdf.REPORT_SECTIONS; Production and VersionControl
+#                     are always included); set in File > Preferences > Report.
+#   'report_include_raw': whether Generate Report adds the whole document's
+#                     raw XML as an appendix (default: yes).
 #   'xsheet_column_names': the user's own headings for the traditional
 #                     sheet's Sound FX and Tech. Notes columns, by column id
 #                     ('soundfx', 'technotes'). Layer columns are renamed in
@@ -204,6 +210,22 @@ def xsheet_style_pref() -> str:
 
 def set_xsheet_style_pref(style: str) -> None:
     user_storage()['xsheet_style'] = style if style in XSHEET_STYLES else DEFAULT_XSHEET_STYLE
+
+
+def report_sections() -> list[str]:
+    stored = user_storage().get('report_sections')
+    if not isinstance(stored, list):
+        return list(export_pdf.REPORT_SECTIONS)
+    return [name for name in export_pdf.REPORT_SECTIONS if name in stored]
+
+
+def report_include_raw() -> bool:
+    return bool(user_storage().get('report_include_raw', True))
+
+
+def set_report_options(sections: list[str], include_raw: bool) -> None:
+    user_storage()['report_sections'] = [name for name in export_pdf.REPORT_SECTIONS if name in sections]
+    user_storage()['report_include_raw'] = bool(include_raw)
 
 
 def xsheet_column_name(col_id: str, default: str) -> str:
@@ -434,13 +456,15 @@ def format_xml():
 def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
     (Edit > Format), a Recent Files tab for File > Open Recent, an XSheet tab
-    for the Exposure Sheet style, and a Login tab for the server's password
-    and inactivity time-out (see auth.py)."""
-    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[380px] max-w-full', body_classes='gap-2'):
+    for the Exposure Sheet style, a Report tab for what XSheet > Generate
+    Report includes, and a Login tab for the server's password and
+    inactivity time-out (see auth.py)."""
+    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[460px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
             xsheet_tab = ui.tab('XSheet')
+            report_tab = ui.tab('Report')
             login_tab = ui.tab('Login')
         with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
@@ -461,6 +485,24 @@ def show_preferences_dialog():
                 style_radio = ui.radio(XSHEET_STYLES, value=xsheet_style_pref())
                 ui.label('In the traditional style, click a heading with a pencil to rename that column.') \
                     .classes('text-xs text-gray-500')
+            with ui.tab_panel(report_tab).classes('px-0 gap-2'):
+                ui.label('Sections included by XSheet > Generate Report (for ExposureSheet documents). '
+                         'Production and VersionControl are always included.') \
+                    .classes('text-sm text-gray-500')
+                chosen = set(report_sections())
+                section_boxes = {}
+                with ui.grid(columns=2).classes('w-full gap-x-6 gap-y-0'):
+                    for name in export_pdf.REPORT_SECTIONS:
+                        section_boxes[name] = ui.checkbox(name, value=name in chosen).props('dense')
+
+                def set_all_sections(value: bool):
+                    for box in section_boxes.values():
+                        box.value = value
+                with ui.row().classes('gap-2'):
+                    ui.button('Select all', on_click=lambda: set_all_sections(True)).props('flat dense size=sm no-caps')
+                    ui.button('Clear all', on_click=lambda: set_all_sections(False)).props('flat dense size=sm no-caps')
+                raw_box = ui.checkbox('Add the raw XML of the whole document as an appendix', value=report_include_raw()) \
+                    .props('dense').classes('mt-1')
             with ui.tab_panel(login_tab).classes('px-0 gap-2'):
                 ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
                 timeout_input = ui.number(
@@ -475,6 +517,7 @@ def show_preferences_dialog():
         def do_save(_=None):
             # Check a password change first, so a mistake there saves nothing
             # and leaves the dialog open to fix it.
+            picked_sections = [name for name, box in section_boxes.items() if box.value]
             changing_password = any((current_pw.value, new_pw.value, confirm_pw.value))
             if changing_password:
                 error = None
@@ -500,6 +543,7 @@ def show_preferences_dialog():
                 prefs['indent_size'] = 4
             set_format_prefs(prefs)
             set_xsheet_style_pref(style_radio.value)
+            set_report_options(picked_sections, raw_box.value)
             try:
                 set_recent_files_limit(int(recent_input.value))
             except (TypeError, ValueError):
@@ -2291,7 +2335,8 @@ def export_to_pdf():
         doc_name = Path(sess.current_file['path']).name if sess.current_file.get('path') else 'untitled'
         source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
         try:
-            pdf_bytes = export_pdf.generate_pdf(text, title=doc_name, warnings=validation_warnings)
+            pdf_bytes = export_pdf.generate_pdf(text, title=doc_name, warnings=validation_warnings,
+                                                sections=set(report_sections()), include_raw=report_include_raw())
         except Exception as exc:
             ui.notify(f'PDF export failed: {exc}', color='negative')
             return
