@@ -200,6 +200,7 @@ switching browsers starts fresh settings.
 
 | Item | What it does |
 |---|---|
+| Add Layer | Add a new animation layer to an ExposureSheet: a dialog for the new `<Layer>` element, prefilled with placeholder values to replace — layer name (`Extra`, or `Extra2`… if taken), asset (from the document's Assets), type (2D/3D), cel (for 2D) or scene file (for 3D), stacking order (10 above the current top layer), and the starting frame. **Add** inserts it into that frame's `<Layers>` (matching the file's formatting) as an ordinary, undoable edit, and the layer appears as a new column in the XSheet grid. Existing names, and a 2D layer without a cel or a 3D layer without a scene file, are refused. |
 | Undo / Redo (Ctrl+Z / Ctrl+Y) | Step backward/forward through the in-memory edit history. Typing, Find & Replace, and Format all push onto this history. |
 | Find | Open the Find & Replace dialog. |
 | Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |

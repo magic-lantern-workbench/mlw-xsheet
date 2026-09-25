@@ -1343,6 +1343,37 @@ def parse_exposure_sheet(text: str):
 INVALID_LAYER_NAME_CHARS = set('"\'<>&')
 
 
+def add_layer_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> str | None:
+    """Insert <Layer .../> (attributes in the given order) as the last layer
+    of <Frame number="frame_number">'s <Layers>, matching the indentation of
+    the layers already there (and the element prefix, if the document uses
+    one). Works on the text, so formatting and comments are kept. Returns
+    None if that frame or its <Layers> isn't found."""
+    import re
+    from xml.sax.saxutils import quoteattr
+    frame = re.search(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(frame_number) + r'["\'][^>]*>', text)
+    if not frame:
+        return None
+    prefix = frame.group(1)
+    frame_end = re.compile(r'</' + re.escape(prefix) + r'Frame\s*>').search(text, frame.end())
+    layers_end = re.compile(r'</' + re.escape(prefix) + r'Layers\s*>').search(text, frame.end())
+    if not layers_end or (frame_end and layers_end.start() > frame_end.start()):
+        return None
+    # indentation: that of the frame's last <Layer> line, else the </Layers> line plus 4 spaces
+    block = text[frame.end():layers_end.start()]
+    layer_lines = re.findall(r'\n([ \t]*)<' + re.escape(prefix) + r'Layer[\s/>]', block)
+    close_indent = text[text.rfind('\n', 0, layers_end.start()) + 1:layers_end.start()]
+    indent = layer_lines[-1] if layer_lines else (close_indent + '    ' if not close_indent.strip() else '    ')
+    attr_text = ' '.join(f'{name}={quoteattr(value)}' for name, value in attrs.items())
+    element = f'<{prefix}Layer {attr_text}/>'
+    if not close_indent.strip():  # </Layers> starts its own line: insert a new line before it
+        line_start = text.rfind('\n', 0, layers_end.start()) + 1
+        # keep a blank line after it if the layers are separated by blank lines
+        blank_before = text[:line_start].endswith('\n\n') or text[:line_start].rstrip(' \t').endswith('\n\n')
+        return text[:line_start] + f'{indent}{element}\n' + ('\n' if blank_before else '') + text[line_start:]
+    return text[:layers_end.start()] + element + text[layers_end.start():]
+
+
 def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
     """Rename animation layer `old` to `new` in ExposureSheet XML text: the
     `id` attribute of every <Layer> element, and `xsheetLayer` on OTIO
@@ -1810,6 +1841,108 @@ def handle_xsheet_header_clicked(e):
             with ui.row().classes('gap-2'):
                 ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
                 ui.button('Save', on_click=save).props('size=sm')
+    dlg.open()
+
+
+def _document_asset_ids(text: str) -> list[str]:
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    return [el.get('id') for el in root.iter() if el.tag.split('}')[-1] == 'Asset' and el.get('id')]
+
+
+def show_add_layer_dialog() -> None:
+    """Edit > Add Layer: add a new animation layer (a <Layer> in one frame's
+    <Layers>), with placeholder values to fill in. Its column then appears
+    in the XSheet grid from that frame on."""
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if rows is None:
+        ui.notify('Open an ExposureSheet document first' if not text.strip()
+                  else f'Add Layer needs an ExposureSheet document. {message}', color='warning')
+        return
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(text)
+    frames, zorders = [], []
+    for el in root.iter():
+        name = el.tag.split('}')[-1]
+        if name == 'Frame' and (el.get('number') or '').isdigit():
+            frames.append(int(el.get('number')))
+        elif name == 'Layer':
+            try:
+                zorders.append(int(el.get('zOrder', '0')))
+            except ValueError:
+                pass
+    if not frames:
+        ui.notify('The document has no <Frame> to add a layer to', color='warning')
+        return
+    existing = set(layer_ids or [])
+    default_id, n = 'Extra', 2
+    while default_id in existing:
+        default_id, n = f'Extra{n}', n + 1
+    assets = _document_asset_ids(text)
+
+    with ui.dialog() as dlg, titled_card('Add Layer', classes='w-[420px] max-w-full', body_classes='gap-2'):
+        ui.label('Adds a <Layer> to the chosen frame. Replace the placeholder values as needed.') \
+            .classes('text-caption text-grey')
+        id_input = ui.input('Layer name (id)', value=default_id).classes('w-full').props('autofocus')
+        if assets:
+            asset_input = ui.select(assets, value=assets[0], label='Asset (assetRef)').classes('w-full')
+        else:
+            asset_input = ui.input('Asset (assetRef)', value='ASSET001').classes('w-full')
+        type_input = ui.select(['2D', '3D'], value='2D', label='Type').classes('w-full')
+        cel_input = ui.input('Cel (for 2D)', value='EX001').classes('w-full')
+        scene_input = ui.input('Scene file (for 3D)', value='').classes('w-full')
+        z_input = ui.number('Stacking order (zOrder)', value=(max(zorders) + 10) if zorders else 0,
+                            step=1, format='%d').classes('w-full')
+        frame_input = ui.select(sorted(set(frames)), value=min(frames), label='Starting frame').classes('w-full')
+
+        def add(_=None):
+            layer_id = (id_input.value or '').strip()
+            asset = (str(asset_input.value or '')).strip()
+            layer_type = type_input.value
+            cel = (cel_input.value or '').strip()
+            scene = (scene_input.value or '').strip()
+            error = None
+            if not layer_id:
+                error = 'Please provide a layer name'
+            elif INVALID_LAYER_NAME_CHARS & set(layer_id):
+                error = 'A layer name cannot contain " \' < > or &'
+            elif layer_id in existing:
+                error = f'There is already a layer named {layer_id}'
+            elif not asset:
+                error = 'Please choose an asset'
+            elif layer_type == '2D' and not cel:
+                error = 'A 2D layer needs a cel'
+            elif layer_type == '3D' and not scene:
+                error = 'A 3D layer needs a scene file'
+            if error is None:
+                try:
+                    zorder = int(z_input.value)
+                except (TypeError, ValueError):
+                    error = 'Stacking order must be a whole number'
+            if error:
+                ui.notify(error, color='warning')
+                return
+            attrs = {'id': layer_id, 'assetRef': asset, 'type': layer_type}
+            if cel:
+                attrs['cel'] = cel
+            if scene:
+                attrs['sceneFile'] = scene
+            attrs['zOrder'] = str(zorder)
+            new_text = add_layer_in_text(_editor_text(), int(frame_input.value), attrs)
+            if new_text is None:
+                ui.notify(f'Could not find the <Layers> of frame {frame_input.value}', color='negative')
+                return
+            dlg.close()
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            ui.notify(f'Added layer {layer_id} at frame {frame_input.value}', color='positive')
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Add', on_click=add).props('size=sm')
     dlg.open()
 
 
@@ -2835,6 +2968,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
+                ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
+                ui.separator()
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
                 ui.separator()
