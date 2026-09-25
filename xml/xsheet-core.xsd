@@ -21,12 +21,12 @@
             <xs:sequence>
                 <xs:element name="Production" type="ProductionType"/>
                 <xs:element ref="asset:Assets"/>
-                <xs:element ref="audio:AudioTracks"/>
-                <xs:element ref="cam:Camera"/>
+                <xs:element ref="audio:AudioTracks" minOccurs="0"/>
+                <xs:element ref="cam:Camera" minOccurs="0"/>
                 <xs:element name="Timeline" type="TimelineType"/>
-                <xs:element ref="review:Reviews"/>
+                <xs:element ref="review:Reviews" minOccurs="0"/>
                 <xs:element name="VersionControl" type="VersionControlType"/>
-                <xs:element ref="otio:OTIO"/>
+                <xs:element ref="otio:OTIO" minOccurs="0"/>
             </xs:sequence>
             <xs:attribute name="version" type="xs:string" use="required"/>
         </xs:complexType>

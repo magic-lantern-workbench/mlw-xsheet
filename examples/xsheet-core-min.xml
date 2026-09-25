@@ -25,40 +25,59 @@
 -->
 <!-- COPYRIGHT_END -->
 
-<ExposureSheet xmlns="http://schemas.animation.org/xsheet/core"
-               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xsi:schemaLocation="http://schemas.animation.org/xsheet/core xsheet-core.xsd"
-               version="1.0">
+<!--
+    A minimal ExposureSheet that validates against the XSheet schemas: only the
+    sections the core schema requires (Production, Assets, Timeline and
+    VersionControl), for a two-frame shot with a background and a character
+    layer.
+-->
+
+<ExposureSheet
+    xmlns="http://schemas.animation.org/xsheet/core"
+    xmlns:asset="http://schemas.animation.org/xsheet/assets"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://schemas.animation.org/xsheet/core xsheet-core.xsd
+                        http://schemas.animation.org/xsheet/assets xsheet-assets.xsd"
+    version="2.0">
 
     <Production>
+        <ProjectID>SPACE01</ProjectID>
+        <SequenceID>SQ001</SequenceID>
+        <SceneID>SC010</SceneID>
+        <ShotID>SH005</ShotID>
         <Title>Space Adventure</Title>
-        <SceneNumber>010</SceneNumber>
-        <ShotNumber>005</ShotNumber>
         <FrameRate>24</FrameRate>
+        <StartFrame>1</StartFrame>
+        <EndFrame>2</EndFrame>
     </Production>
+
+    <asset:Assets>
+        <asset:Asset id="BG001" name="Starfield" category="Background" version="1"/>
+        <asset:Asset id="CHR001" name="Pilot" category="Character" version="1"/>
+    </asset:Assets>
 
     <Timeline>
 
         <Frame number="1">
-            <Layer name="BG">
-                <Drawing>BG001</Drawing>
-            </Layer>
-
-            <Layer name="Character">
-                <Drawing>A001</Drawing>
-            </Layer>
+            <Layers>
+                <Layer id="BG" assetRef="BG001" type="2D" cel="BG001" zOrder="0"/>
+                <Layer id="Character" assetRef="CHR001" type="2D" cel="A001" zOrder="10"/>
+            </Layers>
+            <Notes/>
         </Frame>
 
         <Frame number="2">
-            <Layer name="BG">
-                <Drawing>BG001</Drawing>
-            </Layer>
-
-            <Layer name="Character">
-                <Drawing>A002</Drawing>
-            </Layer>
+            <Layers>
+                <Layer id="BG" assetRef="BG001" type="2D" cel="BG001" zOrder="0"/>
+                <Layer id="Character" assetRef="CHR001" type="2D" cel="A002" zOrder="10"/>
+            </Layers>
+            <Notes/>
         </Frame>
 
     </Timeline>
+
+    <VersionControl>
+        <Revision number="1" author="animator01" date="2026-09-25">Initial exposure sheet.</Revision>
+    </VersionControl>
 
 </ExposureSheet>
