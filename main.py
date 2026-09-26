@@ -3085,10 +3085,10 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
                 ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
                 ui.separator()
+                ui.menu_item('Find', on_click=lambda _: show_find_dialog())
+                ui.separator()
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
-                ui.separator()
-                ui.menu_item('Find', on_click=lambda _: show_find_dialog())
                 ui.separator()
                 ui.menu_item('Format', on_click=lambda _: format_xml())
             # XSheet menu

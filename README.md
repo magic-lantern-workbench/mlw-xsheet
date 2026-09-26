@@ -201,8 +201,8 @@ switching browsers starts fresh settings.
 | Item | What it does |
 |---|---|
 | Add Layer | Add a new animation layer to an ExposureSheet: a dialog for the new `<Layer>` element, prefilled with placeholder values to replace — layer name (`New Layer`, or `New Layer 2`… if taken), asset (**Unknown** by default, written as `assetRef="Unknown"`, a placeholder for when the asset isn't known yet; or one of the document's Assets), type (2D/3D), cel (for 2D) or scene file (for 3D), stacking order (10 above the current top layer), and the starting frame, which can be any frame number from 1, including ones past the last frame. **Add** inserts it into that frame's `<Layers>`; if the document has no `<Frame>` with that number, a new one (with the required `<Layers>` and an empty `<Notes/>`) is created in the Timeline in frame-number order. It matches the file's formatting, it's an ordinary, undoable edit, and the layer appears as a new column in the XSheet grid. A layer added beyond the shot's `<EndFrame>` moves EndFrame out to that frame, in the same edit (one Undo reverts both). If the XML tab is showing, the editor scrolls to the new `<Layer>` and the Hierarchy tree selects and reveals it. Existing names, and a 2D layer without a cel or a 3D layer without a scene file, are refused. |
-| Undo / Redo (Ctrl+Z / Ctrl+Y) | Step backward/forward through the in-memory edit history. Typing, Find & Replace, and Format all push onto this history. |
 | Find | Open the Find & Replace dialog. |
+| Undo / Redo (Ctrl+Z / Ctrl+Y) | Step backward/forward through the in-memory edit history. Typing, Find & Replace, and Format all push onto this history. |
 | Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
 
 **Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex.
