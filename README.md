@@ -216,6 +216,7 @@ you can keep working in the editor while it's open.
 
 | Item | What it does |
 |---|---|
+| Collapse All / Expand All | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once; once they're all collapsed the item reads **Expand All** and expands them again. Like the individual arrows, it updates the grid in place without scrolling. |
 | Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). The traditional layout matches the view: wrapped Action/Description and Tech. Notes, alternating shading, a heavier rule after each second, and your own Sound FX / Tech. Notes headings. Every frame is printed (collapsed runs are expanded). |
 | Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
@@ -316,7 +317,8 @@ drawing (or cue) starts.
   marks through a camera move or audio cue. Click the icon (clicking the number does nothing) to
   collapse the run into a single summary row that keeps the shared values, with the frame range
   in Frame (e.g. `26–59 ▶`). Hover over a collapsed row to see how many frames it stands for
-  (e.g. `34 identical frames` or `22 empty frames`). Click ▶ to expand it back out.
+  (e.g. `34 identical frames` or `22 empty frames`). Click ▶ to expand it back out. Collapsing and expanding update the grid in place, without scrolling, and
+  **XSheet > Collapse All** collapses every run at once (then reads **Expand All**).
 - Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
   text, so rows always stay in frame order.
 
