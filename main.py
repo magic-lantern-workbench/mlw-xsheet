@@ -126,7 +126,6 @@ class Session:
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
         self.main_tabs = None  # the XSheet / XML tabs (see xml_tab_active())
-        self.collapse_all_item = None  # label of XSheet > Collapse All / Expand All (see _update_collapse_all_item())
 
         # This user's app.storage.user, captured while index() still has the
         # page request (event handlers and timers don't always carry one).
@@ -1717,7 +1716,6 @@ def rebuild_xsheet_from_current():
     _update_xsheet_production_info(text)
     if sess.xsheet_style == 'traditional':
         _build_traditional_xsheet(sess, grid, layer_ids or [], rows or [])
-        _update_collapse_all_item()
         return
     # classic (v1.0.0) grid: clear anything the traditional layout set
     grid.classes(remove='mlw-xsheet-traditional')
@@ -1727,9 +1725,11 @@ def rebuild_xsheet_from_current():
     grid.options[':getRowId'] = '(params) => String(params.data.Frame)'
     grid.options['rowHeight'] = 24     # compact rows, the same as the traditional style
     grid.options['headerHeight'] = 28
+    # hold-group shading, and the same heavier rule after the last frame of
+    # each second as the traditional style
     grid.options[':getRowClass'] = (
-        "(params) => params.data && params.data._zebra "
-        "? 'mlw-xsheet-row-b' : 'mlw-xsheet-row-a'"
+        "(params) => [params.data && params.data._zebra ? 'mlw-xsheet-row-b' : 'mlw-xsheet-row-a',"
+        " params.data && params.data._second ? 'mlw-xsheet-second' : ''].join(' ')"
     )
     column_defs = [
         # cellDataType pinned to 'text': a collapsed run's summary row puts a
@@ -1759,7 +1759,6 @@ def rebuild_xsheet_from_current():
     grid.options['rowData'] = _xsheet_display_rows('classic', layer_ids or [], rows)
     grid.options[':onGridReady'] = f'(params) => {{ {_fit_pencil_headings_js(column_defs)} }}'
     grid.update()
-    _update_collapse_all_item(grid.options['rowData'])
 
 
 # Traditional sheet columns whose headings the user can rename (pencil icon).
@@ -1823,7 +1822,7 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
     # alternate row shading, and a heavier rule after the last frame of each second
     grid.options[':getRowClass'] = (
         "(params) => [params.node.rowIndex % 2 ? 'mlw-trad-odd' : '',"
-        " params.data && params.data._second ? 'mlw-trad-second' : ''].join(' ')"
+        " params.data && params.data._second ? 'mlw-xsheet-second' : ''].join(' ')"
     )
     # Once the grid is (re)built: re-select the current frame, and fit the
     # pencil headings (see _fit_pencil_headings_js()).
@@ -1888,7 +1887,6 @@ def _refresh_xsheet_rows_in_place() -> None:
     # Not stored in grid.options: changing those makes NiceGUI rebuild the
     # grid, and every full rebuild recomputes the rows anyway.
     grid.run_grid_method('setGridOption', 'rowData', display)
-    _update_collapse_all_item(display)
 
 
 def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
@@ -1896,37 +1894,25 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
     return {(r['_range_start'], r['_range_end']) for r in display if r.get('_range_start') is not None}
 
 
-def _update_collapse_all_item(display: list[dict] | None = None) -> None:
-    """Label XSheet > Collapse All / Expand All by what it would do next:
-    Expand All once every run in the view is collapsed."""
-    sess = session()
-    item = sess.collapse_all_item
-    if item is None:
-        return
-    if display is None:
-        layer_ids, rows, _message = parse_exposure_sheet(_editor_text())
-        display = _xsheet_display_rows(sess.xsheet_style, layer_ids or [], rows)
-    runs = _xsheet_runs(display)
-    all_collapsed = bool(runs) and runs <= sess.xsheet_collapsed_ranges
-    item.set_text('Expand All' if all_collapsed else 'Collapse All')
-
-
-def toggle_collapse_all() -> None:
-    """XSheet > Collapse All / Expand All: collapse every run of identical
-    rows in the view, or -- when they're all collapsed already -- expand
-    them all. Updates the grid in place, without scrolling."""
+def collapse_frames() -> None:
+    """XSheet > Collapse Frames: collapse every run of identical rows in the
+    view. Updates the grid in place, without scrolling."""
     sess = session()
     layer_ids, rows, _message = parse_exposure_sheet(_editor_text())
     runs = _xsheet_runs(_xsheet_display_rows(sess.xsheet_style, layer_ids or [], rows))
     if not runs:
         ui.notify('There are no runs of identical rows to collapse', color='info')
         return
-    if runs <= sess.xsheet_collapsed_ranges:
-        sess.xsheet_collapsed_ranges -= runs
-        ui.notify(f'Expanded {len(runs)} run(s)', color='positive')
-    else:
-        sess.xsheet_collapsed_ranges |= runs
-        ui.notify(f'Collapsed {len(runs)} run(s)', color='positive')
+    sess.xsheet_collapsed_ranges |= runs
+    ui.notify(f'Collapsed {len(runs)} run(s)', color='positive')
+    _refresh_xsheet_rows_in_place()
+
+
+def expand_frames() -> None:
+    """XSheet > Expand Frames: expand every collapsed run, so every frame has
+    its own row. Updates the grid in place, without scrolling."""
+    sess = session()
+    sess.xsheet_collapsed_ranges.clear()
     _refresh_xsheet_rows_in_place()
 
 
@@ -2627,7 +2613,7 @@ def export_xdts():
     start_name = f'{source_name}.xdts.json'
     dialog = ExportFileWithCallback(
         str(start_dir),
-        title='Export XDTS JSON',
+        title='Export XDTS',
         filename=start_name,
         upper_limit=str(BASE_DIR),
         allowed_extensions=['.json'],
@@ -2860,7 +2846,9 @@ def index():
     padding-bottom: 3px;
     word-break: normal;
 }
-.mlw-xsheet-traditional .ag-row.mlw-trad-second {
+/* Both styles: a heavier rule after the last frame of each second (every
+   FrameRate frames). */
+.mlw-xsheet-grid .ag-row.mlw-xsheet-second {
     border-bottom: 2px solid #555555;
 }
 .mlw-xsheet-traditional .ag-cell.mlw-trad-fr {
@@ -3148,7 +3136,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
-                ui.menu_item('Export XDTS JSON…', on_click=lambda _: export_xdts())
+                ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
                 ui.separator()
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
@@ -3163,11 +3151,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Format', on_click=lambda _: format_xml())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
-                # toggles: Collapse All, or Expand All once every run is collapsed
-                # (its own label, so the text can change -- menu items can't set_text)
-                with ui.menu_item(on_click=lambda _: toggle_collapse_all()):
-                    with ui.item_section():
-                        sess.collapse_all_item = ui.label('Collapse All')
+                ui.menu_item('Collapse Frames', on_click=lambda _: collapse_frames())
+                ui.menu_item('Expand Frames', on_click=lambda _: expand_frames())
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
                 ui.menu_item('Generate Report', on_click=lambda _: export_to_pdf())

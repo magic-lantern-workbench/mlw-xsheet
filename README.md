@@ -191,9 +191,9 @@ switching browsers starts fresh settings.
 | Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
-| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS JSON, Generate Report and Export XSheet have it too. |
+| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
-| Export XDTS JSON… | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
+| Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
 
 ### Edit menu
@@ -216,7 +216,8 @@ you can keep working in the editor while it's open.
 
 | Item | What it does |
 |---|---|
-| Collapse All / Expand All | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once; once they're all collapsed the item reads **Expand All** and expands them again. Like the individual arrows, it updates the grid in place without scrolling. |
+| Collapse Frames | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once. Like the individual arrows, it updates the grid in place without scrolling. |
+| Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. |
 | Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). The traditional layout matches the view: wrapped Action/Description and Tech. Notes, alternating shading, a heavier rule after each second, and your own Sound FX / Tech. Notes headings. Every frame is printed (collapsed runs are expanded). |
 | Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
@@ -311,6 +312,8 @@ drawing (or cue) starts.
 - **Row shading** — rows are tinted in two alternating colors by "hold group": every row from
   one keyframe's Layer values to the next (including the blank hold rows in between) shares a
   tint, and each new group of distinct layer values flips to the other tint.
+- **Seconds** — a heavier rule marks the end of each second (every `FrameRate` frames), as in
+  the [traditional style](#traditional-style).
 - **Collapsing repeated runs** — a run of two or more consecutive rows with the same values in
   every column (Layers, Camera, Dialogue, Audio, and Notes) gets a ▼ icon at the right of its
   **Frame** cell. That covers completely blank rows, and also the stretches of `X` continuation
@@ -318,7 +321,7 @@ drawing (or cue) starts.
   collapse the run into a single summary row that keeps the shared values, with the frame range
   in Frame (e.g. `26–59 ▶`). Hover over a collapsed row to see how many frames it stands for
   (e.g. `34 identical frames` or `22 empty frames`). Click ▶ to expand it back out. Collapsing and expanding update the grid in place, without scrolling, and
-  **XSheet > Collapse All** collapses every run at once (then reads **Expand All**).
+  **XSheet > Collapse Frames** collapses every run at once, and **XSheet > Expand Frames** expands them all.
 - Sorting is disabled — an exposure sheet isn't meaningful sorted by cel name or dialogue
   text, so rows always stay in frame order.
 
