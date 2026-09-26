@@ -125,6 +125,7 @@ class Session:
         # Frame highlighted in the traditional sheet's Fr columns; kept here
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
+        self.main_tabs = None  # the XSheet / XML tabs (see xml_tab_active())
 
         # This user's app.storage.user, captured while index() still has the
         # page request (event handlers and timers don't always carry one).
@@ -1343,35 +1344,91 @@ def parse_exposure_sheet(text: str):
 INVALID_LAYER_NAME_CHARS = set('"\'<>&')
 
 
-def add_layer_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> str | None:
-    """Insert <Layer .../> (attributes in the given order) as the last layer
-    of <Frame number="frame_number">'s <Layers>, matching the indentation of
-    the layers already there (and the element prefix, if the document uses
-    one). Works on the text, so formatting and comments are kept. Returns
-    None if that frame or its <Layers> isn't found."""
+def add_layer_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> tuple[str, bool] | None:
+    """Add <Layer .../> (attributes in the given order) to <Frame
+    number="frame_number">: as the last layer of its <Layers> when that frame
+    exists, otherwise in a new <Frame> (with the <Layers> and empty <Notes>
+    the schema requires) inserted into <Timeline> in frame-number order.
+    New lines match the surrounding indentation, blank-line spacing and
+    element prefix. Works on the text, so formatting and comments are kept.
+    Returns (new text, whether a new frame was created), or None if there's
+    no <Timeline> (or the frame has no <Layers>) to add to."""
     import re
     from xml.sax.saxutils import quoteattr
-    frame = re.search(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(frame_number) + r'["\'][^>]*>', text)
-    if not frame:
-        return None
-    prefix = frame.group(1)
-    frame_end = re.compile(r'</' + re.escape(prefix) + r'Frame\s*>').search(text, frame.end())
-    layers_end = re.compile(r'</' + re.escape(prefix) + r'Layers\s*>').search(text, frame.end())
-    if not layers_end or (frame_end and layers_end.start() > frame_end.start()):
-        return None
-    # indentation: that of the frame's last <Layer> line, else the </Layers> line plus 4 spaces
-    block = text[frame.end():layers_end.start()]
-    layer_lines = re.findall(r'\n([ \t]*)<' + re.escape(prefix) + r'Layer[\s/>]', block)
-    close_indent = text[text.rfind('\n', 0, layers_end.start()) + 1:layers_end.start()]
-    indent = layer_lines[-1] if layer_lines else (close_indent + '    ' if not close_indent.strip() else '    ')
     attr_text = ' '.join(f'{name}={quoteattr(value)}' for name, value in attrs.items())
-    element = f'<{prefix}Layer {attr_text}/>'
-    if not close_indent.strip():  # </Layers> starts its own line: insert a new line before it
-        line_start = text.rfind('\n', 0, layers_end.start()) + 1
-        # keep a blank line after it if the layers are separated by blank lines
-        blank_before = text[:line_start].endswith('\n\n') or text[:line_start].rstrip(' \t').endswith('\n\n')
-        return text[:line_start] + f'{indent}{element}\n' + ('\n' if blank_before else '') + text[line_start:]
-    return text[:layers_end.start()] + element + text[layers_end.start():]
+
+    def line_indent(pos: int) -> str:
+        start = text.rfind('\n', 0, pos) + 1
+        lead = text[start:pos]
+        return lead if not lead.strip() else ''
+
+    def insert_line(pos: int, block: str) -> str:
+        """Insert block (whole lines) before the line holding pos, keeping a
+        blank line after it when the surrounding lines are separated by one."""
+        line_start = text.rfind('\n', 0, pos) + 1
+        blank_before = text[:line_start].rstrip(' \t').endswith('\n\n')
+        return text[:line_start] + block + ('\n' if blank_before else '') + text[line_start:]
+
+    frame = re.search(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(frame_number) + r'["\'][^>]*>', text)
+    if frame:
+        prefix = frame.group(1)
+        frame_end = re.compile(r'</' + re.escape(prefix) + r'Frame\s*>').search(text, frame.end())
+        layers_end = re.compile(r'</' + re.escape(prefix) + r'Layers\s*>').search(text, frame.end())
+        if not layers_end or (frame_end and layers_end.start() > frame_end.start()):
+            return None
+        block = text[frame.end():layers_end.start()]
+        layer_lines = re.findall(r'\n([ \t]*)<' + re.escape(prefix) + r'Layer[\s/>]', block)
+        close_indent = line_indent(layers_end.start())
+        element = f'<{prefix}Layer {attr_text}/>'
+        if not text[text.rfind('\n', 0, layers_end.start()) + 1:layers_end.start()].strip():
+            indent = layer_lines[-1] if layer_lines else close_indent + '    '
+            return insert_line(layers_end.start(), f'{indent}{element}\n'), False
+        return text[:layers_end.start()] + element + text[layers_end.start():], False
+
+    # No such frame yet: create one in the Timeline, in frame-number order.
+    timeline = re.search(r'<((?:[\w.-]+:)?)Timeline(\s[^>]*)?>', text)
+    if not timeline:
+        return None
+    prefix = timeline.group(1)
+    timeline_end = re.compile(r'</' + re.escape(prefix) + r'Timeline\s*>').search(text, timeline.end())
+    if not timeline_end:
+        return None
+    frames = [(int(m.group(1)), m.start()) for m in re.finditer(
+        r'<' + re.escape(prefix) + r'Frame\s[^>]*?\bnumber\s*=\s*["\'](\d+)["\']', text[:timeline_end.start()])
+        if m.start() > timeline.end()]
+    after = [pos for number, pos in frames if number > frame_number]
+    anchor = after[0] if after else timeline_end.start()
+    if frames:
+        frame_indent = line_indent(frames[0][1])
+        layers_pos = re.compile(r'<' + re.escape(prefix) + r'Layers[\s>]').search(text, frames[0][1])
+        step = line_indent(layers_pos.start())[len(frame_indent):] if layers_pos else ''
+    else:
+        frame_indent = line_indent(timeline.start()) + '    '
+        step = ''
+    step = step if step.strip() == '' and step else '    '
+    fi, p = frame_indent, prefix
+    block = (f'{fi}<{p}Frame number="{frame_number}">\n'
+             f'{fi}{step}<{p}Layers>\n'
+             f'{fi}{step}{step}<{p}Layer {attr_text}/>\n'
+             f'{fi}{step}</{p}Layers>\n'
+             f'{fi}{step}<{p}Notes/>\n'
+             f'{fi}</{p}Frame>\n')
+    # before a following frame, keep that frame's comment banner (if any) with it
+    if after:
+        banner = text.rfind('<!--', 0, anchor)
+        between = text[text.find('-->', banner) + 3:anchor] if banner != -1 else None
+        if between is not None and not between.strip() and text.find('-->', banner) != -1:
+            prev_frame_end = max((pos for number, pos in frames if pos < anchor), default=timeline.end())
+            if banner > prev_frame_end:
+                anchor = banner
+                # a banner is usually a few comment lines; start at the first
+                while True:
+                    earlier = text.rfind('<!--', 0, anchor)
+                    gap = text[text.find('-->', earlier) + 3:anchor] if earlier != -1 else 'x'
+                    if earlier == -1 or earlier < prev_frame_end or gap.strip():
+                        break
+                    anchor = earlier
+    return insert_line(anchor, block), True
 
 
 def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
@@ -1844,6 +1901,12 @@ def handle_xsheet_header_clicked(e):
     dlg.open()
 
 
+# Edit > Add Layer: the suggested name for a new layer ("New Layer 2", ...
+# when taken), and the assetRef for one whose asset isn't known yet.
+NEW_LAYER_NAME = 'New Layer'
+UNKNOWN_ASSET_REF = 'Unknown'
+
+
 def _document_asset_ids(text: str) -> list[str]:
     import xml.etree.ElementTree as ET
     try:
@@ -1851,6 +1914,39 @@ def _document_asset_ids(text: str) -> list[str]:
     except ET.ParseError:
         return []
     return [el.get('id') for el in root.iter() if el.tag.split('}')[-1] == 'Asset' and el.get('id')]
+
+
+def xml_tab_active() -> bool:
+    tabs = session().main_tabs
+    value = tabs.value if tabs is not None else None
+    # the tabs report a tab by name once switched, or the Tab element itself initially
+    name = value if isinstance(value, str) else getattr(value, '_props', {}).get('name')
+    return name == 'XML'
+
+
+def reveal_in_editor_and_tree(offset: int) -> None:
+    """Scroll the editor to the element starting at `offset` (highlighting
+    its line), and select, expand to and scroll to it in the Hierarchy tree."""
+    sess = session()
+    # after the editor has taken the new text
+    ui.run_javascript(f'setTimeout(() => window.mlwHighlightLine({sess.editor.id}, {offset}), 150);')
+    starts = {nid: start for nid, (start, _end, _line) in sess.xml_node_map.items() if start is not None}
+    node = next((nid for nid, start in starts.items() if start == offset), None) or \
+        max((nid for nid, start in starts.items() if start <= offset), key=starts.get, default=None)
+    if node is None or sess.xml_tree is None:
+        return
+    ancestors, parent = [], sess.xml_parent_map.get(node)
+    while parent is not None:
+        ancestors.append(parent)
+        parent = sess.xml_parent_map.get(parent)
+    sess.last_synced_node['id'] = node  # so the cursor sync doesn't re-select it
+    sess.xml_tree.props['expanded'] = list(dict.fromkeys([*(sess.xml_tree.props.get('expanded') or []), *ancestors]))
+    sess.xml_tree.props['selected'] = node
+    sess.xml_tree.update()
+    ui.run_javascript(
+        f'setTimeout(() => getHtmlElement({sess.xml_tree.id})?.querySelector(".q-tree__node--selected")'
+        '?.scrollIntoView({block: "nearest"}), 400);'
+    )
 
 
 def show_add_layer_dialog() -> None:
@@ -1875,29 +1971,27 @@ def show_add_layer_dialog() -> None:
                 zorders.append(int(el.get('zOrder', '0')))
             except ValueError:
                 pass
-    if not frames:
-        ui.notify('The document has no <Frame> to add a layer to', color='warning')
-        return
+    frames = frames or [1]
     existing = set(layer_ids or [])
-    default_id, n = 'Extra', 2
+    default_id, n = NEW_LAYER_NAME, 2
     while default_id in existing:
-        default_id, n = f'Extra{n}', n + 1
+        default_id, n = f'{NEW_LAYER_NAME} {n}', n + 1
     assets = _document_asset_ids(text)
 
     with ui.dialog() as dlg, titled_card('Add Layer', classes='w-[420px] max-w-full', body_classes='gap-2'):
-        ui.label('Adds a <Layer> to the chosen frame. Replace the placeholder values as needed.') \
+        ui.label('Adds a <Layer> to the starting frame (creating that <Frame> if the document has none). '
+                 'Replace the placeholder values as needed.') \
             .classes('text-caption text-grey')
         id_input = ui.input('Layer name (id)', value=default_id).classes('w-full').props('autofocus')
-        if assets:
-            asset_input = ui.select(assets, value=assets[0], label='Asset (assetRef)').classes('w-full')
-        else:
-            asset_input = ui.input('Asset (assetRef)', value='ASSET001').classes('w-full')
+        # "Unknown" is a placeholder for when the layer's asset isn't known yet
+        asset_input = ui.select([*assets, UNKNOWN_ASSET_REF], value=UNKNOWN_ASSET_REF,
+                                label='Asset (assetRef)').classes('w-full')
         type_input = ui.select(['2D', '3D'], value='2D', label='Type').classes('w-full')
         cel_input = ui.input('Cel (for 2D)', value='EX001').classes('w-full')
         scene_input = ui.input('Scene file (for 3D)', value='').classes('w-full')
         z_input = ui.number('Stacking order (zOrder)', value=(max(zorders) + 10) if zorders else 0,
                             step=1, format='%d').classes('w-full')
-        frame_input = ui.select(sorted(set(frames)), value=min(frames), label='Starting frame').classes('w-full')
+        frame_input = ui.number('Starting frame', value=min(frames), min=1, step=1, format='%d').classes('w-full')
 
         def add(_=None):
             layer_id = (id_input.value or '').strip()
@@ -1923,6 +2017,10 @@ def show_add_layer_dialog() -> None:
                     zorder = int(z_input.value)
                 except (TypeError, ValueError):
                     error = 'Stacking order must be a whole number'
+            if error is None:
+                frame_value = frame_input.value
+                if frame_value is None or float(frame_value) != int(frame_value) or int(frame_value) < 1:
+                    error = 'Starting frame must be a whole number of 1 or more'
             if error:
                 ui.notify(error, color='warning')
                 return
@@ -1932,13 +2030,30 @@ def show_add_layer_dialog() -> None:
             if scene:
                 attrs['sceneFile'] = scene
             attrs['zOrder'] = str(zorder)
-            new_text = add_layer_in_text(_editor_text(), int(frame_input.value), attrs)
-            if new_text is None:
-                ui.notify(f'Could not find the <Layers> of frame {frame_input.value}', color='negative')
+            frame_number = int(frame_input.value)
+            result = add_layer_in_text(_editor_text(), frame_number, attrs)
+            if result is None:
+                ui.notify(f'Could not add a layer to frame {frame_number} (no <Timeline>, or the frame has no <Layers>)',
+                          color='negative')
                 return
+            new_text, new_frame = result
+            # a layer beyond the shot's end moves EndFrame out to it (same edit, so one Undo)
+            end_frame_note = ''
+            end_frame = (read_production_info(new_text) or {}).get('EndFrame', '')
+            if end_frame.isdigit() and frame_number > int(end_frame):
+                new_text, missing = update_production_in_text(new_text, {'EndFrame': str(frame_number)})
+                if not missing:
+                    end_frame_note = f'; EndFrame changed from {end_frame} to {frame_number}'
             dlg.close()
             _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
-            ui.notify(f'Added layer {layer_id} at frame {frame_input.value}', color='positive')
+            ui.notify(f'Added layer {layer_id} at frame {frame_number}' + (' (new frame)' if new_frame else '')
+                      + end_frame_note, color='positive')
+            if xml_tab_active():
+                from xml.sax.saxutils import quoteattr
+                offset = new_text.find(f' id={quoteattr(layer_id)} ', new_text.find('Timeline'))
+                offset = new_text.rfind('<', 0, offset) if offset != -1 else -1
+                if offset != -1:
+                    reveal_in_editor_and_tree(offset)
 
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
@@ -3055,6 +3170,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             pass
 
     with ui.tabs(on_change=on_main_tab_change).classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
+        sess.main_tabs = main_tabs
         # XSheet first; the shortcuts follow the tabs' positions
         xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
         xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
