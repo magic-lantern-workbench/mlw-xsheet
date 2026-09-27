@@ -1386,6 +1386,30 @@ def add_layer_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> tu
         return text[:layers_end.start()] + element + text[layers_end.start():], False
 
     # No such frame yet: create one in the Timeline, in frame-number order.
+    result = _insert_frame_in_text(text, frame_number, lambda p: [
+        (1, f'<{p}Layers>'), (2, f'<{p}Layer {attr_text}/>'), (1, f'</{p}Layers>'), (1, f'<{p}Notes/>')])
+    return (result, True) if result is not None else None
+
+
+def _insert_frame_in_text(text: str, frame_number: int, children) -> str | None:
+    """Insert a new <Frame number="frame_number"> into <Timeline>, in
+    frame-number order (before a following frame's comment banner, if it
+    has one). children(prefix) gives its content as (depth, line) pairs,
+    depth 1 being directly inside <Frame>. New lines match the surrounding
+    indentation, blank-line spacing and element prefix. Returns the new
+    text, or None if there's no <Timeline>."""
+    import re
+
+    def line_indent(pos: int) -> str:
+        start = text.rfind('\n', 0, pos) + 1
+        lead = text[start:pos]
+        return lead if not lead.strip() else ''
+
+    def insert_line(pos: int, block: str) -> str:
+        line_start = text.rfind('\n', 0, pos) + 1
+        blank_before = text[:line_start].rstrip(' \t').endswith('\n\n')
+        return text[:line_start] + block + ('\n' if blank_before else '') + text[line_start:]
+
     timeline = re.search(r'<((?:[\w.-]+:)?)Timeline(\s[^>]*)?>', text)
     if not timeline:
         return None
@@ -1408,11 +1432,8 @@ def add_layer_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> tu
     step = step if step.strip() == '' and step else '    '
     fi, p = frame_indent, prefix
     block = (f'{fi}<{p}Frame number="{frame_number}">\n'
-             f'{fi}{step}<{p}Layers>\n'
-             f'{fi}{step}{step}<{p}Layer {attr_text}/>\n'
-             f'{fi}{step}</{p}Layers>\n'
-             f'{fi}{step}<{p}Notes/>\n'
-             f'{fi}</{p}Frame>\n')
+             + ''.join(f'{fi}{step * depth}{line}\n' for depth, line in children(p))
+             + f'{fi}</{p}Frame>\n')
     # before a following frame, keep that frame's comment banner (if any) with it
     if after:
         banner = text.rfind('<!--', 0, anchor)
@@ -1428,7 +1449,79 @@ def add_layer_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> tu
                     if earlier == -1 or earlier < prev_frame_end or gap.strip():
                         break
                     anchor = earlier
-    return insert_line(anchor, block), True
+    return insert_line(anchor, block)
+
+
+def shift_frames_in_text(text: str, at: int, count: int) -> str:
+    """Make room for `count` new frames starting at frame `at`: every frame
+    reference at or after `at` moves `count` frames later -- <Frame number>,
+    and the startFrame / endFrame / frame attributes of <AudioRef>,
+    <CameraMove>, camera <Keyframe> and <Review>, so a move or cue that
+    spans `at` grows to take in the new frames. EndFrame moves too (and
+    always reaches the last new frame); StartFrame stays. "Frame N" comment
+    banners are renumbered to match. Works on the text, so formatting and
+    comments are kept."""
+    import re
+
+    def shifted(number: str) -> str:
+        return str(int(number) + count) if int(number) >= at else number
+
+    def fix_tag(m: re.Match) -> str:
+        tag = m.group(0)
+        if re.match(r'<(?:[\w.-]+:)?Frame[\s/>]', tag):
+            tag = re.sub(r'(\bnumber\s*=\s*["\'])(\d+)', lambda a: a.group(1) + shifted(a.group(2)), tag)
+        return re.sub(r'(\b(?:startFrame|endFrame|frame)\s*=\s*["\'])(\d+)',
+                      lambda a: a.group(1) + shifted(a.group(2)), tag)
+
+    def fix_banner(m: re.Match) -> str:
+        number, space = m.group(2), m.group(3)
+        new = shifted(number)
+        # keep the banner's width, so its box still lines up
+        return m.group(1) + new + ' ' * max(1, len(number) + len(space) - len(new)) + m.group(4)
+
+    text = re.sub(r'<[A-Za-z][^<>]*>', fix_tag, text)
+    text = re.sub(r'(<!--\s*Frame\s+)(\d+)(\s*)(-->)', fix_banner, text)
+    end = (read_production_info(text) or {}).get('EndFrame', '')
+    if end.isdigit():
+        new_end = int(end) + count if int(end) >= at else max(int(end), at + count - 1)
+        if new_end != int(end):
+            text, _missing = update_production_in_text(text, {'EndFrame': str(new_end)})
+    return text
+
+
+def add_frames_in_text(text: str, at: int, count: int, layers: list[dict[str, str]],
+                       dialogue: tuple[str, str] | None, notes: str,
+                       restate_layers: list[dict[str, str]] | None = None) -> str | None:
+    """Insert `count` frames at frame `at` (see shift_frames_in_text()): a
+    new <Frame number="at"> with the given <Layer> attributes, optional
+    <Dialogue> (phoneme, text) and <Notes>; the other new frames hold it, as
+    on a paper sheet. restate_layers, when given, are written in a <Frame>
+    just after the new ones, so frames that were holding an earlier drawing
+    still hold it rather than the new one. Returns the new text, or None if
+    there's no <Timeline>."""
+    from xml.sax.saxutils import escape, quoteattr
+
+    def layer_line(p: str, attrs: dict[str, str]) -> str:
+        return f'<{p}Layer ' + ' '.join(f'{k}={quoteattr(v)}' for k, v in attrs.items()) + '/>'
+
+    def frame_children(layer_list, with_details):
+        def children(p):
+            lines = [(1, f'<{p}Layers>'), *((2, layer_line(p, a)) for a in layer_list), (1, f'</{p}Layers>')]
+            if with_details and dialogue is not None:
+                phoneme, spoken = dialogue
+                lines.append((1, f'<{p}Dialogue phoneme={quoteattr(phoneme)}>{escape(spoken)}</{p}Dialogue>'))
+            if with_details and notes:
+                lines.append((1, f'<{p}Notes>{escape(notes)}</{p}Notes>'))
+            else:
+                lines.append((1, f'<{p}Notes/>'))
+            return lines
+        return children
+
+    new_text = shift_frames_in_text(text, at, count)
+    new_text = _insert_frame_in_text(new_text, at, frame_children(layers, True))
+    if new_text is not None and restate_layers:
+        new_text = _insert_frame_in_text(new_text, at + count, frame_children(restate_layers, False))
+    return new_text
 
 
 def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
@@ -2110,6 +2203,164 @@ def show_add_layer_dialog() -> None:
                 offset = new_text.rfind('<', 0, offset) if offset != -1 else -1
                 if offset != -1:
                     reveal_in_editor_and_tree(offset)
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Add', on_click=add).props('size=sm')
+    dlg.open()
+
+
+def _frame_layer_state(root, layer_ids: list[str], before: int) -> dict[str, dict[str, str]]:
+    """Each layer's <Layer> attributes as last set by a <Frame> numbered
+    below `before` -- what the sheet is showing (holding) at frame
+    before - 1. Layers no earlier frame sets are left out."""
+    frames = sorted(((int(el.get('number')), el) for el in root.iter()
+                     if el.tag.split('}')[-1] == 'Frame' and (el.get('number') or '').isdigit()), key=lambda f: f[0])
+    state: dict[str, dict[str, str]] = {}
+    for number, frame in frames:
+        if number >= before:
+            break
+        for layer in frame.iter():
+            if layer.tag.split('}')[-1] == 'Layer' and layer.get('id') in layer_ids:
+                state[layer.get('id')] = dict(layer.attrib)
+    return state
+
+
+def show_add_frame_dialog() -> None:
+    """Edit > Add Frame: add one or more frames to the sheet -- at the end
+    (the default) or inserted before any frame, moving the later frames
+    along (see add_frames_in_text()). The first new frame gets a <Frame>
+    with the values filled in here; the rest hold it."""
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if not rows:
+        ui.notify('Open an ExposureSheet document first' if not text.strip()
+                  else f'Add Frame needs an ExposureSheet document. {message}', color='warning')
+        return
+    import re
+    import xml.etree.ElementTree as ET
+    sess = session()
+    root = ET.fromstring(text)
+    layer_ids = layer_ids or []
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+    frame_numbers = {int(el.get('number')) for el in root.iter()
+                     if el.tag.split('}')[-1] == 'Frame' and (el.get('number') or '').isdigit()}
+    # each layer's attributes, from its first appearance (for a layer the
+    # insertion point isn't showing yet)
+    layer_defs: dict[str, dict[str, str]] = {}
+    for el in root.iter():
+        if el.tag.split('}')[-1] == 'Layer' and el.get('id') in layer_ids:
+            layer_defs.setdefault(el.get('id'), dict(el.attrib))
+    selected = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+    before_default = min(max(int(selected.group()), first), last) if selected else first
+
+    def value_key(attrs: dict[str, str]) -> str:
+        return 'sceneFile' if attrs.get('type') == '3D' else 'cel'
+
+    with ui.dialog() as dlg, titled_card('Add Frame', classes='w-[460px] max-w-full', body_classes='gap-2'):
+        ui.label('Adds frames to the sheet. The first new frame shows the values below, and the others hold it. '
+                 'Inserting moves the later frames (and camera moves, audio cues and reviews) along.') \
+            .classes('text-caption text-grey')
+        count_input = ui.number('Number of frames', value=1, min=1, step=1, format='%d').classes('w-full') \
+            .props('autofocus')
+        with ui.row().classes('w-full items-center gap-2 no-wrap'):
+            where = ui.radio({'end': f'At the end (after frame {last})', 'before': 'Before frame'},
+                             value='end').props('inline dense')
+            before_input = ui.number(value=before_default, min=first, max=last, step=1, format='%d') \
+                .classes('w-20').props('dense')
+            before_input.bind_enabled_from(where, 'value', backward=lambda v: v == 'before')
+        ui.label('Layers (leave blank to leave a layer out of the frame)').classes('text-sm text-grey-8 mt-1')
+        layer_inputs = {}
+        for lid in layer_ids:
+            kind = 'scene file' if layer_defs.get(lid, {}).get('type') == '3D' else 'cel'
+            layer_inputs[lid] = ui.input(f'{lid} ({kind})').classes('w-full').props('dense')
+        with ui.row().classes('w-full gap-2 no-wrap'):
+            phoneme_input = ui.input('Dialogue phoneme').classes('w-1/3').props('dense')
+            spoken_input = ui.input('Dialogue text').classes('flex-grow').props('dense')
+        notes_input = ui.input('Notes').classes('w-full').props('dense')
+
+        def insertion_point() -> int | None:
+            if where.value == 'end':
+                return last + 1
+            value = before_input.value
+            if value is None or float(value) != int(value) or not first <= int(value) <= last:
+                return None
+            return int(value)
+
+        def prefill(_=None):
+            """Fill the layers with what the sheet shows just before the new frames."""
+            at = insertion_point()
+            if at is None:
+                return
+            state = _frame_layer_state(root, layer_ids, at) or _frame_layer_state(root, layer_ids, first + 1)
+            for lid, field in layer_inputs.items():
+                attrs = state.get(lid)
+                field.value = attrs.get(value_key(attrs), '') if attrs else ''
+
+        where.on_value_change(prefill)
+        before_input.on_value_change(prefill)
+        prefill()
+
+        async def add(_=None):
+            count = count_input.value
+            if count is None or float(count) != int(count) or not 1 <= int(count) <= 10000:
+                ui.notify('Number of frames must be a whole number from 1 to 10000', color='warning')
+                return
+            count = int(count)
+            at = insertion_point()
+            if at is None:
+                ui.notify(f'Choose a frame from {first} to {last} to insert before', color='warning')
+                return
+            layers = []
+            for lid, field in layer_inputs.items():
+                value = (field.value or '').strip()
+                if not value:
+                    continue
+                base = _frame_layer_state(root, layer_ids, at).get(lid) or layer_defs[lid]
+                attrs = {'id': lid, 'assetRef': base.get('assetRef', UNKNOWN_ASSET_REF), 'type': base.get('type', '2D'),
+                         value_key(base): value, 'zOrder': base.get('zOrder', '0')}
+                layers.append(attrs)
+            if not layers:
+                ui.notify('A frame needs at least one layer', color='warning')
+                return
+            phoneme, spoken = (phoneme_input.value or '').strip(), (spoken_input.value or '').strip()
+            if spoken and not phoneme:
+                ui.notify('Dialogue needs a phoneme', color='warning')
+                return
+            # Frames that were holding an earlier drawing at the insertion
+            # point get a <Frame> restating it after the new ones, so they
+            # still show it.
+            restate = None
+            if at <= last and at not in frame_numbers:
+                state = _frame_layer_state(root, layer_ids, at)
+                restate = [state[lid] for lid in layer_ids if lid in state] or None
+            new_text = add_frames_in_text(_editor_text(), at, count, layers,
+                                          (phoneme, spoken) if phoneme else None,
+                                          (notes_input.value or '').strip(), restate)
+            if new_text is None:
+                ui.notify('Could not add frames (the document has no <Timeline>)', color='negative')
+                return
+            dlg.close()
+            sess.xsheet_current_frame = at
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            span = f'frame {at}' if count == 1 else f'frames {at}–{at + count - 1}'
+            ui.notify(f'Added {span}' + ('' if at > last else f'; later frames moved along by {count}'),
+                      color='positive')
+            # show the new frames: in the grid (its row index, counting any
+            # collapsed runs), and in the editor and tree on the XML tab
+            new_layer_ids, new_rows, _message = parse_exposure_sheet(new_text)
+            display = _xsheet_display_rows(sess.xsheet_style, new_layer_ids or [], new_rows or [])
+            index = next((i for i, row in enumerate(display) if str(row['Frame']).split('–')[0] == str(at)), None)
+            if xml_tab_active():
+                if index is not None:
+                    sess.tab_view_state['xsheet_top_row'] = max(index - 5, 0)  # for when the XSheet tab is next shown
+                m = re.search(r'<(?:[\w.-]+:)?Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(at) + r'["\']', new_text)
+                if m:
+                    reveal_in_editor_and_tree(m.start())
+            elif index is not None and sess.xsheet_grid is not None:
+                import asyncio
+                await asyncio.sleep(0.15)  # let the grid take the new rows first
+                sess.xsheet_grid.run_grid_method('ensureIndexVisible', index, 'middle')
 
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
@@ -3141,6 +3392,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
+                ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog())
                 ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_dialog())
