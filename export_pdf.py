@@ -368,37 +368,56 @@ def _write_grid_header(pdf: FPDF, root: ET.Element | None, layer_ids: list[str],
     pdf.ln(6)
 
 
-def _draw_traditional_table(pdf: FPDF, columns: list[dict], rows: list[dict]) -> None:
-    """Draw the traditional exposure-sheet table by hand, like the XSheet
-    view: centred bold headings (repeated on each page), rows that grow to
-    fit wrapped text, alternating shading, grey frame-number columns, and a
+# How _draw_sheet_table() draws each XSheet style. traditional: Helvetica,
+# padded rows, a grey heading bar, alternating shading and grey frame-number
+# columns, like the view; classic: plain Courier rows with thin grey lines.
+_SHEET_LOOKS = {
+    'traditional': {'font': 'Helvetica', 'font_size': 7.5, 'line_h': 9.0, 'pad_x': 2.5, 'pad_y': 2.5,
+                    'grid': (208, 208, 208), 'grid_w': 0.4, 'header_fill': (240, 240, 240),
+                    'shade': (247, 247, 247), 'frame_fill': (241, 241, 241)},
+    'classic': {'font': 'Courier', 'font_size': 8, 'line_h': 11.0, 'pad_x': 1.0, 'pad_y': 0.0,
+                'grid': (160, 160, 160), 'grid_w': 0.4, 'header_fill': None,
+                'shade': None, 'frame_fill': None},
+}
+
+
+def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: str = 'traditional') -> None:
+    """Draw an XSheet table by hand, in the look of `style` (see
+    _SHEET_LOOKS): centred bold headings (repeated on each page), rows that
+    grow to fit wrapped text, and -- in both styles, like the view -- a
     heavier rule after the last frame of each second (rows with _second).
-    Each column: key, header, weight (relative width), align, wrap."""
-    font_size, line_h, pad = 7.5, 9.0, 2.5
+    Each column: key, header, weight (relative width), align, wrap, frame."""
+    look = _SHEET_LOOKS[style]
+    font, font_size, line_h = look['font'], look['font_size'], look['line_h']
+    pad_x, pad_y = look['pad_x'], look['pad_y']
     usable = pdf.w - pdf.l_margin - pdf.r_margin
     total = sum(c['weight'] for c in columns)
     widths = [usable * c['weight'] / total for c in columns]
     bottom = pdf.h - pdf.b_margin
-    grid, rule, shade, frame_fill = (208, 208, 208), (85, 85, 85), (247, 247, 247), (241, 241, 241)
+    grid, rule = look['grid'], (85, 85, 85)
+    white = (255, 255, 255)
+    shade = look['shade'] or white
+    frame_fill = look['frame_fill']
 
     def text_lines(text: str, width: float) -> list[str]:
         if not text:
             return ['']
-        return pdf.multi_cell(width - 2 * pad, line_h, _sanitize(text), dry_run=True, output='LINES')
+        return pdf.multi_cell(width - 2 * pad_x, line_h, _sanitize(text), dry_run=True, output='LINES')
 
     def draw_header():
-        pdf.set_font('Helvetica', 'B', font_size)
+        pdf.set_font(font, 'B', font_size)
         y, x = pdf.get_y(), pdf.l_margin
-        height = line_h + 2 * pad
+        height = line_h + 2 * pad_y
         for col, width in zip(columns, widths):
-            pdf.set_fill_color(240, 240, 240)
+            pdf.set_fill_color(*(look['header_fill'] or white))
             pdf.set_draw_color(*grid)
+            pdf.set_line_width(look['grid_w'])
             pdf.rect(x, y, width, height, style='DF')
-            pdf.set_xy(x, y + pad)
+            pdf.set_xy(x, y + pad_y)
             pdf.cell(width, line_h, _sanitize(col['header']), align='C')
             x += width
         pdf.set_y(y + height)
-        pdf.set_font('Helvetica', '', font_size)
+        pdf.set_font(font, '', font_size)
 
     # The heavier second rules sit on the edge shared with the next row, so
     # they're drawn once a page is complete -- otherwise the next row's
@@ -410,7 +429,7 @@ def _draw_traditional_table(pdf: FPDF, columns: list[dict], rows: list[dict]) ->
         pdf.set_line_width(1.4)
         for y in rules:
             pdf.line(pdf.l_margin, y, pdf.l_margin + usable, y)
-        pdf.set_line_width(0.4)
+        pdf.set_line_width(look['grid_w'])
         rules.clear()
 
     pdf.set_auto_page_break(False)
@@ -421,27 +440,28 @@ def _draw_traditional_table(pdf: FPDF, columns: list[dict], rows: list[dict]) ->
             value = str(row.get(col['key'], '') or '')
             lines = text_lines(value, width) if col.get('wrap') else [value]
             cells.append(lines)
-        height = max(len(lines) for lines in cells) * line_h + 2 * pad
+        height = max(len(lines) for lines in cells) * line_h + 2 * pad_y
         if pdf.get_y() + height > bottom:
             draw_rules()
             pdf.add_page()
             draw_header()
         y, x = pdf.get_y(), pdf.l_margin
         for col, width, lines in zip(columns, widths, cells):
-            fill = frame_fill if col.get('frame') else (shade if index % 2 else (255, 255, 255))
+            fill = frame_fill if col.get('frame') and frame_fill else (shade if index % 2 else white)
             pdf.set_fill_color(*fill)
             pdf.set_draw_color(*grid)
-            pdf.set_line_width(0.4)
+            pdf.set_line_width(look['grid_w'])
             pdf.rect(x, y, width, height, style='DF')
             for n, line in enumerate(lines):
-                pdf.set_xy(x + pad, y + pad + n * line_h)
-                pdf.cell(width - 2 * pad, line_h, _sanitize(line), align='C' if col.get('align') == 'C' else 'L')
+                pdf.set_xy(x + pad_x, y + pad_y + n * line_h)
+                pdf.cell(width - 2 * pad_x, line_h, _sanitize(line), align='C' if col.get('align') == 'C' else 'L')
             x += width
         if row.get('_second'):
             rules.append(y + height)
         pdf.set_y(y + height)
     draw_rules()
     pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.567)  # fpdf2's default (0.2 mm)
     pdf.set_auto_page_break(True, margin=MARGIN)
 
 
@@ -458,7 +478,7 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
     style: 'classic' (Frame, one column per layer, Camera, Dialogue, Audio,
     Notes) or 'traditional' (Action/Description, Fr, Audio, Dialogue,
     Sound FX, Tech. Notes, the layers, Fr, Camera Moves, with alternating
-    shading and a heavier rule after each second). headings: the user's own
+    shading). Both have a heavier rule after each second. headings: the user's own
     names for the traditional Sound FX / Tech. Notes columns ('soundfx',
     'technotes').
 
@@ -498,22 +518,16 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
             {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
             {'key': 'Camera', 'header': 'Camera Moves', 'weight': 1.1, 'align': 'C'},
         ]
-        _draw_traditional_table(pdf, columns, rows)
+        _draw_sheet_table(pdf, columns, rows, 'traditional')
         return bytes(pdf.output())
 
-    headers = ['Frame', *layer_ids, 'Camera', 'Dialogue', 'Audio', 'Notes']
-    centered = {'Frame', 'Camera', 'Audio', *layer_ids}
-    col_widths = [0.6, *([0.9] * len(layer_ids)), 1.2, 1.3, 0.9, 1.6]
-
-    pdf.set_font('Courier', '', 8)
-    with pdf.table(col_widths=tuple(col_widths), text_align='LEFT', line_height=11) as table:
-        header_row = table.row()
-        for header in headers:
-            header_row.cell(_sanitize(header), align='C')
-        for row in rows:
-            data_row = table.row()
-            for header in headers:
-                value = row.get(header, '')
-                data_row.cell(_sanitize(str(value)), align='C' if header in centered else 'L')
-
+    columns = [
+        {'key': 'Frame', 'header': 'Frame', 'weight': 0.6, 'align': 'C', 'wrap': True},
+        *({'key': lid, 'header': lid, 'weight': 0.9, 'align': 'C', 'wrap': True} for lid in layer_ids),
+        {'key': 'Camera', 'header': 'Camera', 'weight': 1.2, 'align': 'C', 'wrap': True},
+        {'key': 'Dialogue', 'header': 'Dialogue', 'weight': 1.3, 'wrap': True},
+        {'key': 'Audio', 'header': 'Audio', 'weight': 0.9, 'align': 'C', 'wrap': True},
+        {'key': 'Notes', 'header': 'Notes', 'weight': 1.6, 'wrap': True},
+    ]
+    _draw_sheet_table(pdf, columns, rows, 'classic')
     return bytes(pdf.output())
