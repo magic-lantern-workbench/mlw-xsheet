@@ -204,7 +204,6 @@ switching browsers starts fresh settings.
 | Add Layer | Add a new animation layer to an ExposureSheet: a dialog for the new `<Layer>` element, prefilled with placeholder values to replace — layer name (`New Layer`, or `New Layer 2`… if taken), asset (**Unknown** by default, written as `assetRef="Unknown"`, a placeholder for when the asset isn't known yet; or one of the document's Assets), type (2D/3D), cel (for 2D) or scene file (for 3D), stacking order (10 above the current top layer), and the starting frame, which can be any frame number from 1, including ones past the last frame. **Add** inserts it into that frame's `<Layers>`; if the document has no `<Frame>` with that number, a new one (with the required `<Layers>` and an empty `<Notes/>`) is created in the Timeline in frame-number order. It matches the file's formatting, it's an ordinary, undoable edit, and the layer appears as a new column in the XSheet grid. A layer added beyond the shot's `<EndFrame>` moves EndFrame out to that frame, in the same edit (one Undo reverts both). If the XML tab is showing, the editor scrolls to the new `<Layer>` and the Hierarchy tree selects and reveals it. Existing names, and a 2D layer without a cel or a 3D layer without a scene file, are refused. |
 | Find | Open the Find & Replace dialog. |
 | Undo / Redo (Ctrl+Z / Ctrl+Y) | Step backward/forward through the in-memory edit history. Typing, Find & Replace, and Format all push onto this history. |
-| Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
 
 **Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex.
 One row of buttons holds Find Next / Find Previous (jump between matches, each scrolled to and
@@ -218,7 +217,7 @@ you can keep working in the editor while it's open.
 | Item | What it does |
 |---|---|
 | Collapse Frames | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once. Like the individual arrows, it updates the grid in place without scrolling. |
-| Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. |
+| Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. Both items act on the grid, so they're disabled while the XML tab is showing. |
 | Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). Both styles have a heavier rule after each second, like the view; the traditional layout also matches the view's wrapped Action/Description and Tech. Notes, alternating shading, and your own Sound FX / Tech. Notes headings. Every frame is printed (collapsed runs are expanded). |
 | Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
@@ -233,6 +232,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 | Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
 | Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). In production, a **Data / Bundled schemas** switch also lets you pick one of the app's own schemas. |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
+| Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
 
 Schema resolution order for **Validate against Schema**:
 1. A schema explicitly chosen via **Select Schema…**.
@@ -247,7 +247,7 @@ Schema resolution order for **Validate against Schema**:
 Opened from **File > Preferences…**. The dialog has five tabs. Format, Recent Files, XSheet and
 Report are saved per user; Login applies to everyone using the server:
 
-- **Format** — controls the **Format** command:
+- **Format** — controls the **XML > Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
   - **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
 - **Recent Files** — controls **File > Open Recent**:

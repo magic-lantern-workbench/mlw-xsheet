@@ -106,6 +106,7 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
+        self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
         self.filename_label = None
         self.validation_status_label = None
         self.schema_label = None
@@ -456,7 +457,7 @@ def format_xml():
 
 def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
-    (Edit > Format), a Recent Files tab for File > Open Recent, an XSheet tab
+    (XML > Format), a Recent Files tab for File > Open Recent, an XSheet tab
     for the Exposure Sheet style, a Report tab for what XSheet > Generate
     Report includes, and a Login tab for the server's password and
     inactivity time-out (see auth.py)."""
@@ -469,7 +470,7 @@ def show_preferences_dialog():
             login_tab = ui.tab('Login')
         with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
-                ui.label('Used by Edit > Format').classes('text-sm text-gray-500')
+                ui.label('Used by XML > Format').classes('text-sm text-gray-500')
                 prefs = format_prefs()
                 use_tabs_cb = ui.checkbox('Use tabs for indentation', value=prefs['use_tabs'])
                 indent_input = ui.number(
@@ -3399,16 +3400,18 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.separator()
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
-                ui.separator()
-                ui.menu_item('Format', on_click=lambda _: format_xml())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
-                ui.menu_item('Collapse Frames', on_click=lambda _: collapse_frames())
-                ui.menu_item('Expand Frames', on_click=lambda _: expand_frames())
+                # these act on the grid, so they're disabled on the XML tab
+                # (see on_main_tab_change() below)
+                sess.xsheet_view_items = [
+                    ui.menu_item('Collapse Frames', on_click=lambda _: collapse_frames()),
+                    ui.menu_item('Expand Frames', on_click=lambda _: expand_frames()),
+                ]
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
                 ui.menu_item('Generate Report', on_click=lambda _: export_to_pdf())
-            # XML menu with Validation -- only meaningful while the XML tab
+            # XML menu with Format and Validation -- only meaningful while the XML tab
             # is active (see on_main_tab_change() below), since it acts on
             # the editor's content.
             sess.xml_menu_button = ui.dropdown_button('XML', auto_close=True).props('flat color=white')
@@ -3419,6 +3422,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.separator()
                 ui.menu_item('Select Schema…', on_click=lambda _: choose_schema())
                 ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
+                ui.separator()
+                ui.menu_item('Format', on_click=lambda _: format_xml())
             ui.button('About', on_click=lambda _: show_about_dialog()).props('flat color=white')
         ui.space()
         # User menu at the right end of the menubar
@@ -3462,6 +3467,8 @@ window.mlwSelectRange = function(elementId, from, to) {
         switching_to_xsheet = (new_value == 'XSheet')
         if sess.xml_menu_button is not None:
             sess.xml_menu_button.disable() if switching_to_xsheet else sess.xml_menu_button.enable()
+        for item in sess.xsheet_view_items:
+            item.set_enabled(switching_to_xsheet)
         try:
             if switching_to_xsheet:
                 offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
