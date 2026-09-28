@@ -2243,6 +2243,82 @@ def add_audio_ref_in_text(text: str, frame_number: int, attrs: dict[str, str]) -
     return text[:line_start] + indent + element + '\n' + ('\n' if blank else '') + text[line_start:]
 
 
+def add_holding_frame_in_text(text: str, frame_number: int) -> str | None:
+    """Give a hold frame (one without a <Frame> of its own) a <Frame> that
+    restates the drawings it's holding, with an empty <Notes>, so it can
+    carry its own notes or dialogue while the sheet shows the same thing.
+    None if no drawings are held there (or there's no <Timeline>)."""
+    import xml.etree.ElementTree as ET
+    from xml.sax.saxutils import quoteattr
+    layer_ids, _rows, _message = parse_exposure_sheet(text)
+    state = _frame_layer_state(ET.fromstring(text), layer_ids or [], frame_number)
+    layers = [state[lid] for lid in layer_ids or [] if lid in state]
+    if not layers:
+        return None
+    return _insert_frame_in_text(text, frame_number, lambda p: [
+        (1, f'<{p}Layers>'),
+        *((2, f'<{p}Layer ' + ' '.join(f'{k}={quoteattr(v)}' for k, v in a.items()) + '/>') for a in layers),
+        (1, f'</{p}Layers>'),
+        (1, f'<{p}Notes/>')])
+
+
+def set_frame_dialogue_in_text(text: str, frame_number: int, phoneme: str, spoken: str) -> str | None:
+    """Set the <Dialogue phoneme="..."> of <Frame number="frame_number">,
+    adding it after <Layers> (where the schema puts it) if the frame has
+    none, or removing it when phoneme is blank. An existing element keeps
+    its layout. None if there's no such frame."""
+    import re
+    from xml.sax.saxutils import escape
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    frame = re.search(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(frame_number) + r'["\'][^>]*>', masked)
+    if not frame:
+        return None
+    p = re.escape(frame.group(1))
+    frame_end = re.compile(r'</' + p + r'Frame\s*>').search(masked, frame.end())
+    if not frame_end:
+        return None
+    existing = re.compile(r'<' + p + r'Dialogue(?=[\s/>])[^<>]*?(/?)>(?:(.*?)</' + p + r'Dialogue\s*>)?', re.S) \
+        .search(masked, frame.end(), frame_end.start())
+    if existing and existing.group(1):  # <Dialogue .../>: treat as empty
+        tag_end, inner = existing.end(), None
+    elif existing:
+        tag_end = masked.index('>', existing.start()) + 1
+        inner = (existing.start(2), existing.end(2))
+    if not phoneme:
+        if not existing:
+            return text
+        # drop the element and its line (and a blank line, if that leaves two)
+        line_start = text.rfind('\n', 0, existing.start())
+        start = line_start if not text[line_start + 1:existing.start()].strip() else existing.start()
+        if re.match(r'\n[ \t]*\n', text[existing.end():]) and re.search(r'\n[ \t]*$', text[:start]):
+            start = text.rfind('\n', 0, start)
+        return text[:start] + text[existing.end():]
+    if existing:
+        tag = _set_tag_attrs(text[existing.start():tag_end], {'phoneme': phoneme})
+        if inner is None:  # <Dialogue .../> becomes <Dialogue ...>text</Dialogue>
+            return text[:existing.start()] + tag[:-2].rstrip() + f'>{escape(spoken)}</{frame.group(1)}Dialogue>' \
+                + text[existing.end():]
+        body = text[inner[0]:inner[1]]
+        if spoken and body.strip():  # keep the text's layout, e.g. on its own indented line
+            lead, trail = body[:len(body) - len(body.lstrip())], body[len(body.rstrip()):]
+            body = lead + escape(spoken) + trail
+        else:
+            body = escape(spoken)
+        return text[:existing.start()] + tag + body + text[inner[1]:]
+    # none yet: before the frame's first <AudioRef> or its <Notes>
+    after = re.compile(r'<' + p + r'(?:AudioRef|Notes)(?=[\s/>])').search(masked, frame.end(), frame_end.start())
+    anchor = after.start() if after else frame_end.start()
+    line_start = text.rfind('\n', 0, anchor) + 1
+    indent = text[line_start:anchor]
+    if indent.strip():
+        indent, line_start = '', anchor
+    if not after:
+        indent += '    '
+    element = f'<{frame.group(1)}Dialogue phoneme="{escape(phoneme, {chr(34): "&quot;"})}">{escape(spoken)}</{frame.group(1)}Dialogue>'
+    blank = text[:line_start].rstrip(' \t').endswith('\n\n')
+    return text[:line_start] + indent + element + '\n' + ('\n' if blank else '') + text[line_start:]
+
+
 def edit_xsheet_notes(e) -> None:
     """A frame's Notes (Action/Description) cell was edited in the XSheet
     grid: write it to that frame's <Notes>, as an ordinary (undoable) edit.
@@ -2315,10 +2391,17 @@ AUDIO_COLUMNS = {'Audio': None, 'audio': False, 'soundfx': True}
 def handle_xsheet_cell_double_clicked(e) -> None:
     """Double-clicking a frame's Camera (Camera Moves) cell opens the
     camera move covering that frame for editing; an Audio (or Sound FX)
-    cell, the audio cue."""
+    cell, the audio cue; a Dialogue cell, that frame's dialogue."""
     args = e.args or {}
     col_id = args.get('colId')
     data = args.get('data') or {}
+    if col_id in ('Dialogue', 'dialogue'):
+        # dialogue belongs to a single frame, and a collapsed run's row stands for several
+        if isinstance(data.get('Frame'), int):
+            show_dialogue_dialog(data['Frame'])
+        else:
+            ui.notify('Expand the run to edit the dialogue of one of its frames', color='info')
+        return
     frame = data.get('_range_start', data.get('Frame'))  # a collapsed run: its first frame
     if not isinstance(frame, int):
         return
@@ -2326,6 +2409,97 @@ def handle_xsheet_cell_double_clicked(e) -> None:
         show_camera_move_dialog(frame)
     elif col_id in AUDIO_COLUMNS:
         show_audio_cue_dialog(frame, AUDIO_COLUMNS[col_id])
+
+
+# Mouth shapes suggested for a dialogue phoneme (Preston Blair's set), after
+# those the document already uses.
+COMMON_PHONEMES = ['A', 'E', 'I', 'O', 'U', 'M', 'F', 'L', 'W', 'rest']
+
+
+def show_dialogue_dialog(frame: int) -> None:
+    """Edit the <Dialogue phoneme="..."> of `frame`, or add one. A frame
+    without a <Frame> of its own (a hold) gets one restating the drawings
+    it's holding (see add_holding_frame_in_text()). Saved as one ordinary
+    (undoable) edit that keeps the document schema-valid; the grid updates
+    in place."""
+    import xml.etree.ElementTree as ET
+    text = _editor_text()
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return
+    frame_el = next((f for f in root.iter() if f.tag.split('}')[-1] == 'Frame' and f.get('number') == str(frame)), None)
+    dialogue_el = next((c for c in frame_el if c.tag.split('}')[-1] == 'Dialogue'), None) \
+        if frame_el is not None else None
+    old_phoneme = dialogue_el.get('phoneme', '') if dialogue_el is not None else ''
+    old_text = ' '.join((dialogue_el.text or '').split()) if dialogue_el is not None else ''
+    used = [el.get('phoneme') for el in root.iter() if el.tag.split('}')[-1] == 'Dialogue' and el.get('phoneme')]
+    suggestions = list(dict.fromkeys([*used, *COMMON_PHONEMES]))
+
+    def apply(phoneme: str, spoken: str, done: str) -> None:
+        new_text = _editor_text()
+        added_frame = False
+        if frame_el is None:
+            new_text = add_holding_frame_in_text(new_text, frame)
+            if new_text is None:
+                ui.notify(f'Frame {frame} has no drawings to hold, so it has no <Frame> to put dialogue in. '
+                          'Use Edit > Add Layer or Add Frame first.', color='warning')
+                return
+            added_frame = True
+        new_text = set_frame_dialogue_in_text(new_text, frame, phoneme, spoken)
+        if new_text is None:
+            ui.notify(f'Could not update the dialogue of frame {frame}', color='negative')
+            return
+        dlg.close()
+        sess = session()
+        sess.xsheet_current_frame = frame
+        sess.xsheet_refresh_in_place = True
+        try:
+            _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+        finally:
+            sess.xsheet_refresh_in_place = False
+        ui.notify(done + (f'; added <Frame number="{frame}">, holding the same drawings' if added_frame else ''),
+                  color='positive')
+
+    title = f'Dialogue at Frame {frame}' if dialogue_el is not None else f'New Dialogue at Frame {frame}'
+    with ui.dialog() as dlg, titled_card(title, classes='w-[480px] max-w-full', body_classes='gap-2'):
+        if frame_el is None:
+            ui.label(f'Frame {frame} is a hold. Save gives it a <Frame> that restates the drawings it holds.') \
+                .classes('text-caption text-grey')
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            phoneme_input = ui.input('Phoneme', value=old_phoneme, autocomplete=suggestions) \
+                .classes('w-32').props('dense autofocus')
+            spoken_input = ui.input('Text', value=old_text).classes('flex-grow').props('dense')
+        ui.label(f'Suggested phonemes: {", ".join(suggestions)}').classes('text-xs text-grey')
+
+        def save(_=None):
+            phoneme = (phoneme_input.value or '').strip()
+            spoken = ' '.join((spoken_input.value or '').split())
+            if spoken and not phoneme:
+                ui.notify('Dialogue needs a phoneme', color='warning')
+                return
+            if (phoneme, spoken) == (old_phoneme, old_text):
+                dlg.close()
+                return
+            if not phoneme:  # both cleared
+                if dialogue_el is None:
+                    dlg.close()
+                    return
+                apply('', '', f'Removed the dialogue of frame {frame}')
+                return
+            apply(phoneme, spoken, f'Dialogue of frame {frame} updated' if dialogue_el is not None
+                  else f'Added dialogue to frame {frame}')
+
+        for field in (phoneme_input, spoken_input):
+            field.on('keydown.enter', save)
+        with ui.row().classes('w-full items-center gap-2 mt-2'):
+            if dialogue_el is not None:
+                ui.button('Remove', on_click=lambda: apply('', '', f'Removed the dialogue of frame {frame}')) \
+                    .props('flat color=negative size=sm')
+            ui.space()
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Save', on_click=save).props('size=sm')
+    dlg.open()
 
 
 AUDIO_TRACK_TYPES = ['Dialogue', 'Music', 'Effects']
@@ -4336,7 +4510,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellClicked', handle_xsheet_row_clicked)  # rowClicked isn't forwarded
             sess.xsheet_grid.on('columnHeaderClicked', handle_xsheet_header_clicked)
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
-            sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio dialogs
+            sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
 
     # build initial tree from current editor value

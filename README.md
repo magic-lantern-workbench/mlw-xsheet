@@ -304,7 +304,14 @@ number="...">` outside that range). Columns, left to right:
   length, curve and note — leave a value blank to use its default); and the camera's name and
   projection. **Save** applies the changes as one ordinary edit (**Ctrl+Z** undoes it) that keeps
   the document valid against the schema and its formatting, and the grid updates in place.
-- **Dialogue** — that frame's `<Dialogue>` phoneme/spoken text, if any.
+- **Dialogue** — that frame's `<Dialogue>` phoneme/spoken text, if any. Double-click a frame's
+  Dialogue cell to edit it in the **Dialogue** dialog — Phoneme (suggesting those the document
+  already uses, then common mouth shapes) and Text — or, on a frame with none, to add it (**New
+  Dialogue**). **Remove** (or clearing both) deletes it. A frame with no `<Frame>` of its own (a
+  hold) gets one restating the drawings it holds, as when editing its notes. A collapsed run's row
+  stands for several frames, so expand it first. **Save** (or **Enter**) applies the change as one
+  ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against the schema, and the
+  grid updates in place.
 - **Audio** — `<AudioRef>` entries, the same span convention as Camera (`track [start-end]`
   on the starting frame, `X` through `endFrame`). Double-click a frame's Audio cell to edit the cue
   covering it in the **Audio Cue** dialog: the cue's track and start and end frames, and that
@@ -360,7 +367,8 @@ Laid out like a paper exposure sheet, one compact row per frame. Columns, left t
 - **Audio** — dialogue and music cues (`<AudioRef>` to tracks that aren't Effects):
   `track [start-end]` on the first frame and `X` through the cue. Double-click it to edit the cue
   and its track, as in the classic grid's Audio column (see [XSheet tab](#xsheet-tab)).
-- **Dialogue** — the `<Dialogue>` phoneme and text.
+- **Dialogue** — the `<Dialogue>` phoneme and text. Double-click it to edit or add it, as in the
+  classic grid's Dialogue column (see [XSheet tab](#xsheet-tab)).
 - **Sound FX** — cues on Effects tracks, in the same form, and edited the same way.
 - **Tech. Notes** — camera `<Keyframe>` notes and `<Review>` comments (with their status) on
   that frame.
