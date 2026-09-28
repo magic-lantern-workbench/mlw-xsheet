@@ -468,7 +468,7 @@ def show_preferences_dialog():
             with ui.tab_panel(xsheet_tab).classes('px-0 gap-2'):
                 ui.label('Style of the XSheet tab, used for documents you open from now on').classes('text-sm text-gray-500')
                 style_radio = ui.radio(XSHEET_STYLES, value=xsheet_style_pref())
-                ui.label('In the traditional style, click a heading with a pencil to rename that column.') \
+                ui.label('Click a heading with a pencil to rename that column.') \
                     .classes('text-xs text-gray-500')
             with ui.tab_panel(report_tab).classes('px-0 gap-2'):
                 ui.label('Sections included by XSheet > Generate Report (for ExposureSheet documents). '
