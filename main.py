@@ -170,10 +170,6 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
-#   'xsheet_column_names': the user's own headings for the traditional
-#                     sheet's Sound FX and Tech. Notes columns, by column id
-#                     ('soundfx', 'technotes'). Layer columns are renamed in
-#                     the document itself instead.
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
@@ -229,20 +225,6 @@ def report_include_raw() -> bool:
 def set_report_options(sections: list[str], include_raw: bool) -> None:
     user_storage()['report_sections'] = [name for name in export_pdf.REPORT_SECTIONS if name in sections]
     user_storage()['report_include_raw'] = bool(include_raw)
-
-
-def xsheet_column_name(col_id: str, default: str) -> str:
-    return user_storage().get('xsheet_column_names', {}).get(col_id) or default
-
-
-def set_xsheet_column_name(col_id: str, name: str | None) -> None:
-    """Save the user's heading for a renamable column; None or blank restores the default."""
-    names = dict(user_storage().get('xsheet_column_names', {}))
-    if name and name.strip():
-        names[col_id] = name.strip()
-    else:
-        names.pop(col_id, None)
-    user_storage()['xsheet_column_names'] = names
 
 
 def recent_files_limit() -> int:
@@ -2198,14 +2180,12 @@ NOTES_EDITING = {
     'headerTooltip': "Double-click a frame's cell to edit its notes",
 }
 
-# Traditional sheet columns whose headings the user can rename (pencil icon).
-RENAMABLE_XSHEET_COLUMNS = {'soundfx': 'Sound FX', 'technotes': 'Tech. Notes'}
-
-
 def _xsheet_column_default(col_id: str) -> str | None:
+    """The layer a layer column's pencil heading renames (see
+    handle_xsheet_header_clicked()); None for any other column."""
     if col_id.startswith('layer:'):
         return col_id[len('layer:'):]
-    return RENAMABLE_XSHEET_COLUMNS.get(col_id)
+    return None
 
 
 def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]) -> None:
@@ -2217,14 +2197,11 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
     second, and the selected frame is highlighted in both Fr columns."""
     grid.classes(add='mlw-xsheet-traditional')
 
-    def renamable(field: str, col_id: str, width: int, **extra) -> dict:
-        is_layer = col_id.startswith('layer:')
-        # a layer column shows the layer's own name from the document;
-        # renaming it renames the layer (see handle_xsheet_header_clicked())
-        name = _xsheet_column_default(col_id) if is_layer else xsheet_column_name(col_id, _xsheet_column_default(col_id))
-        return {'field': field, 'colId': col_id, 'width': width, 'headerName': f'{name} ✏️',
-                'headerTooltip': 'Click to rename this layer in the document' if is_layer else 'Click to rename this column',
-                **extra}
+    def layer_col(layer_id: str) -> dict:
+        # headed with the layer's own name from the document; its pencil
+        # renames the layer (see handle_xsheet_header_clicked())
+        return {'field': layer_id, 'colId': f'layer:{layer_id}', 'width': 115, 'headerName': f'{layer_id} ✏️',
+                'headerTooltip': 'Click to rename this layer in the document', **centered}
 
     def frame_col(col_id: str) -> dict:
         return {'field': 'Frame', 'colId': col_id, 'headerName': 'Fr', 'width': 64,
@@ -2243,9 +2220,9 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
         first_frame_col,
         {'field': 'AudioTrack', 'colId': 'audio', 'headerName': 'Audio', 'width': 160, **centered},
         {'field': 'Dialogue', 'colId': 'dialogue', 'headerName': 'Dialogue', 'width': 190},
-        renamable('SoundFX', 'soundfx', 115, **centered),
-        renamable('TechNotes', 'technotes', 160, **wrapped),
-        *(renamable(lid, f'layer:{lid}', 115, **centered) for lid in layer_ids),
+        {'field': 'SoundFX', 'colId': 'soundfx', 'headerName': 'Sound FX', 'width': 115, **centered},
+        {'field': 'TechNotes', 'colId': 'technotes', 'headerName': 'Tech. Notes', 'width': 160, **wrapped},
+        *(layer_col(lid) for lid in layer_ids),
         frame_col('fr_right'),
         {'field': 'Camera', 'colId': 'camera', 'headerName': 'Camera Moves', 'minWidth': 180, 'flex': 1, **centered},
     ]
@@ -3218,36 +3195,12 @@ def handle_xsheet_row_clicked(e):
 
 
 def handle_xsheet_header_clicked(e):
-    """Clicking a pencil heading: a layer column (in either style) renames the
-    layer in the document; Sound FX / Tech. Notes (traditional style) rename
-    that column's heading for this user."""
-    sess = session()
+    """Clicking a layer column's pencil heading (in either style) renames
+    the layer in the document."""
     col_id = (e.args or {}).get('colId') or ''
-    default = _xsheet_column_default(col_id)
-    if default is None:
-        return
-    if col_id.startswith('layer:'):  # both styles: rename the layer in the document
-        _prompt_rename_layer(default)
-        return
-    if sess.xsheet_style != 'traditional':
-        return
-    with ui.dialog() as dlg, titled_card('Rename Column', classes='w-[340px] max-w-full', body_classes='gap-2'):
-        ui.label(f'Default heading: {default}').classes('text-caption text-grey')
-        name_input = ui.input('Column heading', value=xsheet_column_name(col_id, default)).classes('w-full') \
-            .props('autofocus')
-
-        def save(_=None, name=None):
-            set_xsheet_column_name(col_id, name_input.value if name is None else name)
-            dlg.close()
-            rebuild_xsheet_from_current()
-
-        name_input.on('keydown.enter', save)
-        with ui.row().classes('w-full items-center justify-between'):
-            ui.button('Reset to default', on_click=lambda: save(name='')).props('flat size=sm')
-            with ui.row().classes('gap-2'):
-                ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
-                ui.button('Save', on_click=save).props('size=sm')
-    dlg.open()
+    layer = _xsheet_column_default(col_id)
+    if layer is not None:
+        _prompt_rename_layer(layer)
 
 
 # Edit > Add Layer: the suggested name for a new layer ("New Layer 2", ...
@@ -4155,10 +4108,9 @@ def export_xsheet():
         if not files:
             return
         dest = Path(files[0])
-        headings = {key: xsheet_column_name(key, default) for key, default in RENAMABLE_XSHEET_COLUMNS.items()}
         try:
             pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text,
-                                                       style=style, headings=headings)
+                                                       style=style)
         except Exception as exc:
             ui.notify(f'XSheet PDF export failed: {exc}', color='negative')
             return

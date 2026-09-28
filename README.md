@@ -218,7 +218,7 @@ you can keep working in the editor while it's open.
 |---|---|
 | Collapse Frames | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once. Like the individual arrows, it updates the grid in place without scrolling. |
 | Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. Both items act on the grid, so they're disabled while the XML tab is showing. |
-| Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). Both styles have a heavier rule after each second, like the view; the traditional layout also matches the view's wrapped Action/Description and Tech. Notes, alternating shading, and your own Sound FX / Tech. Notes headings. Every frame is printed (collapsed runs are expanded). |
+| Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). Both styles have a heavier rule after each second, like the view; the traditional layout also matches the view's wrapped Action/Description and Tech. Notes, and alternating shading. Every frame is printed (collapsed runs are expanded). |
 | Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
 Both PDFs show the export date and a UTC creation timestamp under the title on page 1.
@@ -385,15 +385,12 @@ share which runs are collapsed.
 Long text in Action/Description and Tech. Notes wraps onto more lines, and that frame's row
 grows to fit. Rows alternate shading, a heavier rule marks the end of each second (every
 `FrameRate` frames),
-and the selected frame is shown in green in both Fr columns (click a row to move it). Headings
-with a pencil can be renamed by clicking them:
-
-- **Layer columns** rename the layer in the document itself: its `id` on every `<Layer>`, and
-  `xsheetLayer` on any OTIO `<TrackMap>` that refers to it. The change is an ordinary edit (the
-  file shows as modified, and **Ctrl+Z** undoes it). A blank name, a name another layer already
-  uses, and names containing `"` `'` `<` `>` or `&` are refused.
-- **Sound FX** and **Tech. Notes** are just headings: your names are remembered per user, and
-  **Reset to default** restores the original.
+and the selected frame is shown in green in both Fr columns (click a row to move it). The
+**layer** headings have a pencil: click one to rename the layer in the document itself — its `id`
+on every `<Layer>`, and `xsheetLayer` on any OTIO `<TrackMap>` that refers to it. The change is an
+ordinary edit (the file shows as modified, and **Ctrl+Z** undoes it). A blank name, a name another
+layer already uses, and names containing `"` `'` `<` `>` or `&` are refused. The other headings,
+**Sound FX** and **Tech. Notes** included, are fixed.
 
 **XSheet > Export XSheet** prints this layout when it's the style you're viewing.
 

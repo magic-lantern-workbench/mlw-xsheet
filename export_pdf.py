@@ -467,7 +467,7 @@ def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: s
 
 def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
                         title: str = 'Untitled', source_text: str | None = None,
-                        style: str = 'classic', headings: dict[str, str] | None = None) -> bytes:
+                        style: str = 'classic') -> bytes:
     """Render the Exposure Sheet grid (as already computed by main.py's
     parse_exposure_sheet()) as a paginated, landscape PDF, in either XSheet
     style -- the same shape as the XSheet tab's on-screen grid, including
@@ -478,9 +478,7 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
     style: 'classic' (Frame, one column per layer, Camera, Dialogue, Audio,
     Notes) or 'traditional' (Action/Description, Fr, Audio, Dialogue,
     Sound FX, Tech. Notes, the layers, Fr, Camera Moves, with alternating
-    shading). Both have a heavier rule after each second. headings: the user's own
-    names for the traditional Sound FX / Tech. Notes columns ('soundfx',
-    'technotes').
+    shading). Both have a heavier rule after each second.
 
     `source_text` (the same raw document export_xsheet() parsed to build
     layer_ids/rows) is used, best-effort, to show the document's
@@ -506,14 +504,13 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
     _write_grid_header(pdf, root, layer_ids, rows)
 
     if style == 'traditional':
-        headings = headings or {}
         columns = [
             {'key': 'Notes', 'header': 'Action/Description', 'weight': 2.4, 'wrap': True},
             {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
             {'key': 'AudioTrack', 'header': 'Audio', 'weight': 1.0, 'align': 'C'},
             {'key': 'Dialogue', 'header': 'Dialogue', 'weight': 1.3, 'wrap': True},
-            {'key': 'SoundFX', 'header': headings.get('soundfx', 'Sound FX'), 'weight': 0.9, 'align': 'C'},
-            {'key': 'TechNotes', 'header': headings.get('technotes', 'Tech. Notes'), 'weight': 1.5, 'wrap': True},
+            {'key': 'SoundFX', 'header': 'Sound FX', 'weight': 0.9, 'align': 'C'},
+            {'key': 'TechNotes', 'header': 'Tech. Notes', 'weight': 1.5, 'wrap': True},
             *({'key': lid, 'header': lid, 'weight': 0.8, 'align': 'C'} for lid in layer_ids),
             {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
             {'key': 'Camera', 'header': 'Camera Moves', 'weight': 1.1, 'align': 'C'},
