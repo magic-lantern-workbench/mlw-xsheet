@@ -909,7 +909,8 @@ REVIEW_STATUS_COLORS = {'Approved': 'positive', 'NeedsFix': 'negative', 'Pending
 
 def read_reviews(text: str) -> list[dict] | None:
     """The document's <Review> entries (id, frame, reviewer, status and
-    comment), in frame order; None if the text isn't well-formed XML."""
+    comment, and index: their order in the document), in frame order; None
+    if the text isn't well-formed XML."""
     import xml.etree.ElementTree as ET
     try:
         root = ET.fromstring(text)
@@ -921,10 +922,128 @@ def read_reviews(text: str) -> list[dict] | None:
             continue
         comment = next((c for c in el if c.tag.split('}')[-1] == 'Comment'), None)
         frame = el.get('frame', '')
-        reviews.append({'id': el.get('id', ''), 'frame': int(frame) if frame.isdigit() else frame,
+        reviews.append({'index': len(reviews), 'id': el.get('id', ''),
+                        'frame': int(frame) if frame.isdigit() else frame,
                         'reviewer': el.get('reviewer', ''), 'status': el.get('status', ''),
                         'comment': ' '.join((comment.text or '').split()) if comment is not None else ''})
     return sorted(reviews, key=lambda r: (not isinstance(r['frame'], int), r['frame'] if isinstance(r['frame'], int) else 0))
+
+
+REVIEW_NAMESPACE = 'http://schemas.animation.org/xsheet/review'
+REVIEW_STATUSES = ['Pending', 'NeedsFix', 'Approved']
+
+
+def _review_spans(masked: str) -> list[tuple[int, int, int, str]]:
+    """(start of <Review>, end of its start tag, end of </Review>, prefix)
+    for each <Review> in comment-masked text, in document order."""
+    import re
+    spans = []
+    for m in re.finditer(r'<((?:[\w.-]+:)?)Review(?=[\s/>])[^<>]*?(/?)>', masked):
+        if m.group(2):
+            spans.append((m.start(), m.end(), m.end(), m.group(1)))
+            continue
+        end = re.compile(r'</' + re.escape(m.group(1)) + r'Review\s*>').search(masked, m.end())
+        spans.append((m.start(), m.end(), end.end() if end else m.end(), m.group(1)))
+    return spans
+
+
+def _remove_block(text: str, start: int, end: int) -> str:
+    """Remove text[start:end] -- with its line, when nothing else is on it,
+    and a blank line, when that would leave two in a row."""
+    import re
+    line_start = text.rfind('\n', 0, start)
+    if not text[line_start + 1:start].strip():
+        start = line_start
+    if re.match(r'\n[ \t]*\n', text[end:]) and re.search(r'\n[ \t]*$', text[:start]):
+        start = text.rfind('\n', 0, start)
+    return text[:start] + text[end:]
+
+
+def update_review_in_text(text: str, index: int, attrs: dict[str, str], comment: str | None) -> str | None:
+    """Set attributes of the index-th <Review> and (unless None) its
+    <Comment>, keeping the element's layout. None if it can't be found."""
+    import re
+    from xml.sax.saxutils import escape
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    spans = _review_spans(masked)
+    if index >= len(spans):
+        return None
+    start, tag_end, end, p = spans[index]
+    if comment is not None:
+        c = re.compile(r'<' + re.escape(p) + r'Comment(\s[^>]*)?(/>|>(.*?)</' + re.escape(p) + r'Comment\s*>)', re.S) \
+            .search(masked, tag_end, end)
+        if c and comment and c.group(3) and c.group(3).strip():
+            inner = text[c.start(3):c.end(3)]
+            lead, trail = inner[:len(inner) - len(inner.lstrip())], inner[len(inner.rstrip()):]
+            text = text[:c.start(3)] + lead + escape(comment) + trail + text[c.end(3):]
+        elif c:
+            text = text[:c.start()] + f'<{p}Comment>{escape(comment)}</{p}Comment>' + text[c.end():]
+        else:
+            return None
+    if attrs:
+        text = text[:start] + _set_tag_attrs(text[start:tag_end], attrs) + text[tag_end:]
+    return text
+
+
+def add_review_in_text(text: str, attrs: dict[str, str], comment: str) -> str | None:
+    """Add a <Review> (attributes in the given order) with its <Comment> as
+    the last review of <Reviews>, matching the others' indentation and
+    blank-line spacing. A document without <Reviews> gets one after
+    <Timeline>, where the schema puts it (declaring the review namespace on
+    it if the document doesn't). None if there's nowhere to put it."""
+    import re
+    from xml.sax.saxutils import escape
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    attr_text = ' '.join(f'{k}="{escape(v, {chr(34): "&quot;"})}"' for k, v in attrs.items())
+
+    def element(p: str, indent: str) -> str:
+        return (f'<{p}Review {attr_text}>\n{indent}    <{p}Comment>{escape(comment)}</{p}Comment>\n'
+                f'{indent}</{p}Review>')
+    block = re.search(r'<((?:[\w.-]+:)?)Reviews(?=[\s/>])[^<>]*>', masked)
+    if block:
+        p = block.group(1)
+        block_end = re.compile(r'</' + re.escape(p) + r'Reviews\s*>').search(masked, block.end())
+        if not block_end:
+            return None
+        spans = _review_spans(masked[:block_end.start()])
+        line_start = text.rfind('\n', 0, block_end.start()) + 1
+        if spans:
+            first = spans[0][0]
+            indent = text[text.rfind('\n', 0, first) + 1:first]
+        else:
+            indent = text[line_start:block_end.start()] + '    '
+        blank = text[:line_start].rstrip(' \t').endswith('\n\n')
+        return text[:line_start] + indent + element(p, indent) + '\n' + ('\n' if blank else '') + text[line_start:]
+    timeline = re.search(r'<((?:[\w.-]+:)?)Timeline(?=[\s/>])', masked)
+    timeline_end = re.compile(r'</' + re.escape(timeline.group(1)) + r'Timeline\s*>').search(masked, timeline.end()) \
+        if timeline else None
+    if not timeline_end:
+        return None
+    indent = text[text.rfind('\n', 0, timeline.start()) + 1:timeline.start()]
+    indent = indent if not indent.strip() else ''
+    declared = re.search(r'xmlns:([\w.-]+)\s*=\s*["\']' + re.escape(REVIEW_NAMESPACE) + r'["\']', text)
+    p = declared.group(1) + ':' if declared else ''
+    open_tag = f'<{p}Reviews>' if declared else f'<Reviews xmlns="{REVIEW_NAMESPACE}">'
+    blank = '\n' if re.match(r'\n[ \t]*\n', text[timeline_end.end():]) else ''
+    return (text[:timeline_end.end()] + f'\n{blank}{indent}{open_tag}\n{indent}    {element(p, indent + "    ")}'
+            f'\n{indent}</{p}Reviews>' + text[timeline_end.end():])
+
+
+def delete_review_in_text(text: str, index: int) -> str | None:
+    """Remove the index-th <Review>; <Reviews> too when it was the last one
+    (the schema doesn't allow an empty <Reviews>). None if it can't be found."""
+    import re
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    spans = _review_spans(masked)
+    if index >= len(spans):
+        return None
+    start, _tag_end, end, _p = spans[index]
+    block = next((m for m in re.finditer(r'<((?:[\w.-]+:)?)Reviews(?=[\s/>])[^<>]*>', masked) if m.start() < start), None)
+    if block and len([s for s in spans if s[0] > block.start()]) == 1:
+        block_end = re.compile(r'</' + re.escape(block.group(1)) + r'Reviews\s*>').search(masked, block.end())
+        if block_end:
+            return _remove_block(text, block.start(), block_end.end())
+    return _remove_block(text, start, end)
 
 
 async def go_to_review(review_id: str, frame) -> None:
@@ -957,45 +1076,155 @@ async def go_to_review(review_id: str, frame) -> None:
 
 
 def show_reviews_dialog() -> None:
-    """About > Reviews: list the open document's <Review> entries."""
-    text = _editor_text()
-    reviews = read_reviews(text) if text.strip() else []
-    with ui.dialog() as dlg, titled_card('Reviews', classes='w-[860px] max-w-full', body_classes='gap-2'):
-        if reviews is None:
-            ui.label('The document is not well-formed XML, so its reviews can\'t be read.')
-        elif not reviews:
-            ui.label('No document is open.' if not text.strip() else 'This document has no reviews.')
-        else:
-            counts = {status: sum(1 for r in reviews if r['status'] == status) for status in REVIEW_STATUS_COLORS}
-            summary = ', '.join(f'{n} {status}' for status, n in counts.items() if n)
-            ui.label(f'{len(reviews)} review{"s" if len(reviews) != 1 else ""}' + (f': {summary}' if summary else '')
-                     + '. Click a review to go to its frame (on the XML tab, to its <Review> element).') \
-                .classes('text-sm text-grey-8')
-            columns = [
-                {'name': 'id', 'label': 'ID', 'field': 'id', 'align': 'left', 'sortable': True},
-                {'name': 'frame', 'label': 'Frame', 'field': 'frame', 'align': 'right', 'sortable': True},
-                {'name': 'reviewer', 'label': 'Reviewer', 'field': 'reviewer', 'align': 'left', 'sortable': True},
-                {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'left', 'sortable': True},
-                {'name': 'comment', 'label': 'Comment', 'field': 'comment', 'align': 'left',
-                 'style': 'white-space: normal; min-width: 280px'},
-            ]
-            table = ui.table(columns=columns, rows=reviews, row_key='id', pagination=0) \
-                .classes('w-full mlw-reviews-table').props('dense flat bordered wrap-cells hide-bottom')
-            # a JS object in single quotes, since it sits in a double-quoted attribute
-            colors = '{' + ', '.join(f"'{k}': '{v}'" for k, v in REVIEW_STATUS_COLORS.items()) + '}'
-            table.add_slot('body-cell-status', f"""
-                <q-td :props="props">
-                    <q-badge :color="({colors})[props.value] || 'grey'" :label="props.value" />
-                </q-td>
-            """)
+    """About > Reviews: list the open document's <Review> entries; click
+    one to go to it, ✏️ to edit it, or Add Review for a new one."""
+    import xml.etree.ElementTree as ET
+    with ui.dialog() as dlg, titled_card('Reviews', classes='w-[900px] max-w-full', body_classes='gap-2'):
+        @ui.refreshable
+        def content() -> None:
+            text = _editor_text()
+            reviews = read_reviews(text) if text.strip() else []
+            try:
+                is_sheet = bool(text.strip()) and ET.fromstring(text).tag.split('}')[-1] == 'ExposureSheet'
+            except ET.ParseError:
+                is_sheet = False
+            if reviews is None:
+                ui.label('The document is not well-formed XML, so its reviews can\'t be read.')
+            elif not reviews:
+                ui.label('No document is open.' if not text.strip() else 'This document has no reviews.')
+            else:
+                counts = {status: sum(1 for r in reviews if r['status'] == status) for status in REVIEW_STATUS_COLORS}
+                summary = ', '.join(f'{n} {status}' for status, n in counts.items() if n)
+                ui.label(f'{len(reviews)} review{"s" if len(reviews) != 1 else ""}' + (f': {summary}' if summary else '')
+                         + '. Click a review to go to its frame (on the XML tab, to its <Review> element), '
+                           'or ✏️ to edit it.') \
+                    .classes('text-sm text-grey-8')
+                columns = [
+                    {'name': 'id', 'label': 'ID', 'field': 'id', 'align': 'left', 'sortable': True},
+                    {'name': 'frame', 'label': 'Frame', 'field': 'frame', 'align': 'right', 'sortable': True},
+                    {'name': 'reviewer', 'label': 'Reviewer', 'field': 'reviewer', 'align': 'left', 'sortable': True},
+                    {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'left', 'sortable': True},
+                    {'name': 'comment', 'label': 'Comment', 'field': 'comment', 'align': 'left',
+                     'style': 'white-space: normal; min-width: 280px'},
+                    {'name': 'edit', 'label': '', 'field': 'id', 'align': 'center'},
+                ]
+                table = ui.table(columns=columns, rows=reviews, row_key='id', pagination=0) \
+                    .classes('w-full mlw-reviews-table').props('dense flat bordered wrap-cells hide-bottom')
+                # a JS object in single quotes, since it sits in a double-quoted attribute
+                colors = '{' + ', '.join(f"'{k}': '{v}'" for k, v in REVIEW_STATUS_COLORS.items()) + '}'
+                table.add_slot('body-cell-status', f"""
+                    <q-td :props="props">
+                        <q-badge :color="({colors})[props.value] || 'grey'" :label="props.value" />
+                    </q-td>
+                """)
+                table.add_slot('body-cell-edit', """
+                    <q-td :props="props">
+                        <q-btn flat dense round size="sm" icon="edit" title="Edit this review"
+                               @click.stop="() => $parent.$emit('edit_review', props.row)" />
+                    </q-td>
+                """)
 
-            async def go_to(e):
-                row = e.args[1] if isinstance(e.args, list) and len(e.args) > 1 else {}
+                async def go_to(e):
+                    row = e.args[1] if isinstance(e.args, list) and len(e.args) > 1 else {}
+                    dlg.close()
+                    await go_to_review(row.get('id', ''), row.get('frame'))
+                table.on('rowClick', go_to)
+                table.on('edit_review', lambda e: show_review_editor(e.args, content.refresh))
+            with ui.row().classes('w-full items-center mt-2'):
+                if is_sheet and reviews is not None:
+                    ui.button('Add Review', icon='add', on_click=lambda: show_review_editor(None, content.refresh)) \
+                        .props('outline size=sm')
+                ui.space()
+                ui.button('Close', on_click=dlg.close).props('size=sm')
+        content()
+    dlg.open()
+
+
+def show_review_editor(review: dict | None, on_saved) -> None:
+    """Edit a review (a row from read_reviews()), or add one (review None),
+    with Delete for an existing one. Changes are one ordinary (undoable)
+    edit that keeps the document schema-valid; on_saved() then refreshes the
+    Reviews list."""
+    import re
+    import xml.etree.ElementTree as ET
+    text = _editor_text()
+    root = ET.fromstring(text)
+    # xs:ID values must be unique across the document: assets, audio tracks and reviews
+    taken = {el.get('id') for el in root.iter() if el.tag.split('}')[-1] in ('Asset', 'Track', 'Review') and el.get('id')}
+    if review is not None:
+        taken.discard(review['id'])
+    sess = session()
+    if review is None:
+        numbers = [int(m.group(1)) for rid in taken if (m := re.fullmatch(r'RV(\d+)', rid))]
+        new_id = f'RV{(max(numbers) + 1) if numbers else 1:03d}'
+        selected = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+        values = {'id': new_id, 'frame': int(selected.group()) if selected else 1,
+                  'reviewer': auth.current_username() or '', 'status': 'Pending', 'comment': ''}
+    else:
+        values = review
+
+    def apply(new_text: str | None, message: str) -> None:
+        if new_text is None:
+            ui.notify('Could not update the reviews in the document', color='negative')
+            return
+        dlg.close()
+        sess.xsheet_refresh_in_place = True
+        try:
+            _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+        finally:
+            sess.xsheet_refresh_in_place = False
+        on_saved()
+        ui.notify(message, color='positive')
+
+    title = f'Edit Review {review["id"]}' if review is not None else 'New Review'
+    with ui.dialog() as dlg, titled_card(title, classes='w-[520px] max-w-full', body_classes='gap-2'):
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            id_input = ui.input('ID', value=values['id']).classes('w-28').props('dense')
+            frame_input = ui.number('Frame', value=values['frame'] if isinstance(values['frame'], int) else None,
+                                    min=1, step=1, format='%d').classes('w-24').props('dense')
+            reviewer_input = ui.input('Reviewer', value=values['reviewer']).classes('flex-grow').props('dense')
+            status_input = ui.select(REVIEW_STATUSES, value=values['status'] if values['status'] in REVIEW_STATUSES
+                                     else 'Pending', label='Status').classes('w-32').props('dense')
+        comment_input = ui.textarea('Comment', value=values['comment']).classes('w-full') \
+            .props('dense autogrow autofocus')
+
+        def save(_=None):
+            new = {'id': (id_input.value or '').strip(), 'reviewer': ' '.join((reviewer_input.value or '').split()),
+                   'status': status_input.value}
+            frame = frame_input.value
+            comment = ' '.join((comment_input.value or '').split())
+            error = None
+            if not re.fullmatch(r'[A-Za-z_][\w.-]*', new['id']):
+                error = 'The ID must start with a letter or _, then letters, digits, _ . or -'
+            elif new['id'] in taken:
+                error = f'{new["id"]} is already used by another review, track or asset'
+            elif frame is None or float(frame) != int(frame) or int(frame) < 1:
+                error = 'The frame must be a whole number of 1 or more'
+            elif not new['reviewer']:
+                error = 'Please give the reviewer'
+            if error:
+                ui.notify(error, color='warning')
+                return
+            attrs = {'id': new['id'], 'frame': str(int(frame)), 'reviewer': new['reviewer'], 'status': new['status']}
+            if review is None:
+                apply(add_review_in_text(_editor_text(), attrs, comment), f'Added review {new["id"]}')
+                return
+            changes = {k: v for k, v in attrs.items() if v != str(review[k])}
+            if not changes and comment == review['comment']:
                 dlg.close()
-                await go_to_review(row.get('id', ''), row.get('frame'))
-            table.on('rowClick', go_to)
-        with ui.row().classes('w-full justify-end mt-2'):
-            ui.button('Close', on_click=dlg.close).props('size=sm')
+                return
+            apply(update_review_in_text(_editor_text(), review['index'], changes,
+                                        comment if comment != review['comment'] else None),
+                  f'Review {new["id"]} updated')
+
+        with ui.row().classes('w-full items-center gap-2 mt-2'):
+            if review is not None:
+                ui.button('Delete', on_click=lambda: apply(delete_review_in_text(_editor_text(), review['index']),
+                                                           f'Deleted review {review["id"]}')) \
+                    .props('flat color=negative size=sm')
+            ui.space()
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Save', on_click=save).props('size=sm')
     dlg.open()
 
 
