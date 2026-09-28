@@ -52,9 +52,9 @@ tool (or in OpenToonz) can migrate between the two.
 - **File management** — Open/Save/Save As with a local file browser, an unsaved-changes prompt
   on Close, and a modified indicator (`*`) in the filename label.
 
-## How to use the UI
+## How to use Magic Lantern XSheet Viewer
 
-### Running it
+### Running Docker Container
 
 With Docker (recommended):
 
@@ -70,20 +70,6 @@ python main.py
 ```
 
 Either way, open the app at `http://localhost:8080`.
-
-### Logging in
-
-The app asks you to log in first. For now there's a single account for the whole server:
-user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).
-Change it before exposing the server to anyone else. The password is stored only as a salted
-hash, in `NICEGUI_STORAGE_PATH`.
-
-- Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
-  opens a menu with **Logout**, which logs them all out and returns to the login page.
-- After 30 minutes without keyboard, mouse or touch activity in any of the browser's tabs,
-  you're logged out and the login page says why. The time-out is also set in Preferences. Your
-  unsaved changes are kept as a draft and come back when you log in again.
-- A wrong password is rejected after a short delay, to slow down guessing.
 
 `docker compose up` is the **development** setup: it merges `compose.override.yaml`, which
 builds the `dev` image target, bind-mounts the working tree, and auto-reloads on edits.
@@ -137,6 +123,20 @@ To put the example documents in the production data volume:
 docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
 docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
 ```
+
+### Logging in
+
+The app asks you to log in first. For now there's a single account for the whole server:
+user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).
+Change it before exposing the server to anyone else. The password is stored only as a salted
+hash, in `NICEGUI_STORAGE_PATH`.
+
+- Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
+  opens a menu with **Logout**, which logs them all out and returns to the login page.
+- After 30 minutes without keyboard, mouse or touch activity in any of the browser's tabs,
+  you're logged out and the login page says why. The time-out is also set in Preferences. Your
+  unsaved changes are kept as a draft and come back when you log in again.
+- A wrong password is rejected after a short delay, to slow down guessing.
 
 ### File access
 
