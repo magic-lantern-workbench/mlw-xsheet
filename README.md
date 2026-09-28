@@ -416,7 +416,7 @@ the combined chord isn't claimed by either.)
 | Item | What it does |
 |---|---|
 | About | Show the app name, author, version, and a link to more information, with the license in a scrollable tab. |
-| Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. |
+| Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. Click a review to go to it: on the XSheet tab, the grid scrolls to its frame and selects it (the run's row, if the frame is in a collapsed run); on the XML tab, the editor scrolls to its `<Review>` element and the Hierarchy tree selects it. |
 
 ## Project layout
 

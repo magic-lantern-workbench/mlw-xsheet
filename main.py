@@ -927,6 +927,35 @@ def read_reviews(text: str) -> list[dict] | None:
     return sorted(reviews, key=lambda r: (not isinstance(r['frame'], int), r['frame'] if isinstance(r['frame'], int) else 0))
 
 
+async def go_to_review(review_id: str, frame) -> None:
+    """Show a review: on the XML tab, its <Review> element in the editor and
+    the Hierarchy tree; otherwise, its frame in the XSheet grid (the run's
+    row, if the frame is in a collapsed run), selected."""
+    import re
+    sess = session()
+    text = _editor_text()
+    if xml_tab_active():
+        masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+        m = re.search(r'<(?:[\w.-]+:)?Review\s[^>]*?\bid\s*=\s*["\']' + re.escape(review_id) + r'["\']', masked)
+        if m:
+            reveal_in_editor_and_tree(m.start())
+        return
+    grid = sess.xsheet_grid
+    if grid is None or not isinstance(frame, int):
+        return
+    layer_ids, rows, _message = parse_exposure_sheet(text)
+    display = _xsheet_display_rows(sess.xsheet_style, layer_ids or [], rows or [])
+    index = next((i for i, row in enumerate(display)
+                  if row['Frame'] == frame or (row.get('_range_start') is not None and '–' in str(row['Frame'])
+                                               and row['_range_start'] <= frame <= row['_range_end'])), None)
+    if index is None:
+        ui.notify(f'Frame {frame} is not in the sheet', color='info')
+        return
+    sess.xsheet_current_frame = display[index]['Frame']
+    grid.run_grid_method('ensureIndexVisible', index, 'middle')
+    grid.run_row_method(str(display[index]['Frame']), 'setSelected', True)
+
+
 def show_reviews_dialog() -> None:
     """About > Reviews: list the open document's <Review> entries."""
     text = _editor_text()
@@ -939,7 +968,8 @@ def show_reviews_dialog() -> None:
         else:
             counts = {status: sum(1 for r in reviews if r['status'] == status) for status in REVIEW_STATUS_COLORS}
             summary = ', '.join(f'{n} {status}' for status, n in counts.items() if n)
-            ui.label(f'{len(reviews)} review{"s" if len(reviews) != 1 else ""}' + (f': {summary}' if summary else '')) \
+            ui.label(f'{len(reviews)} review{"s" if len(reviews) != 1 else ""}' + (f': {summary}' if summary else '')
+                     + '. Click a review to go to its frame (on the XML tab, to its <Review> element).') \
                 .classes('text-sm text-grey-8')
             columns = [
                 {'name': 'id', 'label': 'ID', 'field': 'id', 'align': 'left', 'sortable': True},
@@ -950,7 +980,7 @@ def show_reviews_dialog() -> None:
                  'style': 'white-space: normal; min-width: 280px'},
             ]
             table = ui.table(columns=columns, rows=reviews, row_key='id', pagination=0) \
-                .classes('w-full').props('dense flat bordered wrap-cells hide-bottom')
+                .classes('w-full mlw-reviews-table').props('dense flat bordered wrap-cells hide-bottom')
             # a JS object in single quotes, since it sits in a double-quoted attribute
             colors = '{' + ', '.join(f"'{k}': '{v}'" for k, v in REVIEW_STATUS_COLORS.items()) + '}'
             table.add_slot('body-cell-status', f"""
@@ -958,6 +988,12 @@ def show_reviews_dialog() -> None:
                     <q-badge :color="({colors})[props.value] || 'grey'" :label="props.value" />
                 </q-td>
             """)
+
+            async def go_to(e):
+                row = e.args[1] if isinstance(e.args, list) and len(e.args) > 1 else {}
+                dlg.close()
+                await go_to_review(row.get('id', ''), row.get('frame'))
+            table.on('rowClick', go_to)
         with ui.row().classes('w-full justify-end mt-2'):
             ui.button('Close', on_click=dlg.close).props('size=sm')
     dlg.open()
@@ -4042,6 +4078,9 @@ def index():
     background-color: #f1f1f1;
     padding-left: 4px;   /* room for the icon plus a collapsed range like 100-120 */
     padding-right: 4px;
+}
+.mlw-reviews-table tbody tr {
+    cursor: pointer;   /* a review row goes to its frame / element (see show_reviews_dialog()) */
 }
 .mlw-production-value:hover {
     text-decoration: underline dotted;
