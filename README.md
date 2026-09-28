@@ -313,6 +313,12 @@ drawing (or cue) starts.
 - **Row shading** — rows are tinted in two alternating colors by "hold group": every row from
   one keyframe's Layer values to the next (including the blank hold rows in between) shares a
   tint, and each new group of distinct layer values flips to the other tint.
+- **Editing notes** — double-click a frame's **Notes** cell to edit it in a pop-up box; **Enter**
+  saves it to that frame's `<Notes>` and **Escape** cancels. It's an ordinary edit (the file shows
+  as modified, and **Ctrl+Z** undoes it), and the grid updates in place without scrolling. A frame
+  with no `<Frame>` of its own (a hold) gets one, restating the drawings it was holding, so the
+  sheet still shows the same thing. A collapsed run's row stands for several frames, so expand it
+  first.
 - **Seconds** — a heavier rule marks the end of each second (every `FrameRate` frames), as in
   the [traditional style](#traditional-style).
 - **Collapsing repeated runs** — a run of two or more consecutive rows with the same values in
@@ -330,7 +336,8 @@ drawing (or cue) starts.
 
 Laid out like a paper exposure sheet, one compact row per frame. Columns, left to right:
 
-- **Action/Description** — that frame's `<Notes>` text.
+- **Action/Description** — that frame's `<Notes>` text. Double-click it to edit, as in the
+  classic grid's Notes (see [XSheet tab](#xsheet-tab)).
 - **Fr** — the frame number (repeated before Camera Moves).
 - **Audio** — dialogue and music cues (`<AudioRef>` to tracks that aren't Effects):
   `track [start-end]` on the first frame and `X` through the cue.

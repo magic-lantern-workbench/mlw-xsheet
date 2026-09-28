@@ -126,6 +126,7 @@ class Session:
         # Frame highlighted in the traditional sheet's Fr columns; kept here
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
+        self.xsheet_refresh_in_place = False  # the next grid rebuild just replaces the rows (see edit_xsheet_notes())
         self.main_tabs = None  # the XSheet / XML tabs (see xml_tab_active())
 
         # This user's app.storage.user, captured while index() still has the
@@ -1808,6 +1809,12 @@ def rebuild_xsheet_from_current():
     if status is not None:
         status.set_text(message)
     _update_xsheet_production_info(text)
+    if sess.xsheet_refresh_in_place:
+        # an edit made in the grid itself: keep the grid (and its scroll
+        # position) and just replace its rows. (Setting the editor's text
+        # rebuilds more than once, so the flag is cleared by whoever set it.)
+        _refresh_xsheet_rows_in_place()
+        return
     if sess.xsheet_style == 'traditional':
         _build_traditional_xsheet(sess, grid, layer_ids or [], rows or [])
         return
@@ -1847,13 +1854,25 @@ def rebuild_xsheet_from_current():
         {'field': 'Camera', 'headerName': 'Camera', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
-        {'field': 'Notes', 'headerName': 'Notes', 'width': 220},
+        {'field': 'Notes', 'headerName': 'Notes', 'width': 220, **NOTES_EDITING},
     ]
     grid.options['columnDefs'] = column_defs
     grid.options['rowData'] = _xsheet_display_rows('classic', layer_ids or [], rows)
     grid.options[':onGridReady'] = f'(params) => {{ {_fit_pencil_headings_js(column_defs)} }}'
     grid.update()
 
+
+# The Notes column (Action/Description in the traditional style) of both
+# XSheet styles is editable: double-click a frame's cell to edit its <Notes>
+# in a pop-up box (see edit_xsheet_notes()). A collapsed run's row stands for
+# several frames (its Frame is a "start-end" string), so it isn't editable.
+NOTES_EDITING = {
+    ':editable': "(params) => typeof params.data.Frame === 'number'",
+    'cellEditor': 'agLargeTextCellEditor',
+    'cellEditorPopup': True,
+    'cellEditorParams': {'maxLength': 2000, 'rows': 5, 'cols': 50},
+    'headerTooltip': "Double-click a frame's cell to edit its notes",
+}
 
 # Traditional sheet columns whose headings the user can rename (pencil icon).
 RENAMABLE_XSHEET_COLUMNS = {'soundfx': 'Sound FX', 'technotes': 'Tech. Notes'}
@@ -1895,7 +1914,8 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
     # long notes wrap onto more lines, and their row grows to fit
     wrapped = {'wrapText': True, 'autoHeight': True, 'cellClass': 'mlw-trad-wrap'}
     column_defs = [
-        {'field': 'Notes', 'colId': 'action', 'headerName': 'Action/Description', 'width': 320, **wrapped},
+        {'field': 'Notes', 'colId': 'action', 'headerName': 'Action/Description', 'width': 320, **wrapped,
+         **NOTES_EDITING},
         first_frame_col,
         {'field': 'AudioTrack', 'colId': 'audio', 'headerName': 'Audio', 'width': 160, **centered},
         {'field': 'Dialogue', 'colId': 'dialogue', 'headerName': 'Dialogue', 'width': 190},
@@ -1936,7 +1956,7 @@ def _fit_pencil_headings_js(column_defs: list[dict]) -> str:
     and the pencil stay visible. Sized from the heading only, never narrower
     than the column's usual width, and not from the cells (Tech. Notes would
     otherwise grow to its longest comment). Used by both XSheet styles."""
-    fit = json.dumps({c['colId']: c['width'] for c in column_defs if c.get('headerTooltip')})
+    fit = json.dumps({c['colId']: c['width'] for c in column_defs if '✏️' in c.get('headerName', '')})
     return (
         f'const fit = {fit};'
         ' requestAnimationFrame(() => {'
@@ -1953,6 +1973,84 @@ def _fit_pencil_headings_js(column_defs: list[dict]) -> str:
         '  if (widths.length) params.api.setColumnWidths(widths);'
         ' });'
     )
+
+
+def set_frame_notes_in_text(text: str, frame_number: int, notes: str) -> str | None:
+    """Set the <Notes> of <Frame number="frame_number"> (an empty <Notes/>
+    when notes is blank), escaping it for XML. Works on the text, so
+    formatting and comments are kept. None if there's no such frame."""
+    import re
+    from xml.sax.saxutils import escape
+    frame = re.search(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(frame_number) + r'["\'][^>]*>', text)
+    if not frame:
+        return None
+    p = frame.group(1)
+    frame_end = re.compile(r'</' + re.escape(p) + r'Frame\s*>').search(text, frame.end())
+    if not frame_end:
+        return None
+    body = text[frame.end():frame_end.start()]
+    element = f'<{p}Notes>{escape(notes)}</{p}Notes>' if notes else f'<{p}Notes/>'
+    existing = re.compile(r'<' + re.escape(p) + r'Notes(\s[^>]*)?(/>|>(.*?)</' + re.escape(p) + r'Notes\s*>)', re.S).search(body)
+    if existing and notes and existing.group(3) and existing.group(3).strip():
+        # keep the element's layout (e.g. the text on its own indented line)
+        inner = existing.group(3)
+        lead, trail = inner[:len(inner) - len(inner.lstrip())], inner[len(inner.rstrip()):]
+        body = body[:existing.start(3)] + lead + escape(notes) + trail + body[existing.end(3):]
+    elif existing:
+        body = body[:existing.start()] + element + body[existing.end():]
+    else:  # <Notes> is required, but be forgiving: it goes last in the frame
+        body = body.rstrip(' \t') + element + '\n' + text[text.rfind('\n', 0, frame_end.start()) + 1:frame_end.start()]
+    return text[:frame.end()] + body + text[frame_end.start():]
+
+
+def edit_xsheet_notes(e) -> None:
+    """A frame's Notes (Action/Description) cell was edited in the XSheet
+    grid: write it to that frame's <Notes>, as an ordinary (undoable) edit.
+    A frame that has no <Frame> of its own (a hold) gets one, restating
+    the drawings it was holding, so the sheet still shows the same thing.
+    The grid is updated in place, so it keeps its scroll position."""
+    args = e.args or {}
+    if args.get('colId') not in ('Notes', 'action'):
+        return
+    sess = session()
+    data = args.get('data') or {}
+    frame = data.get('Frame')
+    notes = ' '.join(str(args.get('newValue') or '').split())  # shown on one line, as the sheet reads it
+    if not isinstance(frame, int) or notes == ' '.join(str(args.get('oldValue') or '').split()):
+        _refresh_xsheet_rows_in_place()  # show the stored value again
+        return
+    text = _editor_text()
+    new_text = set_frame_notes_in_text(text, frame, notes)
+    added_frame = False
+    if new_text is None:
+        import xml.etree.ElementTree as ET
+        layer_ids, _rows, _message = parse_exposure_sheet(text)
+        state = _frame_layer_state(ET.fromstring(text), layer_ids or [], frame)
+        layers = [state[lid] for lid in layer_ids or [] if lid in state]
+        if not layers:
+            ui.notify(f'Frame {frame} has no drawings to hold, so it has no <Frame> to put notes in. '
+                      'Use Edit > Add Layer or Add Frame first.', color='warning')
+            _refresh_xsheet_rows_in_place()
+            return
+        from xml.sax.saxutils import escape, quoteattr
+        new_text = _insert_frame_in_text(text, frame, lambda p: [
+            (1, f'<{p}Layers>'),
+            *((2, f'<{p}Layer ' + ' '.join(f'{k}={quoteattr(v)}' for k, v in a.items()) + '/>') for a in layers),
+            (1, f'</{p}Layers>'),
+            (1, f'<{p}Notes>{escape(notes)}</{p}Notes>' if notes else f'<{p}Notes/>')])
+        added_frame = new_text is not None
+    if new_text is None:
+        ui.notify(f'Could not update the notes of frame {frame}', color='negative')
+        _refresh_xsheet_rows_in_place()
+        return
+    sess.xsheet_current_frame = frame
+    sess.xsheet_refresh_in_place = True
+    try:
+        _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+    finally:
+        sess.xsheet_refresh_in_place = False
+    if added_frame:
+        ui.notify(f'Added <Frame number="{frame}"> for its notes, holding the same drawings', color='info')
 
 
 def handle_xsheet_run_toggle(e):
@@ -3634,6 +3732,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             # narrow per-column widths set above/in rebuild_xsheet_from_current().
             sess.xsheet_grid.on('cellClicked', handle_xsheet_row_clicked)  # rowClicked isn't forwarded
             sess.xsheet_grid.on('columnHeaderClicked', handle_xsheet_header_clicked)
+            sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
 
     # build initial tree from current editor value
