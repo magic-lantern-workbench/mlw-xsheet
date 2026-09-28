@@ -2003,6 +2003,101 @@ def set_frame_notes_in_text(text: str, frame_number: int, notes: str) -> str | N
     return text[:frame.end()] + body + text[frame_end.start():]
 
 
+def _set_tag_attrs(tag: str, changes: dict[str, str | None]) -> str:
+    """Set (or, for None, remove) attributes in one start tag's text, keeping
+    the rest of it as written. A new attribute goes after the last one, on
+    its own line when the tag already puts its attributes on separate lines."""
+    import re
+    from xml.sax.saxutils import escape
+
+    def quoteattr(value: str) -> str:  # always double quotes, like the rest of the file
+        return '"' + escape(value, {'"': '&quot;'}) + '"'
+    for name, value in changes.items():
+        m = re.search(r'(\s+)' + re.escape(name) + r'\s*=\s*("[^"]*"|\'[^\']*\')', tag)
+        if m and value is None:
+            tag = tag[:m.start()] + tag[m.end():]
+        elif m:
+            tag = tag[:m.start(2)] + quoteattr(value) + tag[m.end(2):]
+        elif value is not None:
+            end = len(tag) - (2 if tag.endswith('/>') else 1)
+            last = max(tag.rfind('"', 0, end), tag.rfind("'", 0, end))
+            pos = last + 1 if last != -1 else re.match(r'<[\w.:-]+', tag).end()
+            lines = re.findall(r'\n([ \t]*)[\w.:-]+\s*=', tag)
+            sep = '\n' + lines[-1] if lines else ' '
+            tag = tag[:pos] + f'{sep}{name}={quoteattr(value)}' + tag[pos:]
+    return tag
+
+
+def update_camera_in_text(text: str, camera: dict[str, str | None], move_index: int,
+                          move: dict[str, str | None], description: str | None,
+                          keyframes: dict[int, dict[str, str | None]]) -> str | None:
+    """Edit the top-level <Camera>: attributes of the element itself, of
+    its move_index-th <CameraMove> (and that move's <Description>, unless
+    description is None), and of the <Keyframe>s by index. Attribute values
+    of None are removed (so the schema default applies). Only what changes
+    is touched, so formatting and comments are kept. None if the elements
+    can't be found."""
+    import re
+    from xml.sax.saxutils import escape
+    # search a copy with the comments blanked out, so a commented-out
+    # element is never mistaken for a real one
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    cam = re.search(r'<((?:[\w.-]+:)?)Camera(?=[\s/>])[^<>]*>', masked)
+    if not cam:
+        return None
+    p = re.escape(cam.group(1))
+    cam_end = re.compile(r'</' + p + r'Camera\s*>').search(masked, cam.end())
+    if not cam_end:
+        return None
+    moves = list(re.compile(r'<' + p + r'CameraMove(?=[\s/>])[^<>]*>').finditer(masked, cam.end(), cam_end.start()))
+    keys = list(re.compile(r'<' + p + r'Keyframe(?=[\s/>])[^<>]*>').finditer(masked, cam.end(), cam_end.start()))
+    if move_index >= len(moves) or any(i >= len(keys) for i in keyframes):
+        return None
+    edits = []  # (start, end, replacement), applied from the end of the text back
+    if camera:
+        edits.append((cam.start(), cam.end(), _set_tag_attrs(text[cam.start():cam.end()], camera)))
+    mv = moves[move_index]
+    if move:
+        edits.append((mv.start(), mv.end(), _set_tag_attrs(text[mv.start():mv.end()], move)))
+    if description is not None:
+        prefix = cam.group(1)
+        self_closing = masked[mv.start():mv.end()].endswith('/>')
+        mv_end = None if self_closing else re.compile(r'</' + p + r'CameraMove\s*>').search(masked, mv.end())
+        desc = re.compile(r'<' + p + r'Description(\s[^>]*)?(/>|>(.*?)</' + p + r'Description\s*>)', re.S) \
+            .search(masked, mv.end(), mv_end.start()) if mv_end else None
+        if desc and description and desc.group(3) and desc.group(3).strip():
+            inner = text[desc.start(3):desc.end(3)]  # keep its layout
+            lead, trail = inner[:len(inner) - len(inner.lstrip())], inner[len(inner.rstrip()):]
+            edits.append((desc.start(3), desc.end(3), lead + escape(description) + trail))
+        elif desc and description:
+            edits.append((desc.start(), desc.end(), f'<{prefix}Description>{escape(description)}</{prefix}Description>'))
+        elif desc:  # cleared: drop the element and its line (and a blank line, if it leaves two)
+            line_start = text.rfind('\n', 0, desc.start())
+            start = line_start if not text[line_start + 1:desc.start()].strip() else desc.start()
+            if re.match(r'\n[ \t]*\n', text[desc.end():]) and re.search(r'\n[ \t]*$', text[:start]):
+                start = text.rfind('\n', 0, start)
+            edits.append((start, desc.end(), ''))
+        elif description:
+            line_start = text.rfind('\n', 0, mv.start()) + 1
+            indent = text[line_start:mv.start()] if not text[line_start:mv.start()].strip() else ''
+            element = f'<{prefix}Description>{escape(description)}</{prefix}Description>'
+            if self_closing:
+                # <CameraMove .../> becomes <CameraMove ...> <Description> </CameraMove>
+                tag = dict((s, r) for s, _e, r in edits).get(mv.start(), text[mv.start():mv.end()])
+                edits = [e for e in edits if e[0] != mv.start()]
+                edits.append((mv.start(), mv.end(), tag[:-2].rstrip() + '>\n' + indent + '    ' + element
+                              + '\n' + indent + f'</{prefix}CameraMove>'))
+            else:
+                edits.append((mv_end.start(), mv_end.start(), '    ' + element + '\n' + indent))
+    for i, changes in keyframes.items():
+        if changes:
+            k = keys[i]
+            edits.append((k.start(), k.end(), _set_tag_attrs(text[k.start():k.end()], changes)))
+    for start, end, replacement in sorted(edits, key=lambda e: e[0], reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text
+
+
 def edit_xsheet_notes(e) -> None:
     """A frame's Notes (Action/Description) cell was edited in the XSheet
     grid: write it to that frame's <Notes>, as an ordinary (undoable) edit.
@@ -2051,6 +2146,168 @@ def edit_xsheet_notes(e) -> None:
         sess.xsheet_refresh_in_place = False
     if added_frame:
         ui.notify(f'Added <Frame number="{frame}"> for its notes, holding the same drawings', color='info')
+
+
+CAMERA_MOVE_TYPES = ['HOLD', 'PAN_LEFT', 'PAN_RIGHT', 'PAN_UP', 'PAN_DOWN', 'TRUCK_LEFT', 'TRUCK_RIGHT',
+                     'TRUCK_FORWARD', 'TRUCK_BACK', 'ZOOM_IN', 'ZOOM_OUT', 'TILT_UP', 'TILT_DOWN', 'ROLL', 'CUSTOM']
+CAMERA_INTERPOLATIONS = ['Step', 'Linear', 'Bezier', 'Spline']
+CAMERA_PROJECTIONS = ['Orthographic', 'Perspective']
+# <Keyframe> attributes as edited in the Camera Move dialog: (attribute,
+# column heading, schema default -- shown when the attribute is left out).
+CAMERA_KEYFRAME_FIELDS = [
+    ('x', 'X', '0'), ('y', 'Y', '0'), ('z', 'Z', '0'),
+    ('rotationX', 'Rot X', '0'), ('rotationY', 'Rot Y', '0'), ('rotationZ', 'Rot Z', '0'),
+    ('zoom', 'Zoom', '1.0'), ('focalLength', 'Focal', '35'),
+]
+
+
+def handle_xsheet_cell_double_clicked(e) -> None:
+    """Double-clicking a frame's Camera (Camera Moves) cell opens the
+    camera move covering that frame for editing."""
+    args = e.args or {}
+    if args.get('colId') not in ('Camera', 'camera'):
+        return
+    data = args.get('data') or {}
+    frame = data.get('_range_start', data.get('Frame'))  # a collapsed run: its first frame
+    if isinstance(frame, int):
+        show_camera_move_dialog(frame)
+
+
+def show_camera_move_dialog(frame: int) -> None:
+    """Edit the camera move covering `frame` (the latest-starting one, if
+    moves overlap): its type, frame range and description, the keyframes in
+    that range, and the camera's own name and projection. Saved as one
+    ordinary (undoable) edit that keeps the document schema-valid; the
+    grid updates in place."""
+    import re
+    import xml.etree.ElementTree as ET
+    text = _editor_text()
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return
+    camera = next((c for c in root if c.tag.split('}')[-1] == 'Camera'), None)
+    if camera is None:
+        ui.notify('The document has no <Camera>', color='info')
+        return
+    moves = [c for c in camera if c.tag.split('}')[-1] == 'CameraMove']
+    keyframes = [c for c in camera if c.tag.split('}')[-1] == 'Keyframe']
+
+    def frame_range(el):
+        try:
+            return int(el.get('startFrame')), int(el.get('endFrame'))
+        except (TypeError, ValueError):
+            return None
+    covering = [(frame_range(m)[0], i) for i, m in enumerate(moves) if frame_range(m) and
+                frame_range(m)[0] <= frame <= frame_range(m)[1]]
+    if not covering:
+        ui.notify(f'No camera move at frame {frame}', color='info')
+        return
+    move_index = max(covering)[1]
+    move = moves[move_index]
+    start, end = frame_range(move)
+    desc_el = next((c for c in move if c.tag.split('}')[-1] == 'Description'), None)
+    old_desc = ' '.join((desc_el.text or '').split()) if desc_el is not None else ''
+    in_range = [i for i, k in enumerate(keyframes) if (k.get('frame') or '').isdigit() and start <= int(k.get('frame')) <= end]
+    decimal = re.compile(r'^[+-]?(\d+(\.\d*)?|\.\d+)$')
+
+    with ui.dialog() as dlg, titled_card(f'Camera Move at Frame {frame}', classes='w-[980px] max-w-full',
+                                         body_classes='gap-2'):
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            ui.label(f'Camera {camera.get("cameraId", "")}').classes('text-sm text-grey-8 pb-2')
+            cam_name = ui.input('Name', value=camera.get('name', '')).classes('w-48').props('dense')
+            cam_projection = ui.select(CAMERA_PROJECTIONS, value=camera.get('projection') or 'Orthographic',
+                                       label='Projection').classes('w-40').props('dense')
+        ui.separator()
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            move_type = ui.select(CAMERA_MOVE_TYPES, value=move.get('type') if move.get('type') in CAMERA_MOVE_TYPES
+                                  else 'CUSTOM', label='Move').classes('w-44').props('dense')
+            move_start = ui.number('Start frame', value=start, min=1, step=1, format='%d').classes('w-28').props('dense')
+            move_end = ui.number('End frame', value=end, min=1, step=1, format='%d').classes('w-28').props('dense')
+            move_desc = ui.input('Description', value=old_desc).classes('flex-grow').props('dense')
+        ui.label(f'Keyframes in frames {start}–{end}' if in_range else f'No keyframes in frames {start}–{end}') \
+            .classes('text-sm text-grey-8 mt-1')
+        key_inputs: dict[int, dict] = {}
+        if in_range:
+            cols = 'grid-template-columns: 64px repeat(8, minmax(52px, 1fr)) 104px minmax(120px, 2fr)'
+            with ui.element('div').classes('w-full gap-x-2 gap-y-0 items-end').style(f'display: grid; {cols}'):
+                for caption in ['Frame', *(c for _a, c, _d in CAMERA_KEYFRAME_FIELDS), 'Curve', 'Note']:
+                    ui.label(caption).classes('text-xs text-grey-7')
+                for i in in_range:
+                    k = keyframes[i]
+                    fields = {'frame': ui.number(value=int(k.get('frame')), min=1, step=1, format='%d').props('dense')}
+                    for attr, _caption, default in CAMERA_KEYFRAME_FIELDS:
+                        fields[attr] = ui.input(value=k.get(attr, ''), placeholder=default).props('dense')
+                    fields['interpolation'] = ui.select(CAMERA_INTERPOLATIONS,
+                                                        value=k.get('interpolation') or 'Bezier').props('dense')
+                    fields['note'] = ui.input(value=k.get('note', '')).props('dense')
+                    key_inputs[i] = fields
+            ui.label('Leave a value blank to use its default (shown in grey).').classes('text-xs text-grey')
+
+        def save(_=None):
+            new_start, new_end = move_start.value, move_end.value
+            if any(v is None or float(v) != int(v) or int(v) < 1 for v in (new_start, new_end)):
+                ui.notify('Start and end frames must be whole numbers of 1 or more', color='warning')
+                return
+            if int(new_start) > int(new_end):
+                ui.notify('The start frame must not be after the end frame', color='warning')
+                return
+            camera_changes = {}
+            name = (cam_name.value or '').strip()
+            if name != camera.get('name', ''):
+                camera_changes['name'] = name or None
+            if cam_projection.value != (camera.get('projection') or 'Orthographic'):
+                camera_changes['projection'] = cam_projection.value
+            move_changes = {}
+            for attr, value in (('type', move_type.value), ('startFrame', str(int(new_start))),
+                                ('endFrame', str(int(new_end)))):
+                if value != move.get(attr):
+                    move_changes[attr] = value
+            description = ' '.join((move_desc.value or '').split())
+            key_changes: dict[int, dict] = {}
+            for i, fields in key_inputs.items():
+                k, changes = keyframes[i], {}
+                number = fields['frame'].value
+                if number is None or float(number) != int(number) or int(number) < 1:
+                    ui.notify('Keyframe frames must be whole numbers of 1 or more', color='warning')
+                    return
+                if str(int(number)) != k.get('frame'):
+                    changes['frame'] = str(int(number))
+                for attr, caption, _default in CAMERA_KEYFRAME_FIELDS:
+                    value = (fields[attr].value or '').strip()
+                    if value and not decimal.match(value):
+                        ui.notify(f'{caption} at keyframe {int(number)} must be a number', color='warning')
+                        return
+                    if value != k.get(attr, ''):
+                        changes[attr] = value or None
+                if fields['interpolation'].value != (k.get('interpolation') or 'Bezier'):
+                    changes['interpolation'] = fields['interpolation'].value
+                note = (fields['note'].value or '').strip()
+                if note != k.get('note', ''):
+                    changes['note'] = note or None
+                if changes:
+                    key_changes[i] = changes
+            if not (camera_changes or move_changes or key_changes or description != old_desc):
+                dlg.close()
+                return
+            new_text = update_camera_in_text(_editor_text(), camera_changes, move_index, move_changes,
+                                             description if description != old_desc else None, key_changes)
+            if new_text is None:
+                ui.notify('Could not update the camera in the document', color='negative')
+                return
+            dlg.close()
+            sess = session()
+            sess.xsheet_refresh_in_place = True
+            try:
+                _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+            finally:
+                sess.xsheet_refresh_in_place = False
+            ui.notify('Camera updated', color='positive')
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Save', on_click=save).props('size=sm')
+    dlg.open()
 
 
 def handle_xsheet_run_toggle(e):
@@ -3733,6 +3990,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellClicked', handle_xsheet_row_clicked)  # rowClicked isn't forwarded
             sess.xsheet_grid.on('columnHeaderClicked', handle_xsheet_header_clicked)
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
+            sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera: edit the move
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
 
     # build initial tree from current editor value

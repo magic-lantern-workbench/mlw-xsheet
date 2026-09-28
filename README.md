@@ -298,7 +298,12 @@ number="...">` outside that range). Columns, left to right:
   [traditional style](#traditional-style), and the column widens to fit a longer name.
 - **Camera** — the top-level `<Camera>` element's `<CameraMove type="..." startFrame="..."
   endFrame="...">` entries: the move's type and frame range on its starting frame (e.g.
-  `HOLD [1-24]`), and a centered `X` on every frame it continues through.
+  `HOLD [1-24]`), and a centered `X` on every frame it continues through. Double-click a frame's
+  Camera cell to edit the move covering it in the **Camera Move** dialog: the move's type, start and
+  end frames and description; each `<Keyframe>` in that range (frame, X/Y/Z, rotation, zoom, focal
+  length, curve and note — leave a value blank to use its default); and the camera's name and
+  projection. **Save** applies the changes as one ordinary edit (**Ctrl+Z** undoes it) that keeps
+  the document valid against the schema and its formatting, and the grid updates in place.
 - **Dialogue** — that frame's `<Dialogue>` phoneme/spoken text, if any.
 - **Audio** — `<AudioRef>` entries, the same span convention as Camera (`track [start-end]`
   on the starting frame, `X` through `endFrame`).
@@ -346,7 +351,8 @@ Laid out like a paper exposure sheet, one compact row per frame. Columns, left t
 - **Tech. Notes** — camera `<Keyframe>` notes and `<Review>` comments (with their status) on
   that frame.
 - One column per **layer**, headed with the layer name — the cel or scene file exposed.
-- **Camera Moves** — `<CameraMove>` type and range, `X` through the move.
+- **Camera Moves** — `<CameraMove>` type and range, `X` through the move. Double-click it to edit
+  the move and its keyframes, as in the classic grid's Camera column (see [XSheet tab](#xsheet-tab)).
 
 Runs of two or more identical rows can be collapsed, in the same way as the classic grid: the first row of a
 run has a ▼ icon at the far right of its first **Fr** cell, after the frame number. Click the
