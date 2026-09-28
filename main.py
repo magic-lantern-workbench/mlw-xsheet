@@ -2098,6 +2098,151 @@ def update_camera_in_text(text: str, camera: dict[str, str | None], move_index: 
     return text
 
 
+def update_audio_in_text(text: str, ref_index: int, ref: dict[str, str | None], track_index: int | None,
+                         track: dict[str, str | None], track_children: dict | None) -> str | None:
+    """Edit the ref_index-th <AudioRef> (a cue in a <Frame>) and the
+    track_index-th <Track> of <AudioTracks>: attributes as in
+    _set_tag_attrs(), and -- when track_children is given, as {'sourceURL':
+    str, 'author': str, 'contact': [str]} -- the track's child elements,
+    rewritten in the schema's order (blank ones left out). Only what
+    changes is touched, so the rest of the formatting is kept. None if the
+    elements can't be found."""
+    import re
+    from xml.sax.saxutils import escape
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    refs = list(re.finditer(r'<((?:[\w.-]+:)?)AudioRef(?=[\s/>])[^<>]*>', masked))
+    if ref and ref_index >= len(refs):
+        return None
+    edits = []  # (start, end, replacement), applied from the end of the text back
+    if ref:
+        m = refs[ref_index]
+        edits.append((m.start(), m.end(), _set_tag_attrs(text[m.start():m.end()], ref)))
+    if track_index is not None and (track or track_children is not None):
+        block = re.search(r'<((?:[\w.-]+:)?)AudioTracks(?=[\s/>])[^<>]*>', masked)
+        if not block:
+            return None
+        p = block.group(1)
+        block_end = re.compile(r'</' + re.escape(p) + r'AudioTracks\s*>').search(masked, block.end())
+        tracks = list(re.compile(r'<' + re.escape(p) + r'Track(?=[\s/>])[^<>]*>')
+                      .finditer(masked, block.end(), block_end.start() if block_end else len(masked)))
+        if track_index >= len(tracks):
+            return None
+        t = tracks[track_index]
+        tag = _set_tag_attrs(text[t.start():t.end()], track) if track else text[t.start():t.end()]
+        if track_children is None:
+            edits.append((t.start(), t.end(), tag))
+        else:
+            line_start = text.rfind('\n', 0, t.start()) + 1
+            indent = text[line_start:t.start()] if not text[line_start:t.start()].strip() else ''
+            children = [(name, value) for name in ('sourceURL', 'author')
+                        if (value := (track_children.get(name) or '').strip())]
+            children += [('contact', c) for c in track_children.get('contact') or [] if c.strip()]
+            lines = ''.join(f'\n{indent}    <{p}{name}>{escape(value)}</{p}{name}>' for name, value in children)
+            self_closing = tag.endswith('/>')
+            t_end = None if self_closing else re.compile(r'</' + re.escape(p) + r'Track\s*>').search(masked, t.end())
+            if self_closing and children:
+                edits.append((t.start(), t.end(), tag[:-2].rstrip() + '>' + lines + f'\n{indent}</{p}Track>'))
+            elif self_closing:
+                edits.append((t.start(), t.end(), tag))
+            elif t_end and children:
+                edits.append((t.start(), t_end.start(), tag + lines + f'\n{indent}'))
+            elif t_end:  # no children left: back to <Track .../>
+                edits.append((t.start(), t_end.end(), tag[:-1].rstrip() + '/>'))
+            else:
+                return None
+    for start, end, replacement in sorted(edits, key=lambda e: e[0], reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text
+
+
+AUDIO_NAMESPACE = 'http://schemas.animation.org/xsheet/audio'
+
+
+def add_audio_track_in_text(text: str, attrs: dict[str, str], children: dict | None = None) -> str | None:
+    """Add <Track .../> (attributes in the given order; children as in
+    update_audio_in_text()) as the last track of <AudioTracks>, matching
+    the other tracks' indentation and blank-line spacing. A document
+    without <AudioTracks> gets one, after <Assets> where the schema puts
+    it (declaring the audio namespace on it if the document doesn't). None
+    if there's nowhere to put it."""
+    import re
+    from xml.sax.saxutils import escape
+
+    def attr_text(values):
+        return ' '.join(f'{k}="{escape(v, {chr(34): "&quot;"})}"' for k, v in values.items())
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+
+    def element(p: str, indent: str) -> str:
+        items = [(name, value) for name in ('sourceURL', 'author')
+                 if (value := ((children or {}).get(name) or '').strip())]
+        items += [('contact', c) for c in (children or {}).get('contact') or [] if c.strip()]
+        if not items:
+            return f'<{p}Track {attr_text(attrs)}/>'
+        return (f'<{p}Track {attr_text(attrs)}>'
+                + ''.join(f'\n{indent}    <{p}{n}>{escape(v)}</{p}{n}>' for n, v in items) + f'\n{indent}</{p}Track>')
+
+    block = re.search(r'<((?:[\w.-]+:)?)AudioTracks(?=[\s/>])[^<>]*>', masked)
+    if block:
+        p = block.group(1)
+        block_end = re.compile(r'</' + re.escape(p) + r'AudioTracks\s*>').search(masked, block.end())
+        if not block_end:
+            return None
+        tracks = list(re.compile(r'<' + re.escape(p) + r'Track(?=[\s/>])').finditer(masked, block.end(), block_end.start()))
+        line_start = text.rfind('\n', 0, block_end.start()) + 1
+        close_indent = text[line_start:block_end.start()]
+        if tracks:
+            first = tracks[0].start()
+            indent = text[text.rfind('\n', 0, first) + 1:first]
+        else:
+            indent = close_indent + '    '
+        blank = text[:line_start].rstrip(' \t').endswith('\n\n')
+        return text[:line_start] + indent + element(p, indent) + '\n' + ('\n' if blank else '') + text[line_start:]
+    # no <AudioTracks> yet: add one after <Assets>
+    assets = re.search(r'<((?:[\w.-]+:)?)Assets(?=[\s/>])[^<>]*?(/?)>', masked)
+    if not assets:
+        return None
+    assets_end = assets.end() if assets.group(2) else \
+        (m.end() if (m := re.compile(r'</' + re.escape(assets.group(1)) + r'Assets\s*>').search(masked, assets.end())) else None)
+    if assets_end is None:
+        return None
+    indent = text[text.rfind('\n', 0, assets.start()) + 1:assets.start()]
+    indent = indent if not indent.strip() else ''
+    declared = re.search(r'xmlns:([\w.-]+)\s*=\s*["\']' + re.escape(AUDIO_NAMESPACE) + r'["\']', text)
+    p = declared.group(1) + ':' if declared else ''
+    open_tag = f'<{p}AudioTracks>' if declared else f'<AudioTracks xmlns="{AUDIO_NAMESPACE}">'
+    blank = '\n' if re.match(r'\n[ \t]*\n', text[assets_end:]) else ''
+    block_text = (f'\n{blank}{indent}{open_tag}\n{indent}    {element(p, indent + "    ")}\n{indent}</{p}AudioTracks>')
+    return text[:assets_end] + block_text + text[assets_end:]
+
+
+def add_audio_ref_in_text(text: str, frame_number: int, attrs: dict[str, str]) -> str | None:
+    """Add <AudioRef .../> to <Frame number="frame_number">, just before its
+    <Notes> (the schema's place for it), matching the frame's indentation
+    and blank-line spacing. None if there's no such frame."""
+    import re
+    from xml.sax.saxutils import escape
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    frame = re.search(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\']' + str(frame_number) + r'["\'][^>]*>', masked)
+    if not frame:
+        return None
+    p = frame.group(1)
+    frame_end = re.compile(r'</' + re.escape(p) + r'Frame\s*>').search(masked, frame.end())
+    if not frame_end:
+        return None
+    notes = re.compile(r'<' + re.escape(p) + r'Notes[\s/>]').search(masked, frame.end(), frame_end.start())
+    anchor = notes.start() if notes else frame_end.start()
+    line_start = text.rfind('\n', 0, anchor) + 1
+    indent = text[line_start:anchor]
+    if indent.strip():  # <Notes> shares its line with something else: insert right before it
+        indent = ''
+        line_start = anchor
+    if not notes:
+        indent += '    '
+    element = f'<{p}AudioRef ' + ' '.join(f'{k}="{escape(v, {chr(34): "&quot;"})}"' for k, v in attrs.items()) + '/>'
+    blank = text[:line_start].rstrip(' \t').endswith('\n\n')  # the frame spaces its children with blank lines
+    return text[:line_start] + indent + element + '\n' + ('\n' if blank else '') + text[line_start:]
+
+
 def edit_xsheet_notes(e) -> None:
     """A frame's Notes (Action/Description) cell was edited in the XSheet
     grid: write it to that frame's <Notes>, as an ordinary (undoable) edit.
@@ -2161,16 +2306,217 @@ CAMERA_KEYFRAME_FIELDS = [
 ]
 
 
+# Double-clicked XSheet columns that open an audio cue: which cues each
+# shows (all, or only those on Effects tracks / on other tracks), as in
+# parse_exposure_sheet()'s Audio, SoundFX and AudioTrack fields.
+AUDIO_COLUMNS = {'Audio': None, 'audio': False, 'soundfx': True}
+
+
 def handle_xsheet_cell_double_clicked(e) -> None:
     """Double-clicking a frame's Camera (Camera Moves) cell opens the
-    camera move covering that frame for editing."""
+    camera move covering that frame for editing; an Audio (or Sound FX)
+    cell, the audio cue."""
     args = e.args or {}
-    if args.get('colId') not in ('Camera', 'camera'):
-        return
+    col_id = args.get('colId')
     data = args.get('data') or {}
     frame = data.get('_range_start', data.get('Frame'))  # a collapsed run: its first frame
-    if isinstance(frame, int):
+    if not isinstance(frame, int):
+        return
+    if col_id in ('Camera', 'camera'):
         show_camera_move_dialog(frame)
+    elif col_id in AUDIO_COLUMNS:
+        show_audio_cue_dialog(frame, AUDIO_COLUMNS[col_id])
+
+
+AUDIO_TRACK_TYPES = ['Dialogue', 'Music', 'Effects']
+UNKNOWN_TRACK_REF = 'Unknown'  # a new cue's track until it's known (not a <Track>; like UNKNOWN_ASSET_REF)
+EMAIL_PATTERN = r'[^@]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'  # the schema's EmailAddressType
+
+
+def show_audio_cue_dialog(frame: int, effects: bool | None) -> None:
+    """Edit the audio cue (<AudioRef>) covering `frame` -- the latest-
+    starting one, if several do; effects True/False limits it to cues on
+    Effects / other tracks, as the traditional Sound FX / Audio columns
+    show them. The dialog edits the cue's track and frame range, and that
+    track's own parameters (which every cue on the track shares). Saved as
+    one ordinary (undoable) edit that keeps the document schema-valid; the
+    grid updates in place."""
+    import re
+    import xml.etree.ElementTree as ET
+    text = _editor_text()
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return
+
+    def local(el):
+        return el.tag.split('}')[-1]
+    tracks_el = next((c for c in root if local(c) == 'AudioTracks'), None)
+    tracks = [t for t in tracks_el if local(t) == 'Track'] if tracks_el is not None else []
+    track_by_id = {t.get('id'): t for t in tracks}
+    refs = [el for el in root.iter() if local(el) == 'AudioRef']
+
+    def ref_range(el):
+        try:
+            return int(el.get('startFrame')), int(el.get('endFrame'))
+        except (TypeError, ValueError):
+            return None
+
+    def shown(el):
+        if effects is None:
+            return True
+        track_el = track_by_id.get(el.get('track'))
+        return ((track_el is not None and track_el.get('type') == 'Effects') == effects)
+    covering = [(ref_range(r)[0], i) for i, r in enumerate(refs)
+                if ref_range(r) and ref_range(r)[0] <= frame <= ref_range(r)[1] and shown(r)]
+    if covering:
+        ref_index = max(covering)[1]
+        ref = dict(refs[ref_index].attrib)
+    else:
+        # an empty frame: a new cue there, on the Unknown track until it's chosen
+        ref_index = None
+        ref = {'track': UNKNOWN_TRACK_REF, 'startFrame': str(frame), 'endFrame': str(frame)}
+    start, end = int(ref['startFrame']), int(ref['endFrame'])
+
+    def children(track_el):
+        values = {'sourceURL': '', 'author': '', 'contact': []}
+        for child in track_el if track_el is not None else []:
+            value = ' '.join((child.text or '').split())
+            if local(child) == 'contact':
+                values['contact'].append(value)
+            elif local(child) in values:
+                values[local(child)] = value
+        return values
+
+    title = f'Audio Cue at Frame {frame}' if ref_index is not None else f'New Audio Cue at Frame {frame}'
+    with ui.dialog() as dlg, titled_card(title, classes='w-[560px] max-w-full', body_classes='gap-2'):
+        if ref_index is None:
+            ui.label('There is no audio cue here yet. Save adds one, starting at the start frame.') \
+                .classes('text-caption text-grey')
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            track_ids = [t.get('id') for t in tracks]
+            for extra in (ref.get('track'), UNKNOWN_TRACK_REF):
+                if extra not in track_ids:
+                    track_ids.append(extra)  # a cue on a track the document doesn't define
+            track_select = ui.select(track_ids, value=ref.get('track'), label='Track').classes('w-40').props('dense')
+            ref_start = ui.number('Start frame', value=start, min=1, step=1, format='%d').classes('w-28').props('dense')
+            ref_end = ui.number('End frame', value=end, min=1, step=1, format='%d').classes('w-28').props('dense')
+        ui.separator()
+        track_heading = ui.label().classes('text-sm text-grey-8')
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            track_type = ui.select(AUDIO_TRACK_TYPES, label='Type').classes('w-32').props('dense')
+            track_file = ui.input('File').classes('flex-grow').props('dense')
+        track_desc = ui.input('Description').classes('w-full').props('dense')
+        track_url = ui.input('Source URL').classes('w-full').props('dense')
+        with ui.row().classes('w-full items-end gap-3 no-wrap'):
+            track_author = ui.input('Author').classes('w-48').props('dense')
+            track_contacts = ui.input('Contacts (email, comma-separated)').classes('flex-grow').props('dense')
+        track_fields = [track_type, track_file, track_desc, track_url, track_author, track_contacts]
+
+        def new_placeholder() -> bool:
+            """The Unknown track is chosen and the document has none yet: Save adds it."""
+            return track_select.value == UNKNOWN_TRACK_REF and track_select.value not in track_by_id
+
+        def load_track(_=None):
+            """Show the chosen track's parameters (shared by every cue on it)."""
+            track_el = track_by_id.get(track_select.value)
+            for field in track_fields:
+                field.set_enabled(track_el is not None or new_placeholder())
+            if track_el is None:
+                track_heading.set_text('Unknown track: a placeholder until the cue\'s track is known, '
+                                       'added to <AudioTracks> on Save' if new_placeholder()
+                                       else f'Track {track_select.value} is not defined in <AudioTracks>')
+                # the placeholder's type follows the column (Effects for Sound FX)
+                track_type.value = ('Effects' if effects else 'Dialogue') if new_placeholder() else None
+                for field in track_fields[1:]:
+                    field.value = ''
+                return
+            uses = sum(1 for r in refs if r.get('track') == track_select.value)
+            track_heading.set_text(f'Track {track_select.value} (used by {uses} cue{"s" if uses != 1 else ""}; '
+                                   'changes apply to all of them)')
+            track_type.value = track_el.get('type') if track_el.get('type') in AUDIO_TRACK_TYPES else 'Dialogue'
+            track_file.value = track_el.get('file', '')
+            track_desc.value = track_el.get('description', '')
+            values = children(track_el)
+            track_url.value = values['sourceURL']
+            track_author.value = values['author']
+            track_contacts.value = ', '.join(values['contact'])
+
+        track_select.on_value_change(load_track)
+        load_track()
+
+        def save(_=None):
+            new_start, new_end = ref_start.value, ref_end.value
+            if any(v is None or float(v) != int(v) or int(v) < 1 for v in (new_start, new_end)):
+                ui.notify('Start and end frames must be whole numbers of 1 or more', color='warning')
+                return
+            if int(new_start) > int(new_end):
+                ui.notify('The start frame must not be after the end frame', color='warning')
+                return
+            new_ref = {'track': track_select.value, 'startFrame': str(int(new_start)), 'endFrame': str(int(new_end))}
+            ref_changes = {attr: value for attr, value in new_ref.items() if value != ref.get(attr)}
+            track_el = track_by_id.get(track_select.value)
+            track_changes, new_children, placeholder = {}, None, None
+            if track_el is not None or new_placeholder():
+                file = (track_file.value or '').strip()
+                if not file and track_select.value != UNKNOWN_TRACK_REF:  # the placeholder may have none yet
+                    ui.notify('A track needs a file', color='warning')
+                    return
+                url = (track_url.value or '').strip()
+                if re.search(r'\s', url):
+                    ui.notify('The source URL cannot contain spaces', color='warning')
+                    return
+                contacts = [c.strip() for c in (track_contacts.value or '').split(',') if c.strip()]
+                bad = next((c for c in contacts if not re.fullmatch(EMAIL_PATTERN, c) or len(c) > 254), None)
+                if bad:
+                    ui.notify(f'{bad} is not an email address', color='warning')
+                    return
+                description = ' '.join((track_desc.value or '').split())
+                values = {'sourceURL': url, 'author': ' '.join((track_author.value or '').split()), 'contact': contacts}
+                if track_el is None:  # the Unknown placeholder, added below
+                    placeholder = {'id': UNKNOWN_TRACK_REF, 'type': track_type.value or 'Dialogue', 'file': file}
+                    if description:
+                        placeholder['description'] = description
+                else:
+                    for attr, value in (('type', track_type.value), ('file', file)):
+                        if value != track_el.get(attr):
+                            track_changes[attr] = value
+                    if description != track_el.get('description', ''):
+                        track_changes['description'] = description or None
+                    if values != children(track_el):
+                        new_children = values
+            if ref_index is not None and not (ref_changes or track_changes or new_children is not None or placeholder):
+                dlg.close()
+                return
+            new_text = update_audio_in_text(_editor_text(), ref_index or 0, ref_changes if ref_index is not None else {},
+                                            tracks.index(track_el) if track_el is not None else None,
+                                            track_changes, new_children)
+            if new_text is not None and placeholder:
+                new_text = add_audio_track_in_text(new_text, placeholder, values)
+            if new_text is not None and ref_index is None:
+                # the new cue goes in the <Frame> where it starts, or the
+                # nearest one before (a cue needn't be in its first frame)
+                numbers = sorted(int(f.get('number')) for f in root.iter()
+                                 if local(f) == 'Frame' and (f.get('number') or '').isdigit())
+                host = max((n for n in numbers if n <= int(new_start)), default=numbers[0] if numbers else None)
+                new_text = add_audio_ref_in_text(new_text, host, new_ref) if host is not None else None
+            if new_text is None:
+                ui.notify('Could not update the audio in the document', color='negative')
+                return
+            dlg.close()
+            sess = session()
+            sess.xsheet_refresh_in_place = True
+            try:
+                _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+            finally:
+                sess.xsheet_refresh_in_place = False
+            ui.notify(('Audio updated' if ref_index is not None else f'Added a {track_select.value} cue')
+                      + (' and the Unknown placeholder track' if placeholder else ''), color='positive')
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Save', on_click=save).props('size=sm')
+    dlg.open()
 
 
 def show_camera_move_dialog(frame: int) -> None:
@@ -3990,7 +4336,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellClicked', handle_xsheet_row_clicked)  # rowClicked isn't forwarded
             sess.xsheet_grid.on('columnHeaderClicked', handle_xsheet_header_clicked)
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
-            sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera: edit the move
+            sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
 
     # build initial tree from current editor value

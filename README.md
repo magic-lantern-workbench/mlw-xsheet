@@ -306,7 +306,20 @@ number="...">` outside that range). Columns, left to right:
   the document valid against the schema and its formatting, and the grid updates in place.
 - **Dialogue** — that frame's `<Dialogue>` phoneme/spoken text, if any.
 - **Audio** — `<AudioRef>` entries, the same span convention as Camera (`track [start-end]`
-  on the starting frame, `X` through `endFrame`).
+  on the starting frame, `X` through `endFrame`). Double-click a frame's Audio cell to edit the cue
+  covering it in the **Audio Cue** dialog: the cue's track and start and end frames, and that
+  track's type, file, description, source URL, author and contact emails (the track's id can't be
+  changed there, since cues refer to it). A track's parameters are shared by every cue on it —
+  the dialog says how many — and choosing another track shows its parameters. On a frame with no
+  cue, the dialog starts a **New Audio Cue** there: one frame long, on the **Unknown** track or on a
+  track you choose; **Save** adds the `<AudioRef>` to the `<Frame>` where it starts (or the nearest
+  one before it). **Unknown** is a placeholder track for cues whose audio isn't known yet: the
+  first time a cue uses it, **Save** also adds `<Track id="Unknown" type="..." file=""/>` to
+  `<AudioTracks>` (creating `<AudioTracks>` if the document has none), with its type following the
+  column (Effects for Sound FX, otherwise Dialogue) and its File left empty — the only track
+  allowed an empty File. Its values can be filled in like any other track's. **Save** applies
+  the changes as one ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against
+  the schema and its formatting, and the grid updates in place.
 - **Notes** — that frame's `<Notes>` text, if any.
 
 Only frame numbers with an actual `<Frame>` element get their Layer/Dialogue/Notes columns
@@ -345,9 +358,10 @@ Laid out like a paper exposure sheet, one compact row per frame. Columns, left t
   classic grid's Notes (see [XSheet tab](#xsheet-tab)).
 - **Fr** — the frame number (repeated before Camera Moves).
 - **Audio** — dialogue and music cues (`<AudioRef>` to tracks that aren't Effects):
-  `track [start-end]` on the first frame and `X` through the cue.
+  `track [start-end]` on the first frame and `X` through the cue. Double-click it to edit the cue
+  and its track, as in the classic grid's Audio column (see [XSheet tab](#xsheet-tab)).
 - **Dialogue** — the `<Dialogue>` phoneme and text.
-- **Sound FX** — cues on Effects tracks, in the same form.
+- **Sound FX** — cues on Effects tracks, in the same form, and edited the same way.
 - **Tech. Notes** — camera `<Keyframe>` notes and `<Review>` comments (with their status) on
   that frame.
 - One column per **layer**, headed with the layer name — the cel or scene file exposed.
