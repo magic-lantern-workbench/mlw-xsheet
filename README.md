@@ -172,7 +172,7 @@ switching browsers starts fresh settings.
 
 ### Layout
 
-- **Header** — `File`, `Edit`, `XSheet`, and `XML` dropdown menus and an `About` button (app info, and the license in a scrollable tab) on the
+- **Header** — `File`, `Edit`, `XSheet`, `XML` and `About` dropdown menus (About has the app info, with the license in a scrollable tab, and the document's Reviews) on the
   left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
   Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
@@ -411,10 +411,12 @@ modifier: `Ctrl+1`/`Ctrl+2` is Chrome/Edge's jump-to-browser-tab-N, and `Alt+1`/
 Firefox-on-Linux's equivalent — neither single-modifier scheme is safe across browsers, but
 the combined chord isn't claimed by either.)
 
-### About
+### About menu
 
-The `About` button in the header shows the app name, author, version, and a link to more
-information.
+| Item | What it does |
+|---|---|
+| About | Show the app name, author, version, and a link to more information, with the license in a scrollable tab. |
+| Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. |
 
 ## Project layout
 

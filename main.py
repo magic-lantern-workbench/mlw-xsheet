@@ -904,6 +904,65 @@ def set_schema_label():
         lbl.set_text(f'Schema: {Path(p).name}' if p else 'Schema: auto-detect')
 
 
+REVIEW_STATUS_COLORS = {'Approved': 'positive', 'NeedsFix': 'negative', 'Pending': 'warning'}
+
+
+def read_reviews(text: str) -> list[dict] | None:
+    """The document's <Review> entries (id, frame, reviewer, status and
+    comment), in frame order; None if the text isn't well-formed XML."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    reviews = []
+    for el in root.iter():
+        if el.tag.split('}')[-1] != 'Review':
+            continue
+        comment = next((c for c in el if c.tag.split('}')[-1] == 'Comment'), None)
+        frame = el.get('frame', '')
+        reviews.append({'id': el.get('id', ''), 'frame': int(frame) if frame.isdigit() else frame,
+                        'reviewer': el.get('reviewer', ''), 'status': el.get('status', ''),
+                        'comment': ' '.join((comment.text or '').split()) if comment is not None else ''})
+    return sorted(reviews, key=lambda r: (not isinstance(r['frame'], int), r['frame'] if isinstance(r['frame'], int) else 0))
+
+
+def show_reviews_dialog() -> None:
+    """About > Reviews: list the open document's <Review> entries."""
+    text = _editor_text()
+    reviews = read_reviews(text) if text.strip() else []
+    with ui.dialog() as dlg, titled_card('Reviews', classes='w-[860px] max-w-full', body_classes='gap-2'):
+        if reviews is None:
+            ui.label('The document is not well-formed XML, so its reviews can\'t be read.')
+        elif not reviews:
+            ui.label('No document is open.' if not text.strip() else 'This document has no reviews.')
+        else:
+            counts = {status: sum(1 for r in reviews if r['status'] == status) for status in REVIEW_STATUS_COLORS}
+            summary = ', '.join(f'{n} {status}' for status, n in counts.items() if n)
+            ui.label(f'{len(reviews)} review{"s" if len(reviews) != 1 else ""}' + (f': {summary}' if summary else '')) \
+                .classes('text-sm text-grey-8')
+            columns = [
+                {'name': 'id', 'label': 'ID', 'field': 'id', 'align': 'left', 'sortable': True},
+                {'name': 'frame', 'label': 'Frame', 'field': 'frame', 'align': 'right', 'sortable': True},
+                {'name': 'reviewer', 'label': 'Reviewer', 'field': 'reviewer', 'align': 'left', 'sortable': True},
+                {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'left', 'sortable': True},
+                {'name': 'comment', 'label': 'Comment', 'field': 'comment', 'align': 'left',
+                 'style': 'white-space: normal; min-width: 280px'},
+            ]
+            table = ui.table(columns=columns, rows=reviews, row_key='id', pagination=0) \
+                .classes('w-full').props('dense flat bordered wrap-cells hide-bottom')
+            # a JS object in single quotes, since it sits in a double-quoted attribute
+            colors = '{' + ', '.join(f"'{k}': '{v}'" for k, v in REVIEW_STATUS_COLORS.items()) + '}'
+            table.add_slot('body-cell-status', f"""
+                <q-td :props="props">
+                    <q-badge :color="({colors})[props.value] || 'grey'" :label="props.value" />
+                </q-td>
+            """)
+        with ui.row().classes('w-full justify-end mt-2'):
+            ui.button('Close', on_click=dlg.close).props('size=sm')
+    dlg.open()
+
+
 def show_about_dialog():
     """Show the About dialog: an About tab with the app's author, version and
     a link, and a License tab with the LICENSE file in a scrollable box."""
@@ -4299,7 +4358,10 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
                 ui.separator()
                 ui.menu_item('Format', on_click=lambda _: format_xml())
-            ui.button('About', on_click=lambda _: show_about_dialog()).props('flat color=white')
+            # About menu: the app's About dialog, and the document's reviews
+            with ui.dropdown_button('About', auto_close=True).props('flat color=white'):
+                ui.menu_item('About', on_click=lambda _: show_about_dialog())
+                ui.menu_item('Reviews', on_click=lambda _: show_reviews_dialog())
         ui.space()
         # User menu at the right end of the menubar
         with ui.button(icon='account_circle').props('flat round color=white'):
