@@ -525,7 +525,10 @@ def set_filename_label(name: str | None = None):
     """Update filename label text, adding '*' when modified."""
     sess = session()
     if name is None:
-        name = Path(sess.current_file['path']).name if sess.current_file['path'] else 'No file'
+        if sess.current_file['path']:
+            name = Path(sess.current_file['path']).name
+        else:  # a new, never-saved document (File > New), or nothing open
+            name = UNTITLED_NAME if _editor_text().strip() else 'No file'
     label_text = name + (' *' if sess.current_file.get('modified') else '')
     if sess.filename_label is not None:
         sess.filename_label.set_text(label_text)
@@ -3991,6 +3994,7 @@ def _load_document(path: str | None, text: str, saved_content: str):
         except Exception:
             ui.notify('Failed to set editor content', color='warning')
     sess.suppress_editor_change = False
+    set_filename_label()  # again, now the text is in: an unsaved new document is named by it
     # update xml tree for the opened file
     try:
         rebuild_tree_from_current()
@@ -4076,26 +4080,104 @@ def close_file():
 def close_with_check():
     """Close the current file, but prompt to save if modified -- including
     a never-saved document, where Yes goes through Save As."""
+    _then_with_check(close_file, 'Save changes before closing?')
+
+
+def _then_with_check(then, question: str):
+    """Call then() -- after asking whether to save the current document
+    first, if it has unsaved changes (Cancel / No / Yes, where Yes saves,
+    through Save As for a never-saved document, and only goes on once the
+    save went through)."""
     sess = session()
     if not sess.current_file.get('modified'):
-        close_file()
+        then()
         return
     with ui.dialog() as confirm_dialog, titled_card('Unsaved Changes'):
-        ui.label('Save changes before closing?')
+        ui.label(question)
         with ui.row().classes('mt-4 justify-end'):
             def do_no(_=None):
                 confirm_dialog.close()
-                close_file()
+                then()
             def do_yes(_=None):
-                # Save then close -- only once the save actually went
+                # Save then go on -- only once the save actually went
                 # through, so declining an overwrite prompt keeps the file open
                 confirm_dialog.close()
-                save_file(on_saved=close_file)
+                save_file(on_saved=then)
             # Cancel backs out of closing entirely, leaving the file open and unsaved
             ui.button('Cancel', on_click=confirm_dialog.close).props('flat size=sm')
             ui.button('No', on_click=do_no).props('outline size=sm').classes('ml-2')
             ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
     confirm_dialog.open()
+
+
+UNTITLED_NAME = 'untitled.xml'  # a new document's name until it's saved (Save As suggests it)
+
+
+def new_document_text() -> str:
+    """A minimal ExposureSheet that is well-formed and valid against
+    xml/xsheet-core.xsd, with placeholder values to replace: the four
+    sections the schema requires (Production, Assets, Timeline and
+    VersionControl), one Unknown asset, and one layer exposed on frame 1 of
+    a 24-frame shot. Laid out with the user's Format preferences."""
+    import datetime as dt
+    from xml.sax.saxutils import quoteattr
+    author = quoteattr(auth.current_username() or 'unknown')
+    today = dt.date.today().isoformat()
+    text = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!-- A new ExposureSheet document. Replace the placeholder values (UNKNOWN, Untitled,
+     the Unknown asset and the New Layer) with the shot's own. -->
+<ExposureSheet xmlns="http://schemas.animation.org/xsheet/core"
+    xmlns:asset="http://schemas.animation.org/xsheet/assets"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://schemas.animation.org/xsheet/core xsheet-core.xsd http://schemas.animation.org/xsheet/assets xsheet-assets.xsd"
+    version="2.0">
+<Production>
+<ProjectID>UNKNOWN</ProjectID>
+<SequenceID>UNKNOWN</SequenceID>
+<SceneID>UNKNOWN</SceneID>
+<ShotID>UNKNOWN</ShotID>
+<Title>Untitled</Title>
+<FrameRate>24</FrameRate>
+<StartFrame>1</StartFrame>
+<EndFrame>24</EndFrame>
+</Production>
+<asset:Assets>
+<asset:Asset id="{UNKNOWN_ASSET_REF}" name="Unknown" category="Unknown" version="1"/>
+</asset:Assets>
+<Timeline>
+<Frame number="1">
+<Layers>
+<Layer id="{NEW_LAYER_NAME}" assetRef="{UNKNOWN_ASSET_REF}" type="2D" cel="A001" zOrder="0"/>
+</Layers>
+<Notes/>
+</Frame>
+</Timeline>
+<VersionControl>
+<Revision number="1" author={author} date="{today}">New document.</Revision>
+</VersionControl>
+</ExposureSheet>
+'''
+    try:
+        return pretty_print_xml(text, indent=_format_indent_string(), blank_lines=_format_blank_lines(),
+                                attribute_per_line=bool(format_prefs().get('attribute_per_line', True)))
+    except Exception:
+        return text
+
+
+def new_document():
+    """File > New: start a new ExposureSheet (see new_document_text()) in the
+    editor -- after offering to save the current one if it has unsaved
+    changes. Nothing is written to disk until Save or Save As; until then it
+    shows as untitled.xml, and is kept as a draft like any unsaved work."""
+    def start():
+        text = new_document_text()
+        _load_document(None, text, '')
+        session().undo_stack.clear()  # nothing to undo back to: it starts as it is
+        set_validation_status('')
+        clear_validation_panel()
+        remember_document()
+        ui.notify('New document: replace the placeholder values, then Save As to name it', color='info')
+    _then_with_check(start, 'Save changes before starting a new document?')
 
 
 def _set_editor_text(new_text: str):
@@ -5081,6 +5163,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto overflow-y-hidden'):
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
+                ui.menu_item('New', on_click=lambda _: new_document())
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 # Submenu of this user's recently opened files. The File
                 # dropdown auto-closes on any click inside it, so stop this
