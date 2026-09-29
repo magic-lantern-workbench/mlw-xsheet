@@ -177,6 +177,10 @@ def session() -> Session:
 #   'popup_log':      whether this user's status pop-ups (ui.notify) are
 #                     recorded in their log file (default: yes); set in File >
 #                     Preferences > Logs. See the "Pop-up log" section below.
+#   'popup_log_time': the time zone of the log's timestamps: 'server' (the
+#                     default: SERVER_TIME_ZONE), 'utc', or 'custom' -- the
+#                     user's own 'popup_log_zone' (an IANA name like
+#                     America/Denver); set in Preferences > Logs.
 #   'oca_export':     File > Export > Export OCA's last options: picture 'width' and
 #                     'height', 'images' ('placeholder' or 'none') and
 #                     'cels_dir' (a folder in the data folder, or '').
@@ -204,6 +208,85 @@ LOG_LEVELS = {'positive': 'SUCCESS', 'negative': 'ERROR', 'warning': 'WARNING', 
 _show_notification = ui.notify  # NiceGUI's own, called for every pop-up
 
 
+def _setup_server_time_zone() -> str:
+    """Use MLW_TZ (compose passes .env's TZ) as the server's time zone when
+    it names a real zone; otherwise keep the system's -- in Docker, the
+    host's /etc/localtime, mounted by compose.yaml. Returns the zone's IANA
+    name, for Preferences > Logs to show."""
+    import zoneinfo
+    wanted = (os.environ.get('MLW_TZ') or '').strip()
+    if wanted:
+        try:
+            zoneinfo.ZoneInfo(wanted)
+            os.environ['TZ'] = wanted
+            time.tzset()
+            return wanted
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            print(f'MLW_TZ={wanted!r} is not a known time zone; using the system time zone', flush=True)
+    if os.environ.get('TZ'):
+        return os.environ['TZ']
+    localtime = Path('/etc/localtime')
+    real = Path(os.path.realpath(localtime))
+    try:  # the mount points of this process: /proc/self/mountinfo's fifth field
+        mounts = {line.split()[4] for line in Path('/proc/self/mountinfo').read_text().splitlines()}
+    except OSError:
+        mounts = set()
+    mounted = str(localtime) in mounts or str(real) in mounts
+    if not mounted and 'zoneinfo/' in str(real):
+        return str(real).split('zoneinfo/', 1)[1]  # the usual symlink into the zone database
+    # The host's zone file mounted into a container (compose.yaml): Docker mounts
+    # it over whatever the image's /etc/localtime points to, so that name can't be
+    # trusted; find the zone whose data it holds instead (canonical names first).
+    try:
+        data = localtime.read_bytes()
+        root = Path('/usr/share/zoneinfo')
+        for name in sorted(zoneinfo.available_timezones(), key=lambda n: (n.count('/') == 0, n.startswith('Etc/'), n)):
+            path = root / name
+            if path.resolve() == real:
+                continue  # the mounted file itself
+            try:
+                if path.read_bytes() == data:
+                    return name
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return time.tzname[0] or 'UTC'
+
+
+SERVER_TIME_ZONE = _setup_server_time_zone()
+LOG_TIME_MODES = ('server', 'utc', 'custom')
+
+
+def popup_log_time_mode() -> str:
+    mode = app.storage.user.get('popup_log_time', 'server')
+    return mode if mode in LOG_TIME_MODES else 'server'
+
+
+def popup_log_zone() -> str:
+    return app.storage.user.get('popup_log_zone') or SERVER_TIME_ZONE
+
+
+def set_popup_log_time(mode: str, zone: str | None) -> None:
+    app.storage.user['popup_log_time'] = mode if mode in LOG_TIME_MODES else 'server'
+    if zone:
+        app.storage.user['popup_log_zone'] = zone
+
+
+def popup_log_now() -> datetime.datetime:
+    """Now, in the time zone the user chose for their log."""
+    mode = popup_log_time_mode()
+    if mode == 'utc':
+        return datetime.datetime.now(datetime.timezone.utc)
+    if mode == 'custom':
+        import zoneinfo
+        try:
+            return datetime.datetime.now(zoneinfo.ZoneInfo(popup_log_zone()))
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            pass
+    return datetime.datetime.now().astimezone()
+
+
 def popup_log_enabled() -> bool:
     return bool(app.storage.user.get('popup_log', True))
 
@@ -226,7 +309,7 @@ def log_popup(message, level: str) -> None:
         document = Path(session().current_file.get('path') or '').name or '(no file)'
     except Exception:
         document = '-'
-    stamp = datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')
+    stamp = popup_log_now().strftime('%Y-%m-%d %H:%M:%S %z')
     text = ' '.join(str(message).split())
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.stat().st_size >= LOG_MAX_BYTES:
@@ -610,6 +693,26 @@ def show_preferences_dialog():
                          'date and time.').classes('text-sm text-gray-500')
                 log_box = ui.checkbox('Record pop-up messages in a log file', value=popup_log_enabled()).props('dense')
                 ui.label(f'Log file (yours): {popup_log_path()}').classes('text-xs text-gray-500 break-all')
+                import zoneinfo
+                zones = sorted(zoneinfo.available_timezones() - {'localtime', 'Factory'})
+                ui.label('Log timestamps in').classes('text-sm text-gray-500 mt-2')
+                time_radio = ui.radio({'server': f"The server's time zone ({SERVER_TIME_ZONE})", 'utc': 'UTC',
+                                       'custom': 'A time zone I choose'}, value=popup_log_time_mode()).props('dense')
+                with ui.row().classes('w-full items-center gap-2 no-wrap pl-7'):
+                    zone_select = ui.select(zones, value=popup_log_zone() if popup_log_zone() in zones else None,
+                                            with_input=True, label='Time zone').classes('flex-grow').props('dense')
+
+                    async def use_browser_zone():
+                        zone = await ui.run_javascript('return Intl.DateTimeFormat().resolvedOptions().timeZone')
+                        if zone in zones:
+                            zone_select.value = zone
+                            time_radio.value = 'custom'
+                        else:
+                            ui.notify(f"Your browser's time zone ({zone}) isn't one this server knows", color='warning')
+                    browser_zone_button = ui.button('Use my browser\'s', icon='my_location', on_click=use_browser_zone) \
+                        .props('flat dense size=sm no-caps').tooltip("Choose your browser's time zone")
+                for element in (zone_select, browser_zone_button):
+                    element.bind_enabled_from(time_radio, 'value', backward=lambda v: v == 'custom')
 
                 def download_log():
                     lines = read_popup_log(max_lines=10**9)
@@ -650,6 +753,10 @@ def show_preferences_dialog():
             # Check a password change first, so a mistake there saves nothing
             # and leaves the dialog open to fix it.
             picked_sections = [name for name, box in section_boxes.items() if box.value]
+            if time_radio.value == 'custom' and zone_select.value not in zones:
+                tabs.value = logs_tab
+                ui.notify('Choose the time zone for the log', color='warning')
+                return
             changing_password = any((current_pw.value, new_pw.value, confirm_pw.value))
             if changing_password:
                 error = None
@@ -677,6 +784,7 @@ def show_preferences_dialog():
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
             set_popup_log_enabled(log_box.value)
+            set_popup_log_time(time_radio.value, zone_select.value if time_radio.value == 'custom' else None)
             try:
                 set_recent_files_limit(int(recent_input.value))
             except (TypeError, ValueError):

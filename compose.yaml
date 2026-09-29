@@ -9,3 +9,11 @@ services:
       target: prod
     ports:
       - "${MLW_HOST_PORT:-8080}:8080"
+    environment:
+      # The server's time zone, for timestamps such as the pop-up log's: the
+      # host's own (its /etc/localtime, mounted below), unless TZ is set in
+      # .env (e.g. TZ=America/Denver). It's passed as MLW_TZ rather than TZ,
+      # since an empty TZ would silently mean UTC.
+      MLW_TZ: ${TZ:-}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro

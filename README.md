@@ -111,6 +111,11 @@ directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), `MLW_RE
 `MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the host port in
 development.
 
+The server's time zone (for timestamps such as the pop-up log's) follows the host: both the
+development and production containers mount the host's `/etc/localtime`. To use another zone,
+set `TZ` in `.env`, e.g. `TZ=America/Denver`; compose passes it to the app as `MLW_TZ`, which
+the app applies at startup (an unknown zone name is reported in the server log and ignored).
+
 Production requires `MLW_STORAGE_SECRET`. Generate it once and keep it in `.env` (git-ignored),
 which compose reads automatically. Changing it signs everyone out of their saved settings.
 
@@ -278,8 +283,12 @@ Report and Logs are saved per user; Login applies to everyone using the server:
   (browser) has their own log in the state folder, at `logs/popups-ID.log` under
   `NICEGUI_STORAGE_PATH` (`/state` in production; the tab shows the exact path); at 1 MB it
   rolls over to a single `.1` backup. **View Log** shows the latest 1000 entries, **Download**
-  saves the whole log, and **Clear Log** deletes it (after asking). Times follow the server's
-  clock and time zone, which is UTC in the Docker images unless `TZ` is set.
+  saves the whole log, and **Clear Log** deletes it (after asking). **Log timestamps in**
+  chooses the time zone of the entries: **the server's time zone** (the default, named in the
+  tab), **UTC**, or **a time zone I choose** from the full list (type to filter), where **Use my
+  browser's** picks your browser's own zone. The server's time zone is the host's, from its
+  `/etc/localtime` (which `compose.yaml` mounts into the container), unless `TZ` is set in
+  `.env` (e.g. `TZ=America/Denver`).
 - **Login** — the server's single account (see [Logging in](#logging-in)):
   - **Log out after this many idle minutes** — 1–1440, default 30.
   - **Change password** — enter the current password and the new one twice. Leave all three
