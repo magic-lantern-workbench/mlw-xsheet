@@ -25,8 +25,10 @@
 # COPYRIGHT_END
 
 from pathlib import Path
+import datetime
 import json
 import os
+import re
 import time
 from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
@@ -172,6 +174,9 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
+#   'popup_log':      whether this user's status pop-ups (ui.notify) are
+#                     recorded in their log file (default: yes); set in File >
+#                     Preferences > Logs. See the "Pop-up log" section below.
 #   'oca_export':     File > Export > Export OCA's last options: picture 'width' and
 #                     'height', 'images' ('placeholder' or 'none') and
 #                     'cels_dir' (a folder in the data folder, or '').
@@ -182,6 +187,99 @@ MAX_RECENT_FILES_LIMIT = 20
 
 def user_storage():
     return session().user_storage
+
+
+# ---------------------------------------------------------------- Pop-up log
+#
+# Every status pop-up (ui.notify, from anywhere in the app: this module,
+# auth.py and the file dialogs) is also written, with its date and time, to
+# the user's log file when their Preferences > Logs setting allows it
+# (it does by default). The pop-up itself is always shown. Each user (browser)
+# has their own file in the state folder (NICEGUI_STORAGE_PATH/logs), which
+# rolls over to a single .1 backup at LOG_MAX_BYTES.
+
+LOG_DIR = Path(os.environ.get('NICEGUI_STORAGE_PATH') or '.nicegui').resolve() / 'logs'
+LOG_MAX_BYTES = 1_000_000
+LOG_LEVELS = {'positive': 'SUCCESS', 'negative': 'ERROR', 'warning': 'WARNING', 'info': 'INFO', 'ongoing': 'INFO'}
+_show_notification = ui.notify  # NiceGUI's own, called for every pop-up
+
+
+def popup_log_enabled() -> bool:
+    return bool(app.storage.user.get('popup_log', True))
+
+
+def set_popup_log_enabled(enabled: bool) -> None:
+    app.storage.user['popup_log'] = bool(enabled)
+
+
+def popup_log_path() -> Path:
+    """This user's (browser's) log file."""
+    browser_id = re.sub(r'[^A-Za-z0-9_-]', '', str(app.storage.browser.get('id', '')))[:36] or 'unknown'
+    return LOG_DIR / f'popups-{browser_id}.log'
+
+
+def log_popup(message, level: str) -> None:
+    """Append one pop-up to the user's log: date and time (with the UTC
+    offset), level, the open document and the message, on one line."""
+    path = popup_log_path()
+    try:
+        document = Path(session().current_file.get('path') or '').name or '(no file)'
+    except Exception:
+        document = '-'
+    stamp = datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')
+    text = ' '.join(str(message).split())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size >= LOG_MAX_BYTES:
+        path.replace(path.with_name(path.name + '.1'))
+    with path.open('a', encoding='utf-8') as f:
+        f.write(f'{stamp}  {level:<7}  {document}  {text}\n')
+
+
+def notify(message, *args, **kwargs):
+    """ui.notify, and the same message in the user's pop-up log when it's on.
+    Logging never gets in the way of the pop-up: outside a user's page (no
+    per-user storage), or if the file can't be written, it's just skipped."""
+    try:
+        if popup_log_enabled():
+            level = kwargs.get('type') or kwargs.get('color') or (args[1] if len(args) > 1 else None) or 'info'
+            log_popup(message, LOG_LEVELS.get(str(level), str(level).upper()))
+    except Exception:
+        pass
+    return _show_notification(message, *args, **kwargs)
+
+
+ui.notify = notify  # one place for every pop-up in the app, including auth.py and the dialogs
+
+
+def read_popup_log(max_lines: int = 1000) -> list[str]:
+    """The last lines of the user's log (with the backup's before them, if needed)."""
+    path = popup_log_path()
+    lines: list[str] = []
+    for file in (path.with_name(path.name + '.1'), path):
+        try:
+            lines += file.read_text(encoding='utf-8').splitlines()
+        except OSError:
+            pass
+    return lines[-max_lines:]
+
+
+def clear_popup_log() -> None:
+    path = popup_log_path()
+    for file in (path, path.with_name(path.name + '.1')):
+        file.unlink(missing_ok=True)
+
+
+def show_popup_log_dialog() -> None:
+    """Preferences > Logs > View Log: the log's latest entries, newest last."""
+    lines = read_popup_log()
+    with ui.dialog() as dlg, titled_card('Pop-up Log', classes='w-[900px] max-w-full', body_classes='gap-2'):
+        ui.label(f'{len(lines)} entr{"y" if len(lines) == 1 else "ies"} (the latest 1000), newest last — '
+                 f'{popup_log_path()}').classes('text-caption text-grey')
+        with ui.scroll_area().classes('w-full h-[420px] border rounded'):
+            ui.code('\n'.join(lines) or '(the log is empty)', language='text').classes('w-full text-xs')
+        with ui.row().classes('w-full justify-end gap-2'):
+            ui.button('Close', on_click=dlg.close).props('size=sm')
+    dlg.open()
 
 
 def format_prefs() -> dict:
@@ -460,14 +558,15 @@ def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
     (XML > Format), a Recent Files tab for File > Open Recent, an XSheet tab
     for the Exposure Sheet style, a Report tab for what XSheet > Generate
-    Report includes, and a Login tab for the server's password and
+    Report includes, a Logs tab for recording the status pop-ups, and a Login tab for the server's password and
     inactivity time-out (see auth.py)."""
-    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[460px] max-w-full', body_classes='gap-2'):
+    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[540px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
             xsheet_tab = ui.tab('XSheet')
             report_tab = ui.tab('Report')
+            logs_tab = ui.tab('Logs')
             login_tab = ui.tab('Login')
         with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
@@ -506,6 +605,36 @@ def show_preferences_dialog():
                     ui.button('Clear all', on_click=lambda: set_all_sections(False)).props('flat dense size=sm no-caps')
                 raw_box = ui.checkbox('Add the raw XML of the whole document as an appendix', value=report_include_raw()) \
                     .props('dense').classes('mt-1')
+            with ui.tab_panel(logs_tab).classes('px-0 gap-2'):
+                ui.label('Status pop-ups are always shown; this also keeps a record of them, each with its '
+                         'date and time.').classes('text-sm text-gray-500')
+                log_box = ui.checkbox('Record pop-up messages in a log file', value=popup_log_enabled()).props('dense')
+                ui.label(f'Log file (yours): {popup_log_path()}').classes('text-xs text-gray-500 break-all')
+
+                def download_log():
+                    lines = read_popup_log(max_lines=10**9)
+                    if not lines:
+                        ui.notify('The log is empty', color='info')
+                        return
+                    ui.download(('\n'.join(lines) + '\n').encode('utf-8'), 'mlw-xsheet-popups.log', 'text/plain')
+
+                def confirm_clear_log():
+                    with ui.dialog() as confirm, titled_card('Clear Log'):
+                        ui.label('Delete every entry in your pop-up log?')
+                        with ui.row().classes('mt-4 justify-end gap-2'):
+                            ui.button('No', on_click=confirm.close).props('outline size=sm')
+
+                            def do_clear():
+                                confirm.close()
+                                clear_popup_log()
+                                ui.notify('Pop-up log cleared', color='positive')
+                            ui.button('Yes', on_click=do_clear).props('size=sm')
+                    confirm.open()
+
+                with ui.row().classes('gap-2 mt-1'):
+                    ui.button('View Log', icon='article', on_click=show_popup_log_dialog).props('outline size=sm')
+                    ui.button('Download', icon='download', on_click=download_log).props('outline size=sm')
+                    ui.button('Clear Log', icon='delete', on_click=confirm_clear_log).props('outline size=sm')
             with ui.tab_panel(login_tab).classes('px-0 gap-2'):
                 ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
                 timeout_input = ui.number(
@@ -547,6 +676,7 @@ def show_preferences_dialog():
             set_format_prefs(prefs)
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
+            set_popup_log_enabled(log_box.value)
             try:
                 set_recent_files_limit(int(recent_input.value))
             except (TypeError, ValueError):

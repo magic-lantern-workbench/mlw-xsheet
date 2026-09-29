@@ -246,8 +246,8 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**. The dialog has five tabs. Format, Recent Files, XSheet and
-Report are saved per user; Login applies to everyone using the server:
+Opened from **File > Preferences…**. The dialog has six tabs. Format, Recent Files, XSheet,
+Report and Logs are saved per user; Login applies to everyone using the server:
 
 - **Format** — controls the **XML > Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
@@ -265,6 +265,21 @@ Report are saved per user; Login applies to everyone using the server:
   appendix. Production and VersionControl are always included. A left-out section doesn't appear
   as a section or in the table of contents (the appendix, if added, is still the complete
   document).
+- **Logs** — **Record pop-up messages in a log file** (on by default) keeps a record of every
+  status pop-up the app shows you — confirmations, warnings and errors, from any menu or dialog,
+  including the login page — one line each, with the date, time and UTC offset, the level
+  (SUCCESS, ERROR, WARNING or INFO), the open document and the message:
+
+  ```
+  2026-09-29 20:35:01 +0000  SUCCESS  xsheet-exposure.xml  Opened xsheet-exposure.xml
+  ```
+
+  The pop-ups are always shown; turning the option off only stops recording them. Each user
+  (browser) has their own log in the state folder, at `logs/popups-ID.log` under
+  `NICEGUI_STORAGE_PATH` (`/state` in production; the tab shows the exact path); at 1 MB it
+  rolls over to a single `.1` backup. **View Log** shows the latest 1000 entries, **Download**
+  saves the whole log, and **Clear Log** deletes it (after asking). Times follow the server's
+  clock and time zone, which is UTC in the Docker images unless `TZ` is set.
 - **Login** — the server's single account (see [Logging in](#logging-in)):
   - **Log out after this many idle minutes** — 1–1440, default 30.
   - **Change password** — enter the current password and the new one twice. Leave all three
