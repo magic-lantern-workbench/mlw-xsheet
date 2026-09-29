@@ -31,9 +31,11 @@ import time
 from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
+from choose_folder import choose_folder as ChooseFolderDialog
 from dialog_ui import titled_card, within
 import auth
 from tools import xsheet_to_xdts_extended
+from tools import xsheet_to_oca
 import export_pdf
 
 # Directory the file dialogs start in and the /files route lists. Defaults to
@@ -170,6 +172,9 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
+#   'oca_export':     File > Export OCA's last options: picture 'width' and
+#                     'height', 'images' ('placeholder' or 'none') and
+#                     'cels_dir' (a folder in the data folder, or '').
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
@@ -220,6 +225,19 @@ def report_sections() -> list[str]:
 
 def report_include_raw() -> bool:
     return bool(user_storage().get('report_include_raw', True))
+
+
+def oca_export_options() -> dict:
+    stored = user_storage().get('oca_export')
+    options = {'width': xsheet_to_oca.DEFAULT_WIDTH, 'height': xsheet_to_oca.DEFAULT_HEIGHT,
+               'images': 'placeholder', 'cels_dir': ''}
+    if isinstance(stored, dict):
+        options.update({k: v for k, v in stored.items() if k in options})
+    return options
+
+
+def set_oca_export_options(options: dict) -> None:
+    user_storage()['oca_export'] = dict(options)
 
 
 def set_report_options(sections: list[str], include_raw: bool) -> None:
@@ -3904,7 +3922,7 @@ def save_file(on_saved=None):
     confirm_dialog.open()
 
 
-def _confirm_overwrite(path: Path, on_confirm):
+def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
     """If `path` already exists, ask for confirmation before calling
     on_confirm(); otherwise call it immediately. Shared by Save As and the
     Export features, which would otherwise silently clobber an existing
@@ -3913,7 +3931,7 @@ def _confirm_overwrite(path: Path, on_confirm):
         on_confirm()
         return
     with ui.dialog() as confirm_dialog, titled_card('File Already Exists'):
-        ui.label(f'{path.name} already exists. Overwrite it?')
+        ui.label(message or f'{path.name} already exists. Overwrite it?')
         with ui.row().classes('mt-4 justify-end'):
             def do_no(_=None):
                 confirm_dialog.close()
@@ -4021,6 +4039,168 @@ def export_xdts():
         filename=start_name,
         upper_limit=str(BASE_DIR),
         allowed_extensions=['.json'],
+    )
+    dialog.open()
+
+
+# File > Export OCA: what the Images choice offers
+OCA_IMAGE_MODES = {'placeholder': 'A labelled placeholder image for each cel',
+                   'none': 'No images (the OCA data files only)'}
+
+
+def export_oca():
+    """Convert the current editor contents (an XSheet ExposureSheet document)
+    to an Open Cel Animation (OCA) document, a NAME.oca folder of JSON and
+    images (see tools/xsheet_to_oca.py): first its options -- picture size,
+    images, and an optional folder of real cel images -- then where to save
+    it, via a Save As-style dialog."""
+    sess = session()
+    text = _editor_text()
+    if not text.strip():
+        ui.notify('Nothing to export', color='warning')
+        return
+    source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
+    try:
+        xsheet_to_oca.convert_string(text, source_name=source_name)  # report a bad document before any dialog
+    except Exception as exc:
+        ui.notify(f'Export failed: {exc}', color='negative')
+        return
+    options = oca_export_options()
+
+    with ui.dialog() as dlg, titled_card('Export OCA', classes='w-[460px] max-w-full', body_classes='gap-2'):
+        ui.label('Writes an Open Cel Animation (OCA 1.3.0) folder: the OCA data file, its metadata '
+                 'and a folder of images per layer, for Krita and other OCA tools.') \
+            .classes('text-caption text-grey')
+        with ui.row().classes('w-full gap-3 no-wrap'):
+            width_input = ui.number('Picture width (px)', value=options['width'], min=1, step=1, format='%d') \
+                .classes('flex-grow').props('dense')
+            height_input = ui.number('Picture height (px)', value=options['height'], min=1, step=1, format='%d') \
+                .classes('flex-grow').props('dense')
+        ui.label('Images').classes('text-sm text-grey-8 mt-1')
+        images_input = ui.radio(OCA_IMAGE_MODES, value=options['images'] if options['images'] in OCA_IMAGE_MODES
+                                else 'placeholder').props('dense')
+        def browse_cels(_=None):
+            """Choose (or create) the cel images folder in a folder browser."""
+            current = BASE_DIR / cels_input.value if cels_input.value else None
+            start = current if current is not None and current.is_dir() else (
+                Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR)
+
+            class CelsFolderDialog(ChooseFolderDialog):
+                def submit(self, value):
+                    if value:
+                        folder = Path(value[0]).resolve()
+                        relative = folder.relative_to(BASE_DIR) if within(folder, BASE_DIR) else folder
+                        cels_input.value = '' if str(relative) == '.' else relative.as_posix()
+                    self.close()
+                    super().submit(value)
+
+            CelsFolderDialog(str(start), title='Cel Images Folder', upper_limit=str(BASE_DIR)).open()
+
+        with ui.row().classes('w-full items-center gap-1 no-wrap'):
+            cels_input = ui.input('Copy cel images from (optional)', value=options['cels_dir'],
+                                  placeholder='Browse to choose or create a folder') \
+                .classes('flex-grow').props('dense readonly')
+            cels_input.on('click', browse_cels)
+            browse_button = ui.button(icon='folder_open', on_click=browse_cels).props('flat dense round') \
+                .tooltip('Browse for the folder (or create one)')
+            # read-only fields don't show Quasar's clear icon, so it gets its own button
+            clear_button = ui.button(icon='close', on_click=lambda: cels_input.set_value('')) \
+                .props('flat dense round').tooltip('No cel images folder')
+            clear_button.bind_visibility_from(cels_input, 'value', backward=bool)
+        for element in (cels_input, browse_button, clear_button):
+            element.bind_enabled_from(images_input, 'value', backward=lambda v: v == 'placeholder')
+        ui.label('Where your real cel images are, if you have them. Images are always written into the '
+                 'NAME.oca folder you choose next: each cel with a matching image here (LAYER/CEL.png or '
+                 'CEL.png, e.g. CHAR/A001.png) gets a copy of it, and every other cel a placeholder.') \
+            .classes('text-xs text-grey')
+
+        def next_step(_=None):
+            width, height = width_input.value, height_input.value
+            if any(v is None or float(v) != int(v) or int(v) < 1 for v in (width, height)):
+                ui.notify('The picture width and height must be whole numbers of 1 or more', color='warning')
+                return
+            cels_value = (cels_input.value or '').strip()
+            cels_dir = None
+            if cels_value and images_input.value == 'placeholder':
+                candidate = Path(cels_value)
+                candidate = candidate if candidate.is_absolute() else BASE_DIR / candidate
+                if not within(candidate, BASE_DIR) or not candidate.is_dir():
+                    ui.notify(f'{cels_value} is not a folder in the data folder', color='warning')
+                    return
+                cels_dir = candidate.resolve()
+            chosen = {'width': int(width), 'height': int(height), 'images': images_input.value, 'cels_dir': cels_value}
+            set_oca_export_options(chosen)
+            dlg.close()
+            _choose_oca_destination(text, source_name, chosen, cels_dir)
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Next…', on_click=next_step).props('size=sm')
+    dlg.open()
+
+
+def _choose_oca_destination(text: str, source_name: str, options: dict, cels_dir: Path | None) -> None:
+    """Export OCA, second step: where to save the NAME.oca folder, then write it."""
+    sess = session()
+
+    def file_selected_callback(files):
+        if not files:
+            return
+        dest = xsheet_to_oca.oca_folder(Path(files[0]))
+        if not within(dest.parent, BASE_DIR):
+            ui.notify(f'{dest.name} is outside the folders you can save to', color='warning')
+            return
+
+        def do_export():
+            try:
+                summary = xsheet_to_oca.export_oca(text, dest, source_name=source_name, width=options['width'],
+                                                   height=options['height'], image_mode=options['images'],
+                                                   cels_dir=cels_dir, replace=True)
+            except Exception as exc:
+                ui.notify(f'Export failed: {exc}', color='negative')
+                return
+            total = summary['copied'] + summary['placeholders']
+            if options['images'] != 'placeholder':
+                images = 'no images'
+            elif cels_dir is not None:
+                images = (f"{summary['copied']} of {total} cel image(s) found in {options['cels_dir']}, "
+                          f"{summary['placeholders']} placeholder(s)")
+            else:
+                images = f"{summary['placeholders']} placeholder image(s)"
+            if summary['problems']:
+                ui.notify(f"Exported {dest.name}, but it doesn't fully comply with OCA 1.3.0: "
+                          + '; '.join(summary['problems'][:3]), color='warning', multi_line=True, timeout=10000)
+                return
+            exported = (f"Exported {dest.name}: {summary['layers']} layer(s), {summary['exposures']} exposure(s), "
+                        f"frames {summary['start']}–{summary['end']}; {images}")
+            if cels_dir is not None and summary['missing'] and not summary['copied']:
+                # nothing matched: say what was looked for, so the images can be named to match
+                examples = ', '.join(summary['missing'][:3]) + (', …' if len(summary['missing']) > 3 else '.')
+                ui.notify(f"{exported}. No cel images were found in {options['cels_dir']}: it should hold "
+                          f"images named LAYER/CEL.png or CEL.png, e.g. {examples}",
+                          color='warning', multi_line=True, timeout=12000)
+            else:
+                ui.notify(exported, color='positive', multi_line=True)
+
+        if dest.exists() and not xsheet_to_oca.is_oca_folder(dest):
+            ui.notify(f'{dest.name} already exists and is not an OCA folder; choose another name', color='warning')
+            return
+        _confirm_overwrite(dest, do_export,
+                           message=f'{dest.name} already exists. Replace that OCA folder and everything in it?')
+
+    class ExportFileWithCallback(SaveFileDialog):
+        def submit(self, value):
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    dialog = ExportFileWithCallback(
+        str(start_dir),
+        title='Export OCA',
+        filename=f'{source_name}.oca',
+        upper_limit=str(BASE_DIR),
+        allowed_extensions=['.oca'],
     )
     dialog.open()
 
@@ -4543,6 +4723,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
+                ui.menu_item('Export OCA', on_click=lambda _: export_oca())
                 ui.separator()
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo

@@ -38,10 +38,16 @@ optional ``_meta.json`` sidecar, and one sub-folder of images per layer:
         CHAR/A001.png
         ...
 
-This module is used two ways, like the XDTS converters: as a standalone CLI
-tool (see ``main()``), and as a library via ``convert_string()`` /
-``convert_element()`` (the OCA data and metadata as dicts) and
-``write_oca()`` (the whole folder).
+This module is used two ways, like the XDTS converters:
+
+- As a standalone CLI tool (see ``main()`` / ``if __name__ == "__main__"``
+  below).
+- As a library imported by the Editor (main.py) to power its File > Export
+  OCA feature, via ``export_oca()``, which converts in-editor text (no file
+  on disk required) and writes, and checks, the whole OCA folder. The
+  building blocks are also available: ``convert_string()`` /
+  ``convert_element()`` give the OCA data and metadata as dicts,
+  ``write_oca()`` writes a folder and ``check_oca()`` checks one.
 
 The two formats model an exposure sheet differently, so the converter makes
 these mapping decisions:
@@ -355,6 +361,74 @@ def build_document(root: ET.Element, *, source_name: str = "untitled",
     return document, metadata, images
 
 
+def oca_folder(path: Path) -> Path:
+    """The OCA folder for an output path: it always ends in ``.oca``."""
+    path = Path(path)
+    return path if path.suffix == ".oca" else path.with_name(path.name + ".oca")
+
+
+def is_oca_folder(path: Path) -> bool:
+    """Whether ``path`` is an OCA folder: a folder holding its own
+    ``NAME.oca`` data file. Only such a folder is ever replaced."""
+    path = Path(path)
+    stem = path.name[:-4] if path.name.endswith(".oca") else path.name
+    return path.is_dir() and (path / f"{stem}.oca").is_file()
+
+
+def export_oca(xml_text: str, out_dir: Path, *, source_name: str = "untitled",
+               width: int = DEFAULT_WIDTH, height: int = DEFAULT_HEIGHT, image_mode: str = "placeholder",
+               cels_dir: Path | None = None, replace: bool = False, validate: bool = True) -> dict:
+    """High-level entry point for the Editor's Export OCA feature (and the
+    CLI): convert XSheet XML text and write the OCA folder ``out_dir``
+    (``.oca`` is added to its name if missing).
+
+    An existing ``out_dir`` is only replaced when ``replace`` is set, and
+    only if it is an OCA folder (see ``is_oca_folder()``), so a mistyped
+    name can't delete some other folder or file.
+
+    Returns a summary: ``path``, ``layers``, ``exposures`` (non-blank OCA
+    frames), ``start`` / ``end`` (the first and last frame), ``copied`` /
+    ``placeholders`` (images), ``missing`` (the ``LAYER/CEL.png`` images
+    looked for in ``cels_dir`` but not found) and ``problems`` (from ``check_oca()``, when
+    ``validate`` is set; empty if the folder complies with OCA 1.3.0).
+
+    Raises XSheetConversionError if the XML can't be parsed or isn't an
+    ExposureSheet, the picture size isn't positive, or ``out_dir`` exists
+    and can't be replaced; FileExistsError if it exists and ``replace``
+    isn't set; OSError if writing fails. Callers (e.g. main.py) are
+    expected to catch these and report them to the user.
+    """
+    if width < 1 or height < 1:
+        raise XSheetConversionError("The picture width and height must be 1 or more.")
+    if image_mode not in ("placeholder", "none"):
+        raise XSheetConversionError(f"Unknown image mode {image_mode!r}.")
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise XSheetConversionError(f"XSheet XML is not well-formed: {exc}") from exc
+    document, metadata, images = build_document(root, source_name=source_name, width=width, height=height)
+
+    out_dir = oca_folder(out_dir)
+    if out_dir.exists() or out_dir.is_symlink():
+        if not replace:
+            raise FileExistsError(f"{out_dir} already exists")
+        if out_dir.is_symlink() or not is_oca_folder(out_dir):
+            raise XSheetConversionError(f"{out_dir.name} already exists and is not an OCA folder, "
+                                        "so it was not replaced. Choose another name.")
+        shutil.rmtree(out_dir)
+    counts = write_oca(document, metadata, images, out_dir, image_mode=image_mode, cels_dir=cels_dir)
+    layers = document["layers"]
+    return {
+        "path": out_dir,
+        "layers": len(layers),
+        "exposures": sum(1 for layer in layers for f in layer["frames"] if f["name"] != BLANK),
+        "start": document["startTime"],
+        "end": document["endTime"] - 1,
+        **counts,
+        "problems": check_oca(document, metadata, out_dir if image_mode != "none" else None) if validate else [],
+    }
+
+
 def convert_element(root: ET.Element, *, source_name: str = "untitled",
                     width: int = DEFAULT_WIDTH, height: int = DEFAULT_HEIGHT) -> tuple[dict, dict]:
     """Convert a parsed <ExposureSheet> into (OCA root object, OCA metadata object)."""
@@ -501,10 +575,12 @@ def write_oca(document: dict, metadata: dict, images: dict, out_dir: Path, *,
               image_mode: str = "placeholder", cels_dir: Path | None = None) -> dict:
     """Write the OCA folder ``out_dir`` (``NAME.oca``): the data file
     ``NAME.oca``, the ``NAME_meta.json`` sidecar and the layer images.
-    Returns counts of the images copied from ``cels_dir`` and of placeholders."""
+    Returns counts of the images copied from ``cels_dir`` and of
+    placeholders, and ``missing``: for each placeholder written while a
+    ``cels_dir`` was given, the ``LAYER/CEL.png`` it looked for there."""
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = out_dir.name[:-4] if out_dir.name.endswith(".oca") else out_dir.name
-    counts = {"copied": 0, "placeholders": 0}
+    counts = {"copied": 0, "placeholders": 0, "missing": []}
     if image_mode != "none":
         for rel, (layer_id, value, row) in images.items():
             path = out_dir / rel
@@ -524,6 +600,8 @@ def write_oca(document: dict, metadata: dict, images: dict, out_dir: Path, *,
             else:
                 write_placeholder(path, document["width"], document["height"], f"{layer_id}: {value}", row)
                 counts["placeholders"] += 1
+                if cels_dir is not None:
+                    counts["missing"].append(f"{safe_name(layer_id)}/{safe_name(value)}.png")
     # OCA: UTF-8, pretty printed with a 4-space indent
     (out_dir / f"{stem}.oca").write_text(json.dumps(document, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
     (out_dir / f"{stem}_meta.json").write_text(json.dumps(metadata, indent=4, ensure_ascii=False) + "\n",
@@ -544,41 +622,31 @@ def main() -> int:
                         help="Folder of real cel images to copy in place of placeholders "
                              "(DIR/LAYER/CEL.png or DIR/CEL.png)")
     parser.add_argument("--validate", action="store_true", help="Check the result against the OCA 1.3.0 spec")
-    parser.add_argument("--force", action="store_true", help="Replace the output folder if it already exists")
+    parser.add_argument("--force", action="store_true",
+                        help="Replace the output folder if it already exists (only an OCA folder is replaced)")
     args = parser.parse_args()
 
-    if args.width < 1 or args.height < 1:
-        print("--width and --height must be 1 or more", file=sys.stderr)
-        return 2
     try:
-        root = ET.parse(args.input).getroot()
-        document, metadata, images = build_document(root, source_name=args.input.stem,
-                                                    width=args.width, height=args.height)
-    except (OSError, ET.ParseError, XSheetConversionError) as exc:
+        xml_text = args.input.read_text(encoding="utf-8")
+        summary = export_oca(xml_text, args.output or args.input.with_suffix(".oca"), source_name=args.input.stem,
+                             width=args.width, height=args.height, image_mode=args.images,
+                             cels_dir=args.cels_dir, replace=args.force, validate=args.validate)
+    except FileExistsError as exc:
+        print(f"{exc}; use --force to replace it", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeDecodeError, XSheetConversionError) as exc:
         print(f"Could not convert {args.input}: {exc}", file=sys.stderr)
         return 1
 
-    out_dir = args.output or args.input.with_suffix(".oca")
-    if out_dir.suffix != ".oca":
-        out_dir = out_dir.with_name(out_dir.name + ".oca")
-    if out_dir.exists():
-        if not args.force:
-            print(f"{out_dir} already exists; use --force to replace it", file=sys.stderr)
-            return 1
-        shutil.rmtree(out_dir) if out_dir.is_dir() else out_dir.unlink()
-    counts = write_oca(document, metadata, images, out_dir, image_mode=args.images, cels_dir=args.cels_dir)
-
-    if args.validate:
-        problems = check_oca(document, metadata, out_dir if args.images != "none" else None)
-        if problems:
-            print("OCA check failed:\n  " + "\n  ".join(problems), file=sys.stderr)
-            return 1
-    layers = document["layers"]
-    print(f"Wrote {out_dir}: {len(layers)} layer(s), "
-          f"{sum(1 for layer in layers for f in layer['frames'] if f['name'] != BLANK)} exposure(s), "
-          f"frames {document['startTime']}-{document['endTime'] - 1}; "
-          f"{counts['copied']} image(s) copied, {counts['placeholders']} placeholder(s)"
+    if summary["problems"]:
+        print("OCA check failed:\n  " + "\n  ".join(summary["problems"]), file=sys.stderr)
+        return 1
+    print(f"Wrote {summary['path']}: {summary['layers']} layer(s), {summary['exposures']} exposure(s), "
+          f"frames {summary['start']}-{summary['end']}; "
+          f"{summary['copied']} image(s) copied, {summary['placeholders']} placeholder(s)"
           + ("; OCA check passed" if args.validate else ""))
+    if summary["missing"]:
+        print(f"Not found in {args.cels_dir} (as LAYER/CEL.png or CEL.png): " + ", ".join(summary["missing"]))
     return 0
 
 

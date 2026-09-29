@@ -195,6 +195,7 @@ switching browsers starts fresh settings.
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
+| Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder in the data folder where your real cel images are. Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
 
 ### Edit menu
@@ -420,7 +421,7 @@ the combined chord isn't claimed by either.)
 
 `tools/xsheet_to_oca.py` converts an ExposureSheet into an [OCA](https://oca.rxlab.guide) 1.3.0
 document, the open exchange format for cel animation read by Krita (with the OCA plug-in) and
-other tools:
+other tools. **File > Export OCA** does the same from the app; on the command line:
 
 ```
 python3 tools/xsheet_to_oca.py examples/xsheet-exposure.xml --validate
@@ -449,7 +450,8 @@ indent), the `NAME_meta.json` metadata sidecar, and a folder of images per layer
 
 `--validate` checks the result against the OCA 1.3.0 specification (required attributes and
 types, no unknown attributes, layer types, blank frames, unique layer names, and that every
-image exists). An existing output folder is only replaced with `--force`. The converter needs
+image exists); File > Export OCA always checks it. An existing output folder is only replaced
+with `--force`, and only if it is an OCA folder (one holding its own `NAME.oca` data file). The converter needs
 only the Python standard library; Pillow, when installed (it is in the Docker image), draws the
 placeholder labels.
 
