@@ -172,7 +172,7 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
-#   'oca_export':     File > Export OCA's last options: picture 'width' and
+#   'oca_export':     File > Export > Export OCA's last options: picture 'width' and
 #                     'height', 'images' ('placeholder' or 'none') and
 #                     'cels_dir' (a folder in the data folder, or '').
 DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
@@ -4043,7 +4043,7 @@ def export_xdts():
     dialog.open()
 
 
-# File > Export OCA: what the Images choice offers
+# File > Export > Export OCA: what the Images choice offers
 OCA_IMAGE_MODES = {'placeholder': 'A labelled placeholder image for each cel',
                    'none': 'No images (the OCA data files only)'}
 
@@ -4722,8 +4722,13 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
-                ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
-                ui.menu_item('Export OCA', on_click=lambda _: export_oca())
+                # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)
+                with ui.menu_item('Export', auto_close=False).on('click.stop', js_handler='() => {}'):
+                    with ui.item_section().props('side'):
+                        ui.icon('keyboard_arrow_right')
+                    with ui.menu().props('anchor="top end" self="top start" auto-close'):
+                        ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
+                        ui.menu_item('Export OCA', on_click=lambda _: export_oca())
                 ui.separator()
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
