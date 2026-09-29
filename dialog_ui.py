@@ -53,11 +53,12 @@ def titled_card(title: str, *, classes: str = '', body_classes: str = 'gap-4'):
 
 def give_to_owner_of(path, root) -> None:
     """Give `path` -- and, for a folder, everything in it -- the user and
-    group that own `root` (the data folder), when the app runs as root, as
-    the development container does. Files the app writes into someone's
-    folder then belong to them, not to root. Running as another user (the
-    production container's app user, which owns /data) there's nothing to
-    change. Best effort: a file that can't be changed is left as it is."""
+    group that own `root` (the data folder), when the app runs as root.
+    Files the app writes into someone's folder then belong to them, not to
+    root. Normally there's nothing to do: the development container's
+    docker-entrypoint.sh runs the app as the project folder's owner, and the
+    production container as its app user, which owns /data. Best effort: a
+    file that can't be changed is left as it is."""
     if not hasattr(os, 'geteuid') or os.geteuid() != 0:
         return
     try:

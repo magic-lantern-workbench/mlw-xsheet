@@ -160,9 +160,15 @@ saved with **Save** or **Save As**, the **Export XSheet** and **Generate Report*
 XDTS** files, **Export OCA**'s whole `NAME.oca` folder, folders made with **New Folder** in the
 file dialogs, and the pop-up logs (and their folder) in the state folder. A file saved over
 keeps that owner too, and logs written as root before are fixed the next time they're written
-to. The development container runs as root, so without this they'd belong to root in your
-project directory; in production the app already runs as the user that owns `/data`, and
-there's nothing to change.
+to. This matters when the app runs as root; normally it doesn't:
+
+- **Development** — the container's start-up script (`docker-entrypoint.sh`) installs any new
+  requirements as root, then runs the app as the user who owns the project folder, so
+  everything it writes there is yours. At start it also hands NiceGUI's `.nicegui/` storage
+  (the login credential, and each browser's settings and unsaved drafts) back to that user and
+  makes it private to them (`700`), since other users on the machine could read it before.
+- **Production** — the app runs as the `app` user that owns `/data` and `/state`, and there's
+  nothing to change.
 
 ### Multiple users
 
