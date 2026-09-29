@@ -19,7 +19,8 @@ Since it's really just a schema-driven XML/XSD editor, it works for editing and 
 
 Beyond editing, the project includes conversion tools (in [`tools/`](tools/)) for moving data
 between an ExposureSheet XML document and XDTS JSON timesheets, so that work started in this
-tool (or in OpenToonz) can migrate between the two.
+tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet and an
+[Open Cel Animation (OCA)](https://oca.rxlab.guide) document, for Krita and other OCA tools.
 
 ## Features
 
@@ -415,6 +416,70 @@ the combined chord isn't claimed by either.)
 | About | Show the app name, author, version, and a link to more information, with the license in a scrollable tab. |
 | Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. Click a review to go to it: on the XSheet tab, the grid scrolls to its frame and selects it (the run's row, if the frame is in a collapsed run); on the XML tab, the editor scrolls to its `<Review>` element and the Hierarchy tree selects it. Click a review's ✏️ to edit its ID, frame, reviewer, status and comment, or **Delete** it; **Add Review** adds one, prefilled with the next free `RV###` ID, the frame selected in the XSheet, you as the reviewer, and **Pending**. IDs must be valid XML names and not already used by another review, audio track or asset (they share one ID space). The first review adds `<Reviews>` after `<Timeline>`, and deleting the last one removes it, as the schema requires. Each change is one ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against the schema, and the list and the grid's Tech. Notes update straight away. |
 
+## Converting to and from Open Cel Animation (OCA)
+
+`tools/xsheet_to_oca.py` converts an ExposureSheet into an [OCA](https://oca.rxlab.guide) 1.3.0
+document, the open exchange format for cel animation read by Krita (with the OCA plug-in) and
+other tools:
+
+```
+python3 tools/xsheet_to_oca.py examples/xsheet-exposure.xml --validate
+python3 tools/xsheet_to_oca.py SHOT.xml -o out/SHOT.oca --width 1280 --height 720 --cels-dir artwork/
+```
+
+It writes an OCA folder `NAME.oca/` holding the data file `NAME.oca` (UTF-8 JSON, 4-space
+indent), the `NAME_meta.json` metadata sidecar, and a folder of images per layer:
+
+- **Document** — the Production Title, FrameRate, and the sheet's own frame range (`startTime`
+  is the first frame, `endTime` one past the last). ExposureSheets have no picture size, so
+  `--width` / `--height` set it (default 1920×1080).
+- **Layers** — one paint layer per XSheet layer, bottom to top by `zOrder`. A 3D layer's scene
+  file is exposed as an image of it, and marked 3D in the layer's `meta`.
+- **Frames** — each held cel becomes one OCA frame with a `duration`; frames before a layer
+  first appears, or after a `<Frame>` that no longer lists it, are `_blank`. A reused cel points
+  at the same image.
+- **Images** — ExposureSheets name cels but hold no pictures, so by default each distinct cel
+  gets a transparent placeholder PNG of the picture size, labelled with its layer and cel.
+  `--cels-dir DIR` copies real images instead where it finds `DIR/LAYER/CEL.png` or
+  `DIR/CEL.png`; `--images none` writes only the JSON.
+- **Everything else** — production IDs, assets, dialogue, notes, camera moves and keyframes,
+  audio cues, reviews, revisions and the OTIO mapping have no OCA attributes, so they're kept in
+  the `meta` objects OCA provides for custom data (`meta.xsheet` in the sidecar, and on each
+  layer and frame). The data file holds only attributes the OCA spec lists.
+
+`--validate` checks the result against the OCA 1.3.0 specification (required attributes and
+types, no unknown attributes, layer types, blank frames, unique layer names, and that every
+image exists). An existing output folder is only replaced with `--force`. The converter needs
+only the Python standard library; Pillow, when installed (it is in the Docker image), draws the
+placeholder labels.
+
+`tools/oca_to_xsheet.py` converts the other way, from an OCA folder (or its data file) to an
+ExposureSheet XML document:
+
+```
+python3 tools/oca_to_xsheet.py examples/xsheet-exposure.oca --validate
+python3 tools/oca_to_xsheet.py Bird.oca -o Bird.xml --project-id SHOW001 --shot-id SH010 --validate
+```
+
+- **From `xsheet_to_oca.py`** — the ExposureSheet data it kept in the OCA metadata is restored,
+  so converting an ExposureSheet to OCA and back gives the same exposure sheet: every row and
+  column of the XSheet grid, the production details, assets, audio, camera, reviews, revision
+  history and OTIO mapping.
+- **From any other OCA tool** — each paint or vector layer becomes an XSheet layer (bottom to
+  top, with group layers flattened into their children; clone and nested-OCA layers, which have
+  no pictures of their own, are left out). Each OCA frame's name becomes the cel it exposes
+  (or a 3D layer's scene file, for names like `vehicle.usd`), held for its `duration`; `_blank`
+  frames and gaps leave the layer empty. A `<Frame>` is written wherever a layer's exposure
+  changes, and each layer gets an Asset. The Title and FrameRate come from the document
+  (rounded to a whole number), and the timeline is shifted up if it starts below frame 1, as
+  XSheet frames are numbered from 1. ProjectID, SequenceID, SceneID and ShotID are `UNKNOWN`
+  unless `--project-id`, `--sequence-id`, `--scene-id` / `--shot-id` are given, and
+  VersionControl gets a revision recording the conversion. A comment at the top of the file
+  lists every placeholder and adjustment.
+
+`--validate` checks the result against `xml/xsheet-core.xsd` (with the `xmlschema` library the
+app uses). An existing output file is only replaced with `--force`.
+
 ## Project layout
 
 ```
@@ -422,6 +487,6 @@ main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, vali
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
 xml/              XSD schemas defining the ExposureSheet document format
 examples/         Sample .xml / .xsd / .json documents
-tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema)
+tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA
 doc/              XDTS file format reference and XML validation notes
 ```
