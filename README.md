@@ -19,7 +19,8 @@ Since it's really just a schema-driven XML/XSD editor, it works for editing and 
 
 Beyond editing, the project includes conversion tools (in [`tools/`](tools/)) for moving data
 between an ExposureSheet XML document and XDTS JSON timesheets, so that work started in this
-tool (or in OpenToonz) can migrate between the two.
+tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet and an
+[Open Cel Animation (OCA)](https://oca.rxlab.guide) document, for Krita and other OCA tools.
 
 ## Features
 
@@ -110,6 +111,11 @@ directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), `MLW_RE
 `MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the host port in
 development.
 
+The server's time zone (for timestamps such as the pop-up log's) follows the host: both the
+development and production containers mount the host's `/etc/localtime`. To use another zone,
+set `TZ` in `.env`, e.g. `TZ=America/Denver`; compose passes it to the app as `MLW_TZ`, which
+the app applies at startup (an unknown zone name is reported in the server log and ignored).
+
 Production requires `MLW_STORAGE_SECRET`. Generate it once and keep it in `.env` (git-ignored),
 which compose reads automatically. Changing it signs everyone out of their saved settings.
 
@@ -148,6 +154,21 @@ pointing outside, and tampered requests are refused too. Paths remembered from b
 Recent, the last Open folder, the reopened document) that fall outside it are ignored. The
 app's bundled schemas can still be read for validation, and Select Schema offers them
 alongside the data folder when they live outside it, as in production.
+
+Every file the app writes for you gets the user and group that own the data folder: documents
+saved with **Save** or **Save As**, the **Export XSheet** and **Generate Report** PDFs, **Export
+XDTS** files, **Export OCA**'s whole `NAME.oca` folder, folders made with **New Folder** in the
+file dialogs, and the pop-up logs (and their folder) in the state folder. A file saved over
+keeps that owner too, and logs written as root before are fixed the next time they're written
+to. This matters when the app runs as root; normally it doesn't:
+
+- **Development** — the container's start-up script (`docker-entrypoint.sh`) installs any new
+  requirements as root, then runs the app as the user who owns the project folder, so
+  everything it writes there is yours. At start it also hands NiceGUI's `.nicegui/` storage
+  (the login credential, and each browser's settings and unsaved drafts) back to that user and
+  makes it private to them (`700`), since other users on the machine could read it before.
+- **Production** — the app runs as the `app` user that owns `/data` and `/state`, and there's
+  nothing to change.
 
 ### Multiple users
 
@@ -188,12 +209,14 @@ switching browsers starts fresh settings.
 
 | Item | What it does |
 |---|---|
+| New | Start a new ExposureSheet document that is well-formed and valid against the XML Schema, with placeholder values to replace: the four required sections (Production with `UNKNOWN` IDs, the Title "Untitled", 24 fps and frames 1–24; Assets with one `Unknown` asset; a Timeline whose frame 1 exposes a "New Layer" at cel `A001`; and VersionControl with a first revision by you, dated today), laid out with your Format preferences. If the open document has unsaved changes, you're asked first (Cancel / No / Yes, as when closing). Nothing is written to disk until you choose **Save** or **Save As** (both open the Save As dialog, suggesting `untitled.xml`); until then the footer shows `untitled.xml *`, and the document is kept as a draft like any unsaved work. |
 | Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
-| Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
+| Export > Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
+| Export > Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder in the data folder where your real cel images are. Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
 | Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
 
 ### Edit menu
@@ -232,7 +255,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 | Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
 | Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). In production, a **Data / Bundled schemas** switch also lets you pick one of the app's own schemas. |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
-| Format | Pretty-print the current document using the indent settings from Preferences, and mark it as modified. |
+| Format | Pretty-print the current document using the settings in Preferences > Format (by default: 4-space indents, one blank line between sibling elements, and each attribute of a multi-attribute tag on its own line), and mark it as modified. |
 
 Schema resolution order for **Validate against Schema**:
 1. A schema explicitly chosen via **Select Schema…**.
@@ -244,12 +267,32 @@ Schema resolution order for **Validate against Schema**:
 
 ### Preferences dialog
 
-Opened from **File > Preferences…**. The dialog has five tabs. Format, Recent Files, XSheet and
-Report are saved per user; Login applies to everyone using the server:
+Opened from **File > Preferences…**. The dialog has six tabs. Format, Recent Files, XSheet,
+Report and Logs are saved per user; Login applies to everyone using the server:
 
 - **Format** — controls the **XML > Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
   - **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
+  - **Blank lines between elements** — empty lines Format puts between sibling elements (and
+    comments), 0–5, default 1. None go after an opening tag or before a closing tag, or between
+    consecutive comments (so a banner of several comment lines stays together); 0 gives the
+    compact layout of earlier versions.
+  - **Put each attribute on its own line** — on by default: a tag with two or more attributes
+    gets one attribute per line, one indent deeper than the tag, with its `>` or `/>` after the
+    last one (the layout of the example files). A tag with a single attribute, like
+    `<Frame number="1">`, stays on one line. Off keeps every tag on one line.
+
+    ```xml
+    <asset:Asset
+        id="BG001"
+        name="Starfield"
+        category="Background"
+        version="1"/>
+    ```
+
+  Text that spans several lines inside an element (such as a `<Notes>` with the note on its own
+  line) is re-indented one level deeper than its tags, with the closing tag lined up under the
+  opening one; text on one line stays on one line.
 - **Recent Files** — controls **File > Open Recent**:
   - **Number of recent files to list** — 1–20, default 5. Lowering it hides older entries
     rather than deleting them (up to 20 are kept), so raising it again brings them back.
@@ -263,6 +306,25 @@ Report are saved per user; Login applies to everyone using the server:
   appendix. Production and VersionControl are always included. A left-out section doesn't appear
   as a section or in the table of contents (the appendix, if added, is still the complete
   document).
+- **Logs** — **Record pop-up messages in a log file** (on by default) keeps a record of every
+  status pop-up the app shows you — confirmations, warnings and errors, from any menu or dialog,
+  including the login page — one line each, with the date, time and UTC offset, the level
+  (SUCCESS, ERROR, WARNING or INFO), the open document and the message:
+
+  ```
+  2026-09-29 20:35:01 +0000  SUCCESS  xsheet-exposure.xml  Opened xsheet-exposure.xml
+  ```
+
+  The pop-ups are always shown; turning the option off only stops recording them. Each user
+  (browser) has their own log in the state folder, at `logs/popups-ID.log` under
+  `NICEGUI_STORAGE_PATH` (`/state` in production; the tab shows the exact path); at 1 MB it
+  rolls over to a single `.1` backup. **View Log** shows the latest 1000 entries, **Download**
+  saves the whole log, and **Clear Log** deletes it (after asking). **Log timestamps in**
+  chooses the time zone of the entries: **the server's time zone** (the default, named in the
+  tab), **UTC**, or **a time zone I choose** from the full list (type to filter), where **Use my
+  browser's** picks your browser's own zone. The server's time zone is the host's, from its
+  `/etc/localtime` (which `compose.yaml` mounts into the container), unless `TZ` is set in
+  `.env` (e.g. `TZ=America/Denver`).
 - **Login** — the server's single account (see [Logging in](#logging-in)):
   - **Log out after this many idle minutes** — 1–1440, default 30.
   - **Change password** — enter the current password and the new one twice. Leave all three
@@ -415,6 +477,71 @@ the combined chord isn't claimed by either.)
 | About | Show the app name, author, version, and a link to more information, with the license in a scrollable tab. |
 | Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. Click a review to go to it: on the XSheet tab, the grid scrolls to its frame and selects it (the run's row, if the frame is in a collapsed run); on the XML tab, the editor scrolls to its `<Review>` element and the Hierarchy tree selects it. Click a review's ✏️ to edit its ID, frame, reviewer, status and comment, or **Delete** it; **Add Review** adds one, prefilled with the next free `RV###` ID, the frame selected in the XSheet, you as the reviewer, and **Pending**. IDs must be valid XML names and not already used by another review, audio track or asset (they share one ID space). The first review adds `<Reviews>` after `<Timeline>`, and deleting the last one removes it, as the schema requires. Each change is one ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against the schema, and the list and the grid's Tech. Notes update straight away. |
 
+## Converting to and from Open Cel Animation (OCA)
+
+`tools/xsheet_to_oca.py` converts an ExposureSheet into an [OCA](https://oca.rxlab.guide) 1.3.0
+document, the open exchange format for cel animation read by Krita (with the OCA plug-in) and
+other tools. **File > Export > Export OCA** does the same from the app; on the command line:
+
+```
+python3 tools/xsheet_to_oca.py examples/xsheet-exposure.xml --validate
+python3 tools/xsheet_to_oca.py SHOT.xml -o out/SHOT.oca --width 1280 --height 720 --cels-dir artwork/
+```
+
+It writes an OCA folder `NAME.oca/` holding the data file `NAME.oca` (UTF-8 JSON, 4-space
+indent), the `NAME_meta.json` metadata sidecar, and a folder of images per layer:
+
+- **Document** — the Production Title, FrameRate, and the sheet's own frame range (`startTime`
+  is the first frame, `endTime` one past the last). ExposureSheets have no picture size, so
+  `--width` / `--height` set it (default 1920×1080).
+- **Layers** — one paint layer per XSheet layer, bottom to top by `zOrder`. A 3D layer's scene
+  file is exposed as an image of it, and marked 3D in the layer's `meta`.
+- **Frames** — each held cel becomes one OCA frame with a `duration`; frames before a layer
+  first appears, or after a `<Frame>` that no longer lists it, are `_blank`. A reused cel points
+  at the same image.
+- **Images** — ExposureSheets name cels but hold no pictures, so by default each distinct cel
+  gets a transparent placeholder PNG of the picture size, labelled with its layer and cel.
+  `--cels-dir DIR` copies real images instead where it finds `DIR/LAYER/CEL.png` or
+  `DIR/CEL.png`; `--images none` writes only the JSON.
+- **Everything else** — production IDs, assets, dialogue, notes, camera moves and keyframes,
+  audio cues, reviews, revisions and the OTIO mapping have no OCA attributes, so they're kept in
+  the `meta` objects OCA provides for custom data (`meta.xsheet` in the sidecar, and on each
+  layer and frame). The data file holds only attributes the OCA spec lists.
+
+`--validate` checks the result against the OCA 1.3.0 specification (required attributes and
+types, no unknown attributes, layer types, blank frames, unique layer names, and that every
+image exists); File > Export > Export OCA always checks it. An existing output folder is only replaced
+with `--force`, and only if it is an OCA folder (one holding its own `NAME.oca` data file). The converter needs
+only the Python standard library; Pillow, when installed (it is in the Docker image), draws the
+placeholder labels.
+
+`tools/oca_to_xsheet.py` converts the other way, from an OCA folder (or its data file) to an
+ExposureSheet XML document:
+
+```
+python3 tools/oca_to_xsheet.py examples/xsheet-exposure.oca --validate
+python3 tools/oca_to_xsheet.py Bird.oca -o Bird.xml --project-id SHOW001 --shot-id SH010 --validate
+```
+
+- **From `xsheet_to_oca.py`** — the ExposureSheet data it kept in the OCA metadata is restored,
+  so converting an ExposureSheet to OCA and back gives the same exposure sheet: every row and
+  column of the XSheet grid, the production details, assets, audio, camera, reviews, revision
+  history and OTIO mapping.
+- **From any other OCA tool** — each paint or vector layer becomes an XSheet layer (bottom to
+  top, with group layers flattened into their children; clone and nested-OCA layers, which have
+  no pictures of their own, are left out). Each OCA frame's name becomes the cel it exposes
+  (or a 3D layer's scene file, for names like `vehicle.usd`), held for its `duration`; `_blank`
+  frames and gaps leave the layer empty. A `<Frame>` is written wherever a layer's exposure
+  changes, and each layer gets an Asset. The Title and FrameRate come from the document
+  (rounded to a whole number), and the timeline is shifted up if it starts below frame 1, as
+  XSheet frames are numbered from 1. ProjectID, SequenceID, SceneID and ShotID are `UNKNOWN`
+  unless `--project-id`, `--sequence-id`, `--scene-id` / `--shot-id` are given, and
+  VersionControl gets a revision recording the conversion. A comment at the top of the file
+  lists every placeholder and adjustment.
+
+`--validate` checks the result against `xml/xsheet-core.xsd` (with the `xmlschema` library the
+app uses). An existing output file is only replaced with `--force`.
+
 ## Project layout
 
 ```
@@ -422,6 +549,6 @@ main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, vali
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
 xml/              XSD schemas defining the ExposureSheet document format
 examples/         Sample .xml / .xsd / .json documents
-tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema)
+tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA
 doc/              XDTS file format reference and XML validation notes
 ```

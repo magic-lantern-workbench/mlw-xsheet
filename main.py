@@ -25,15 +25,19 @@
 # COPYRIGHT_END
 
 from pathlib import Path
+import datetime
 import json
 import os
+import re
 import time
 from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
-from dialog_ui import titled_card, within
+from choose_folder import choose_folder as ChooseFolderDialog
+from dialog_ui import give_to_owner_of, titled_card, within
 import auth
 from tools import xsheet_to_xdts_extended
+from tools import xsheet_to_oca
 import export_pdf
 
 # Directory the file dialogs start in and the /files route lists. Defaults to
@@ -170,13 +174,205 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
-DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
+#   'popup_log':      whether this user's status pop-ups (ui.notify) are
+#                     recorded in their log file (default: yes); set in File >
+#                     Preferences > Logs. See the "Pop-up log" section below.
+#   'popup_log_time': the time zone of the log's timestamps: 'server' (the
+#                     default: SERVER_TIME_ZONE), 'utc', or 'custom' -- the
+#                     user's own 'popup_log_zone' (an IANA name like
+#                     America/Denver); set in Preferences > Logs.
+#   'oca_export':     File > Export > Export OCA's last options: picture 'width' and
+#                     'height', 'images' ('placeholder' or 'none') and
+#                     'cels_dir' (a folder in the data folder, or '').
+DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False, 'blank_lines': 1, 'attribute_per_line': True}
+MAX_BLANK_LINES = 5
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
 
 
 def user_storage():
     return session().user_storage
+
+
+# ---------------------------------------------------------------- Pop-up log
+#
+# Every status pop-up (ui.notify, from anywhere in the app: this module,
+# auth.py and the file dialogs) is also written, with its date and time, to
+# the user's log file when their Preferences > Logs setting allows it
+# (it does by default). The pop-up itself is always shown. Each user (browser)
+# has their own file in the state folder (NICEGUI_STORAGE_PATH/logs), which
+# rolls over to a single .1 backup at LOG_MAX_BYTES.
+
+LOG_DIR = Path(os.environ.get('NICEGUI_STORAGE_PATH') or '.nicegui').resolve() / 'logs'
+LOG_MAX_BYTES = 1_000_000
+LOG_LEVELS = {'positive': 'SUCCESS', 'negative': 'ERROR', 'warning': 'WARNING', 'info': 'INFO', 'ongoing': 'INFO'}
+_show_notification = ui.notify  # NiceGUI's own, called for every pop-up
+
+
+def _setup_server_time_zone() -> str:
+    """Use MLW_TZ (compose passes .env's TZ) as the server's time zone when
+    it names a real zone; otherwise keep the system's -- in Docker, the
+    host's /etc/localtime, mounted by compose.yaml. Returns the zone's IANA
+    name, for Preferences > Logs to show."""
+    import zoneinfo
+    wanted = (os.environ.get('MLW_TZ') or '').strip()
+    if wanted:
+        try:
+            zoneinfo.ZoneInfo(wanted)
+            os.environ['TZ'] = wanted
+            time.tzset()
+            return wanted
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            print(f'MLW_TZ={wanted!r} is not a known time zone; using the system time zone', flush=True)
+    if os.environ.get('TZ'):
+        return os.environ['TZ']
+    localtime = Path('/etc/localtime')
+    real = Path(os.path.realpath(localtime))
+    try:  # the mount points of this process: /proc/self/mountinfo's fifth field
+        mounts = {line.split()[4] for line in Path('/proc/self/mountinfo').read_text().splitlines()}
+    except OSError:
+        mounts = set()
+    mounted = str(localtime) in mounts or str(real) in mounts
+    if not mounted and 'zoneinfo/' in str(real):
+        return str(real).split('zoneinfo/', 1)[1]  # the usual symlink into the zone database
+    # The host's zone file mounted into a container (compose.yaml): Docker mounts
+    # it over whatever the image's /etc/localtime points to, so that name can't be
+    # trusted; find the zone whose data it holds instead (canonical names first).
+    try:
+        data = localtime.read_bytes()
+        root = Path('/usr/share/zoneinfo')
+        for name in sorted(zoneinfo.available_timezones(), key=lambda n: (n.count('/') == 0, n.startswith('Etc/'), n)):
+            path = root / name
+            if path.resolve() == real:
+                continue  # the mounted file itself
+            try:
+                if path.read_bytes() == data:
+                    return name
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return time.tzname[0] or 'UTC'
+
+
+SERVER_TIME_ZONE = _setup_server_time_zone()
+LOG_TIME_MODES = ('server', 'utc', 'custom')
+
+
+def popup_log_time_mode() -> str:
+    mode = app.storage.user.get('popup_log_time', 'server')
+    return mode if mode in LOG_TIME_MODES else 'server'
+
+
+def popup_log_zone() -> str:
+    return app.storage.user.get('popup_log_zone') or SERVER_TIME_ZONE
+
+
+def set_popup_log_time(mode: str, zone: str | None) -> None:
+    app.storage.user['popup_log_time'] = mode if mode in LOG_TIME_MODES else 'server'
+    if zone:
+        app.storage.user['popup_log_zone'] = zone
+
+
+def popup_log_now() -> datetime.datetime:
+    """Now, in the time zone the user chose for their log."""
+    mode = popup_log_time_mode()
+    if mode == 'utc':
+        return datetime.datetime.now(datetime.timezone.utc)
+    if mode == 'custom':
+        import zoneinfo
+        try:
+            return datetime.datetime.now(zoneinfo.ZoneInfo(popup_log_zone()))
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            pass
+    return datetime.datetime.now().astimezone()
+
+
+def popup_log_enabled() -> bool:
+    return bool(app.storage.user.get('popup_log', True))
+
+
+def set_popup_log_enabled(enabled: bool) -> None:
+    app.storage.user['popup_log'] = bool(enabled)
+
+
+def popup_log_path() -> Path:
+    """This user's (browser's) log file."""
+    browser_id = re.sub(r'[^A-Za-z0-9_-]', '', str(app.storage.browser.get('id', '')))[:36] or 'unknown'
+    return LOG_DIR / f'popups-{browser_id}.log'
+
+
+def log_popup(message, level: str) -> None:
+    """Append one pop-up to the user's log: date and time (with the UTC
+    offset), level, the open document and the message, on one line."""
+    path = popup_log_path()
+    try:
+        document = Path(session().current_file.get('path') or '').name or '(no file)'
+    except Exception:
+        document = '-'
+    stamp = popup_log_now().strftime('%Y-%m-%d %H:%M:%S %z')
+    text = ' '.join(str(message).split())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rotated = path.exists() and path.stat().st_size >= LOG_MAX_BYTES
+    if rotated:
+        path.replace(path.with_name(path.name + '.1'))
+    with path.open('a', encoding='utf-8') as f:
+        f.write(f'{stamp}  {level:<7}  {document}  {text}\n')
+    if rotated or path not in _logs_given_away:
+        # the logs folder and its files: the data folder's owner, not root (see dialog_ui.py) --
+        # once per file per run, which also fixes logs written as root before
+        give_to_owner_of(path.parent, BASE_DIR)
+        _logs_given_away.add(path)
+
+
+_logs_given_away: set[Path] = set()
+
+
+def notify(message, *args, **kwargs):
+    """ui.notify, and the same message in the user's pop-up log when it's on.
+    Logging never gets in the way of the pop-up: outside a user's page (no
+    per-user storage), or if the file can't be written, it's just skipped."""
+    try:
+        if popup_log_enabled():
+            level = kwargs.get('type') or kwargs.get('color') or (args[1] if len(args) > 1 else None) or 'info'
+            log_popup(message, LOG_LEVELS.get(str(level), str(level).upper()))
+    except Exception:
+        pass
+    return _show_notification(message, *args, **kwargs)
+
+
+ui.notify = notify  # one place for every pop-up in the app, including auth.py and the dialogs
+
+
+def read_popup_log(max_lines: int = 1000) -> list[str]:
+    """The last lines of the user's log (with the backup's before them, if needed)."""
+    path = popup_log_path()
+    lines: list[str] = []
+    for file in (path.with_name(path.name + '.1'), path):
+        try:
+            lines += file.read_text(encoding='utf-8').splitlines()
+        except OSError:
+            pass
+    return lines[-max_lines:]
+
+
+def clear_popup_log() -> None:
+    path = popup_log_path()
+    for file in (path, path.with_name(path.name + '.1')):
+        file.unlink(missing_ok=True)
+
+
+def show_popup_log_dialog() -> None:
+    """Preferences > Logs > View Log: the log's latest entries, newest last."""
+    lines = read_popup_log()
+    with ui.dialog() as dlg, titled_card('Pop-up Log', classes='w-[900px] max-w-full', body_classes='gap-2'):
+        ui.label(f'{len(lines)} entr{"y" if len(lines) == 1 else "ies"} (the latest 1000), newest last — '
+                 f'{popup_log_path()}').classes('text-caption text-grey')
+        with ui.scroll_area().classes('w-full h-[420px] border rounded'):
+            ui.code('\n'.join(lines) or '(the log is empty)', language='text').classes('w-full text-xs')
+        with ui.row().classes('w-full justify-end gap-2'):
+            ui.button('Close', on_click=dlg.close).props('size=sm')
+    dlg.open()
 
 
 def format_prefs() -> dict:
@@ -220,6 +416,19 @@ def report_sections() -> list[str]:
 
 def report_include_raw() -> bool:
     return bool(user_storage().get('report_include_raw', True))
+
+
+def oca_export_options() -> dict:
+    stored = user_storage().get('oca_export')
+    options = {'width': xsheet_to_oca.DEFAULT_WIDTH, 'height': xsheet_to_oca.DEFAULT_HEIGHT,
+               'images': 'placeholder', 'cels_dir': ''}
+    if isinstance(stored, dict):
+        options.update({k: v for k, v in stored.items() if k in options})
+    return options
+
+
+def set_oca_export_options(options: dict) -> None:
+    user_storage()['oca_export'] = dict(options)
 
 
 def set_report_options(sections: list[str], include_raw: bool) -> None:
@@ -325,7 +534,10 @@ def set_filename_label(name: str | None = None):
     """Update filename label text, adding '*' when modified."""
     sess = session()
     if name is None:
-        name = Path(sess.current_file['path']).name if sess.current_file['path'] else 'No file'
+        if sess.current_file['path']:
+            name = Path(sess.current_file['path']).name
+        else:  # a new, never-saved document (File > New), or nothing open
+            name = UNTITLED_NAME if _editor_text().strip() else 'No file'
     label_text = name + (' *' if sess.current_file.get('modified') else '')
     if sess.filename_label is not None:
         sess.filename_label.set_text(label_text)
@@ -383,20 +595,134 @@ def _strip_insignificant_whitespace(node):
             _strip_insignificant_whitespace(child)
 
 
-def pretty_print_xml(text: str, indent: str = '    ') -> str:
-    """Reformat XML/XSD text with consistent indentation. Uses minidom (not
-    ElementTree) because it models the whole document, not just the root
-    element -- ElementTree silently drops comments that sit before/after the
-    root, which several files in this project rely on for header banners.
-    Raises xml.parsers.expat.ExpatError if the text isn't well-formed."""
+def _reindent_text(element, indent: str, depth: int = 0) -> None:
+    """Re-indent the text of elements whose only content is text over several
+    lines -- like <Notes> with the note on its own line -- to the new layout:
+    each line one level deeper than the tags, and the closing tag lined up
+    with the opening one. minidom writes such text as-is, which would leave
+    the closing tag wherever the original file had it. Text on one line, and
+    elements with mixed content, are left alone."""
+    children = element.childNodes
+    if len(children) == 1 and children[0].nodeType == children[0].TEXT_NODE and '\n' in children[0].data:
+        lines = [line.strip() for line in children[0].data.splitlines() if line.strip()]
+        if lines:
+            children[0].data = ('\n' + ''.join(f'{indent * (depth + 1)}{line}\n' for line in lines)
+                                + indent * depth)
+        return
+    for child in children:
+        if child.nodeType == child.ELEMENT_NODE:
+            _reindent_text(child, indent, depth + 1)
+
+
+def _space_siblings(lines: list[str], blank_lines: int) -> list[str]:
+    """Put `blank_lines` empty lines between sibling nodes -- elements,
+    comments, processing instructions -- of pretty-printed XML: before each
+    node that starts right after a node that ended at the same depth, but not
+    after an opening tag or before a closing tag, and not between consecutive
+    comments (so a banner made of several comment lines stays together).
+    Nesting is followed tag by
+    tag rather than by indentation, since an element's text can run over
+    several lines with its own; multi-line comments and CDATA are left as
+    they are."""
+    import re
+    if blank_lines <= 0:
+        return lines
+    token = re.compile(r'<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<!.*?>|</[^>]*>|<[^>]*?/>|<[^>]*>', re.S)
+    out: list[str] = []
+    depth = 0
+    last_ended = None  # depth at which the latest node ended, or None right after an opening tag
+    last_was_comment = False
+    open_block = None  # the end marker of a comment or CDATA section still open on an earlier line
+    for line in lines:
+        if open_block is not None:
+            out.append(line)
+            if open_block in line:
+                last_was_comment = open_block == '-->'
+                open_block = None
+                last_ended = depth
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith('<') and not stripped.startswith('</') and last_ended == depth \
+                and not (last_was_comment and stripped.startswith('<!--')):
+            out.extend([''] * blank_lines)
+        rest = line
+        for marker, end in (('<!--', '-->'), ('<![CDATA[', ']]>')):
+            start = rest.find(marker)
+            if start != -1 and rest.find(end, start + len(marker)) == -1:
+                open_block, rest = end, rest[:start]  # the tags before it still count
+                last_was_comment = False
+                break
+        for m in token.finditer(rest):
+            tag = m.group()
+            last_was_comment = tag.startswith('<!--')
+            if tag.startswith('</'):
+                depth = max(depth - 1, 0)
+                last_ended = depth
+            elif tag.startswith(('<!', '<?')) or tag.endswith('/>'):
+                last_ended = depth
+            else:
+                depth += 1
+                last_ended = None
+        out.append(line)
+    return out
+
+
+def _split_attributes(lines: list[str], indent: str) -> list[str]:
+    """Put each attribute of a start tag with two or more attributes on its
+    own line, one indent deeper than the tag, with the tag's closing > or />
+    (and anything after it on that line) staying on the last attribute's
+    line -- the layout of the project's example files. A tag with a single
+    attribute stays on one line; comments, CDATA and text are left alone."""
+    import re
+    tag_re = re.compile(r'^(\s*)<([^\s/>!?]+)((?:\s+[^\s=]+="[^"]*")+)(\s*/?>)(.*)$')
+    attr_re = re.compile(r'[^\s=]+="[^"]*"')
+    out: list[str] = []
+    open_block = None
+    for line in lines:
+        if open_block is not None:
+            out.append(line)
+            if open_block in line:
+                open_block = None
+            continue
+        for marker, end in (('<!--', '-->'), ('<![CDATA[', ']]>')):
+            start = line.find(marker)
+            if start != -1 and line.find(end, start + len(marker)) == -1:
+                open_block = end
+        m = tag_re.match(line) if open_block is None else None
+        attrs = attr_re.findall(m.group(3)) if m else []
+        if len(attrs) < 2:
+            out.append(line)
+            continue
+        lead, name, _attrs, close, rest = m.groups()
+        out.append(f'{lead}<{name}')
+        out.extend(f'{lead}{indent}{a}' for a in attrs[:-1])
+        out.append(f'{lead}{indent}{attrs[-1]}{close.strip()}{rest}')
+    return out
+
+
+def pretty_print_xml(text: str, indent: str = '    ', blank_lines: int = 0,
+                     attribute_per_line: bool = False) -> str:
+    """Reformat XML/XSD text with consistent indentation, `blank_lines`
+    empty lines between sibling elements (see _space_siblings()), and --
+    with `attribute_per_line` -- each attribute of a multi-attribute tag on
+    its own line (see _split_attributes()). Uses
+    minidom (not ElementTree) because it models the whole document, not just
+    the root element -- ElementTree silently drops comments that sit
+    before/after the root, which several files in this project rely on for
+    header banners. Raises xml.parsers.expat.ExpatError if the text isn't
+    well-formed."""
     from xml.dom import minidom
 
     doc = minidom.parseString(text)
     _strip_insignificant_whitespace(doc)
+    _reindent_text(doc.documentElement, indent)
     pretty = doc.toprettyxml(indent=indent, newl='\n')
     lines = [ln for ln in pretty.split('\n') if ln.strip()]
     if lines and lines[0].startswith('<?xml'):
         lines = lines[1:]  # minidom's own declaration; rebuilt below to match the source
+    lines = _space_siblings(lines, blank_lines)
+    if attribute_per_line:
+        lines = _split_attributes(lines, indent)  # last: the other passes read one tag per line
     body = '\n'.join(lines) + '\n'
 
     import re
@@ -418,6 +744,13 @@ def _format_indent_string() -> str:
     return ' ' * size
 
 
+def _format_blank_lines() -> int:
+    try:
+        return min(max(int(format_prefs().get('blank_lines', 1)), 0), MAX_BLANK_LINES)
+    except (TypeError, ValueError):
+        return 1
+
+
 def format_xml():
     """Pretty-print the editor's XML/XSD contents in place, using the current
     format preferences. Routed through _set_editor_text() so it participates in
@@ -427,7 +760,8 @@ def format_xml():
         ui.notify('Nothing to format', color='warning')
         return
     try:
-        formatted = pretty_print_xml(text, indent=_format_indent_string())
+        formatted = pretty_print_xml(text, indent=_format_indent_string(), blank_lines=_format_blank_lines(),
+                                     attribute_per_line=bool(format_prefs().get('attribute_per_line', True)))
     except Exception as exc:
         ui.notify(f'Format failed: {exc}', color='negative')
         return
@@ -442,14 +776,15 @@ def show_preferences_dialog():
     """Preferences dialog: a Format tab for the XML/XSD pretty-printer
     (XML > Format), a Recent Files tab for File > Open Recent, an XSheet tab
     for the Exposure Sheet style, a Report tab for what XSheet > Generate
-    Report includes, and a Login tab for the server's password and
+    Report includes, a Logs tab for recording the status pop-ups, and a Login tab for the server's password and
     inactivity time-out (see auth.py)."""
-    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[460px] max-w-full', body_classes='gap-2'):
+    with ui.dialog() as dlg, titled_card('Preferences', classes='w-[540px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
             xsheet_tab = ui.tab('XSheet')
             report_tab = ui.tab('Report')
+            logs_tab = ui.tab('Logs')
             login_tab = ui.tab('Login')
         with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
@@ -459,6 +794,14 @@ def show_preferences_dialog():
                 indent_input = ui.number(
                     'Indent size (spaces)', value=prefs['indent_size'], min=1, max=8, step=1,
                 ).classes('w-full').bind_enabled_from(use_tabs_cb, 'value', backward=lambda v: not v)
+                blank_input = ui.number(
+                    f'Blank lines between elements (0–{MAX_BLANK_LINES})', value=_format_blank_lines(),
+                    min=0, max=MAX_BLANK_LINES, step=1, format='%d',
+                ).classes('w-full')
+                attr_line_cb = ui.checkbox('Put each attribute on its own line',
+                                           value=bool(prefs.get('attribute_per_line', True)))
+                ui.label('For tags with two or more attributes; off keeps each tag on one line.') \
+                    .classes('text-xs text-gray-500 -mt-2 pl-10')
             with ui.tab_panel(recent_tab).classes('px-0 gap-2'):
                 ui.label('Used by File > Open Recent').classes('text-sm text-gray-500')
                 recent_input = ui.number(
@@ -488,6 +831,56 @@ def show_preferences_dialog():
                     ui.button('Clear all', on_click=lambda: set_all_sections(False)).props('flat dense size=sm no-caps')
                 raw_box = ui.checkbox('Add the raw XML of the whole document as an appendix', value=report_include_raw()) \
                     .props('dense').classes('mt-1')
+            with ui.tab_panel(logs_tab).classes('px-0 gap-2'):
+                ui.label('Status pop-ups are always shown; this also keeps a record of them, each with its '
+                         'date and time.').classes('text-sm text-gray-500')
+                log_box = ui.checkbox('Record pop-up messages in a log file', value=popup_log_enabled()).props('dense')
+                ui.label(f'Log file (yours): {popup_log_path()}').classes('text-xs text-gray-500 break-all')
+                import zoneinfo
+                zones = sorted(zoneinfo.available_timezones() - {'localtime', 'Factory'})
+                ui.label('Log timestamps in').classes('text-sm text-gray-500 mt-2')
+                time_radio = ui.radio({'server': f"The server's time zone ({SERVER_TIME_ZONE})", 'utc': 'UTC',
+                                       'custom': 'A time zone I choose'}, value=popup_log_time_mode()).props('dense')
+                with ui.row().classes('w-full items-center gap-2 no-wrap pl-7'):
+                    zone_select = ui.select(zones, value=popup_log_zone() if popup_log_zone() in zones else None,
+                                            with_input=True, label='Time zone').classes('flex-grow').props('dense')
+
+                    async def use_browser_zone():
+                        zone = await ui.run_javascript('return Intl.DateTimeFormat().resolvedOptions().timeZone')
+                        if zone in zones:
+                            zone_select.value = zone
+                            time_radio.value = 'custom'
+                        else:
+                            ui.notify(f"Your browser's time zone ({zone}) isn't one this server knows", color='warning')
+                    browser_zone_button = ui.button('Use my browser\'s', icon='my_location', on_click=use_browser_zone) \
+                        .props('flat dense size=sm no-caps').tooltip("Choose your browser's time zone")
+                for element in (zone_select, browser_zone_button):
+                    element.bind_enabled_from(time_radio, 'value', backward=lambda v: v == 'custom')
+
+                def download_log():
+                    lines = read_popup_log(max_lines=10**9)
+                    if not lines:
+                        ui.notify('The log is empty', color='info')
+                        return
+                    ui.download(('\n'.join(lines) + '\n').encode('utf-8'), 'mlw-xsheet-popups.log', 'text/plain')
+
+                def confirm_clear_log():
+                    with ui.dialog() as confirm, titled_card('Clear Log'):
+                        ui.label('Delete every entry in your pop-up log?')
+                        with ui.row().classes('mt-4 justify-end gap-2'):
+                            ui.button('No', on_click=confirm.close).props('outline size=sm')
+
+                            def do_clear():
+                                confirm.close()
+                                clear_popup_log()
+                                ui.notify('Pop-up log cleared', color='positive')
+                            ui.button('Yes', on_click=do_clear).props('size=sm')
+                    confirm.open()
+
+                with ui.row().classes('gap-2 mt-1'):
+                    ui.button('View Log', icon='article', on_click=show_popup_log_dialog).props('outline size=sm')
+                    ui.button('Download', icon='download', on_click=download_log).props('outline size=sm')
+                    ui.button('Clear Log', icon='delete', on_click=confirm_clear_log).props('outline size=sm')
             with ui.tab_panel(login_tab).classes('px-0 gap-2'):
                 ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
                 timeout_input = ui.number(
@@ -503,6 +896,10 @@ def show_preferences_dialog():
             # Check a password change first, so a mistake there saves nothing
             # and leaves the dialog open to fix it.
             picked_sections = [name for name, box in section_boxes.items() if box.value]
+            if time_radio.value == 'custom' and zone_select.value not in zones:
+                tabs.value = logs_tab
+                ui.notify('Choose the time zone for the log', color='warning')
+                return
             changing_password = any((current_pw.value, new_pw.value, confirm_pw.value))
             if changing_password:
                 error = None
@@ -526,9 +923,16 @@ def show_preferences_dialog():
                 prefs['indent_size'] = max(int(indent_input.value), 1)
             except (TypeError, ValueError):
                 prefs['indent_size'] = 4
+            prefs['attribute_per_line'] = bool(attr_line_cb.value)
+            try:
+                prefs['blank_lines'] = min(max(int(blank_input.value), 0), MAX_BLANK_LINES)
+            except (TypeError, ValueError):
+                prefs['blank_lines'] = DEFAULT_FORMAT_PREFS['blank_lines']
             set_format_prefs(prefs)
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
+            set_popup_log_enabled(log_box.value)
+            set_popup_log_time(time_radio.value, zone_select.value if time_radio.value == 'custom' else None)
             try:
                 set_recent_files_limit(int(recent_input.value))
             except (TypeError, ValueError):
@@ -3599,6 +4003,7 @@ def _load_document(path: str | None, text: str, saved_content: str):
         except Exception:
             ui.notify('Failed to set editor content', color='warning')
     sess.suppress_editor_change = False
+    set_filename_label()  # again, now the text is in: an unsaved new document is named by it
     # update xml tree for the opened file
     try:
         rebuild_tree_from_current()
@@ -3684,26 +4089,104 @@ def close_file():
 def close_with_check():
     """Close the current file, but prompt to save if modified -- including
     a never-saved document, where Yes goes through Save As."""
+    _then_with_check(close_file, 'Save changes before closing?')
+
+
+def _then_with_check(then, question: str):
+    """Call then() -- after asking whether to save the current document
+    first, if it has unsaved changes (Cancel / No / Yes, where Yes saves,
+    through Save As for a never-saved document, and only goes on once the
+    save went through)."""
     sess = session()
     if not sess.current_file.get('modified'):
-        close_file()
+        then()
         return
     with ui.dialog() as confirm_dialog, titled_card('Unsaved Changes'):
-        ui.label('Save changes before closing?')
+        ui.label(question)
         with ui.row().classes('mt-4 justify-end'):
             def do_no(_=None):
                 confirm_dialog.close()
-                close_file()
+                then()
             def do_yes(_=None):
-                # Save then close -- only once the save actually went
+                # Save then go on -- only once the save actually went
                 # through, so declining an overwrite prompt keeps the file open
                 confirm_dialog.close()
-                save_file(on_saved=close_file)
+                save_file(on_saved=then)
             # Cancel backs out of closing entirely, leaving the file open and unsaved
             ui.button('Cancel', on_click=confirm_dialog.close).props('flat size=sm')
             ui.button('No', on_click=do_no).props('outline size=sm').classes('ml-2')
             ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
     confirm_dialog.open()
+
+
+UNTITLED_NAME = 'untitled.xml'  # a new document's name until it's saved (Save As suggests it)
+
+
+def new_document_text() -> str:
+    """A minimal ExposureSheet that is well-formed and valid against
+    xml/xsheet-core.xsd, with placeholder values to replace: the four
+    sections the schema requires (Production, Assets, Timeline and
+    VersionControl), one Unknown asset, and one layer exposed on frame 1 of
+    a 24-frame shot. Laid out with the user's Format preferences."""
+    import datetime as dt
+    from xml.sax.saxutils import quoteattr
+    author = quoteattr(auth.current_username() or 'unknown')
+    today = dt.date.today().isoformat()
+    text = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!-- A new ExposureSheet document. Replace the placeholder values (UNKNOWN, Untitled,
+     the Unknown asset and the New Layer) with the shot's own. -->
+<ExposureSheet xmlns="http://schemas.animation.org/xsheet/core"
+    xmlns:asset="http://schemas.animation.org/xsheet/assets"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://schemas.animation.org/xsheet/core xsheet-core.xsd http://schemas.animation.org/xsheet/assets xsheet-assets.xsd"
+    version="2.0">
+<Production>
+<ProjectID>UNKNOWN</ProjectID>
+<SequenceID>UNKNOWN</SequenceID>
+<SceneID>UNKNOWN</SceneID>
+<ShotID>UNKNOWN</ShotID>
+<Title>Untitled</Title>
+<FrameRate>24</FrameRate>
+<StartFrame>1</StartFrame>
+<EndFrame>24</EndFrame>
+</Production>
+<asset:Assets>
+<asset:Asset id="{UNKNOWN_ASSET_REF}" name="Unknown" category="Unknown" version="1"/>
+</asset:Assets>
+<Timeline>
+<Frame number="1">
+<Layers>
+<Layer id="{NEW_LAYER_NAME}" assetRef="{UNKNOWN_ASSET_REF}" type="2D" cel="A001" zOrder="0"/>
+</Layers>
+<Notes/>
+</Frame>
+</Timeline>
+<VersionControl>
+<Revision number="1" author={author} date="{today}">New document.</Revision>
+</VersionControl>
+</ExposureSheet>
+'''
+    try:
+        return pretty_print_xml(text, indent=_format_indent_string(), blank_lines=_format_blank_lines(),
+                                attribute_per_line=bool(format_prefs().get('attribute_per_line', True)))
+    except Exception:
+        return text
+
+
+def new_document():
+    """File > New: start a new ExposureSheet (see new_document_text()) in the
+    editor -- after offering to save the current one if it has unsaved
+    changes. Nothing is written to disk until Save or Save As; until then it
+    shows as untitled.xml, and is kept as a draft like any unsaved work."""
+    def start():
+        text = new_document_text()
+        _load_document(None, text, '')
+        session().undo_stack.clear()  # nothing to undo back to: it starts as it is
+        set_validation_status('')
+        clear_validation_panel()
+        remember_document()
+        ui.notify('New document: replace the placeholder values, then Save As to name it', color='info')
+    _then_with_check(start, 'Save changes before starting a new document?')
 
 
 def _set_editor_text(new_text: str):
@@ -3873,6 +4356,7 @@ def save_file(on_saved=None):
         except Exception as exc:
             ui.notify(f'Failed to save {path}: {exc}', color='negative')
             return
+        give_to_owner_of(path, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
         sess.current_file['modified'] = False
         sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
@@ -3904,7 +4388,7 @@ def save_file(on_saved=None):
     confirm_dialog.open()
 
 
-def _confirm_overwrite(path: Path, on_confirm):
+def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
     """If `path` already exists, ask for confirmation before calling
     on_confirm(); otherwise call it immediately. Shared by Save As and the
     Export features, which would otherwise silently clobber an existing
@@ -3913,7 +4397,7 @@ def _confirm_overwrite(path: Path, on_confirm):
         on_confirm()
         return
     with ui.dialog() as confirm_dialog, titled_card('File Already Exists'):
-        ui.label(f'{path.name} already exists. Overwrite it?')
+        ui.label(message or f'{path.name} already exists. Overwrite it?')
         with ui.row().classes('mt-4 justify-end'):
             def do_no(_=None):
                 confirm_dialog.close()
@@ -3940,6 +4424,7 @@ def save_as(on_saved=None):
             except Exception as exc:
                 ui.notify(f'Failed to save {dest}: {exc}', color='negative')
                 return
+            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             forget_draft(sess.current_file['path'] or '')
             sess.current_file['path'] = str(dest)
             sess.current_file['modified'] = False
@@ -4003,6 +4488,7 @@ def export_xdts():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
+            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             ui.notify(f'Exported {dest}', color='positive')
 
         _confirm_overwrite(dest, do_export)
@@ -4021,6 +4507,169 @@ def export_xdts():
         filename=start_name,
         upper_limit=str(BASE_DIR),
         allowed_extensions=['.json'],
+    )
+    dialog.open()
+
+
+# File > Export > Export OCA: what the Images choice offers
+OCA_IMAGE_MODES = {'placeholder': 'A labelled placeholder image for each cel',
+                   'none': 'No images (the OCA data files only)'}
+
+
+def export_oca():
+    """Convert the current editor contents (an XSheet ExposureSheet document)
+    to an Open Cel Animation (OCA) document, a NAME.oca folder of JSON and
+    images (see tools/xsheet_to_oca.py): first its options -- picture size,
+    images, and an optional folder of real cel images -- then where to save
+    it, via a Save As-style dialog."""
+    sess = session()
+    text = _editor_text()
+    if not text.strip():
+        ui.notify('Nothing to export', color='warning')
+        return
+    source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
+    try:
+        xsheet_to_oca.convert_string(text, source_name=source_name)  # report a bad document before any dialog
+    except Exception as exc:
+        ui.notify(f'Export failed: {exc}', color='negative')
+        return
+    options = oca_export_options()
+
+    with ui.dialog() as dlg, titled_card('Export OCA', classes='w-[460px] max-w-full', body_classes='gap-2'):
+        ui.label('Writes an Open Cel Animation (OCA 1.3.0) folder: the OCA data file, its metadata '
+                 'and a folder of images per layer, for Krita and other OCA tools.') \
+            .classes('text-caption text-grey')
+        with ui.row().classes('w-full gap-3 no-wrap'):
+            width_input = ui.number('Picture width (px)', value=options['width'], min=1, step=1, format='%d') \
+                .classes('flex-grow').props('dense')
+            height_input = ui.number('Picture height (px)', value=options['height'], min=1, step=1, format='%d') \
+                .classes('flex-grow').props('dense')
+        ui.label('Images').classes('text-sm text-grey-8 mt-1')
+        images_input = ui.radio(OCA_IMAGE_MODES, value=options['images'] if options['images'] in OCA_IMAGE_MODES
+                                else 'placeholder').props('dense')
+        def browse_cels(_=None):
+            """Choose (or create) the cel images folder in a folder browser."""
+            current = BASE_DIR / cels_input.value if cels_input.value else None
+            start = current if current is not None and current.is_dir() else (
+                Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR)
+
+            class CelsFolderDialog(ChooseFolderDialog):
+                def submit(self, value):
+                    if value:
+                        folder = Path(value[0]).resolve()
+                        relative = folder.relative_to(BASE_DIR) if within(folder, BASE_DIR) else folder
+                        cels_input.value = '' if str(relative) == '.' else relative.as_posix()
+                    self.close()
+                    super().submit(value)
+
+            CelsFolderDialog(str(start), title='Cel Images Folder', upper_limit=str(BASE_DIR)).open()
+
+        with ui.row().classes('w-full items-center gap-1 no-wrap'):
+            cels_input = ui.input('Copy cel images from (optional)', value=options['cels_dir'],
+                                  placeholder='Browse to choose or create a folder') \
+                .classes('flex-grow').props('dense readonly')
+            cels_input.on('click', browse_cels)
+            browse_button = ui.button(icon='folder_open', on_click=browse_cels).props('flat dense round') \
+                .tooltip('Browse for the folder (or create one)')
+            # read-only fields don't show Quasar's clear icon, so it gets its own button
+            clear_button = ui.button(icon='close', on_click=lambda: cels_input.set_value('')) \
+                .props('flat dense round').tooltip('No cel images folder')
+            clear_button.bind_visibility_from(cels_input, 'value', backward=bool)
+        for element in (cels_input, browse_button, clear_button):
+            element.bind_enabled_from(images_input, 'value', backward=lambda v: v == 'placeholder')
+        ui.label('Where your real cel images are, if you have them. Images are always written into the '
+                 'NAME.oca folder you choose next: each cel with a matching image here (LAYER/CEL.png or '
+                 'CEL.png, e.g. CHAR/A001.png) gets a copy of it, and every other cel a placeholder.') \
+            .classes('text-xs text-grey')
+
+        def next_step(_=None):
+            width, height = width_input.value, height_input.value
+            if any(v is None or float(v) != int(v) or int(v) < 1 for v in (width, height)):
+                ui.notify('The picture width and height must be whole numbers of 1 or more', color='warning')
+                return
+            cels_value = (cels_input.value or '').strip()
+            cels_dir = None
+            if cels_value and images_input.value == 'placeholder':
+                candidate = Path(cels_value)
+                candidate = candidate if candidate.is_absolute() else BASE_DIR / candidate
+                if not within(candidate, BASE_DIR) or not candidate.is_dir():
+                    ui.notify(f'{cels_value} is not a folder in the data folder', color='warning')
+                    return
+                cels_dir = candidate.resolve()
+            chosen = {'width': int(width), 'height': int(height), 'images': images_input.value, 'cels_dir': cels_value}
+            set_oca_export_options(chosen)
+            dlg.close()
+            _choose_oca_destination(text, source_name, chosen, cels_dir)
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Next…', on_click=next_step).props('size=sm')
+    dlg.open()
+
+
+def _choose_oca_destination(text: str, source_name: str, options: dict, cels_dir: Path | None) -> None:
+    """Export OCA, second step: where to save the NAME.oca folder, then write it."""
+    sess = session()
+
+    def file_selected_callback(files):
+        if not files:
+            return
+        dest = xsheet_to_oca.oca_folder(Path(files[0]))
+        if not within(dest.parent, BASE_DIR):
+            ui.notify(f'{dest.name} is outside the folders you can save to', color='warning')
+            return
+
+        def do_export():
+            try:
+                summary = xsheet_to_oca.export_oca(text, dest, source_name=source_name, width=options['width'],
+                                                   height=options['height'], image_mode=options['images'],
+                                                   cels_dir=cels_dir, replace=True)
+            except Exception as exc:
+                ui.notify(f'Export failed: {exc}', color='negative')
+                return
+            give_to_owner_of(summary['path'], BASE_DIR)  # the whole OCA folder: the data folder's owner, not root
+            total = summary['copied'] + summary['placeholders']
+            if options['images'] != 'placeholder':
+                images = 'no images'
+            elif cels_dir is not None:
+                images = (f"{summary['copied']} of {total} cel image(s) found in {options['cels_dir']}, "
+                          f"{summary['placeholders']} placeholder(s)")
+            else:
+                images = f"{summary['placeholders']} placeholder image(s)"
+            if summary['problems']:
+                ui.notify(f"Exported {dest.name}, but it doesn't fully comply with OCA 1.3.0: "
+                          + '; '.join(summary['problems'][:3]), color='warning', multi_line=True, timeout=10000)
+                return
+            exported = (f"Exported {dest.name}: {summary['layers']} layer(s), {summary['exposures']} exposure(s), "
+                        f"frames {summary['start']}–{summary['end']}; {images}")
+            if cels_dir is not None and summary['missing'] and not summary['copied']:
+                # nothing matched: say what was looked for, so the images can be named to match
+                examples = ', '.join(summary['missing'][:3]) + (', …' if len(summary['missing']) > 3 else '.')
+                ui.notify(f"{exported}. No cel images were found in {options['cels_dir']}: it should hold "
+                          f"images named LAYER/CEL.png or CEL.png, e.g. {examples}",
+                          color='warning', multi_line=True, timeout=12000)
+            else:
+                ui.notify(exported, color='positive', multi_line=True)
+
+        if dest.exists() and not xsheet_to_oca.is_oca_folder(dest):
+            ui.notify(f'{dest.name} already exists and is not an OCA folder; choose another name', color='warning')
+            return
+        _confirm_overwrite(dest, do_export,
+                           message=f'{dest.name} already exists. Replace that OCA folder and everything in it?')
+
+    class ExportFileWithCallback(SaveFileDialog):
+        def submit(self, value):
+            file_selected_callback(value)
+            self.close()
+            super().submit(value)
+
+    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    dialog = ExportFileWithCallback(
+        str(start_dir),
+        title='Export OCA',
+        filename=f'{source_name}.oca',
+        upper_limit=str(BASE_DIR),
+        allowed_extensions=['.oca'],
     )
     dialog.open()
 
@@ -4060,6 +4709,7 @@ def export_to_pdf():
                 except Exception as exc:
                     ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                     return
+                give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
                 ui.notify(f'Exported {dest}', color='positive')
 
             _confirm_overwrite(dest, do_export)
@@ -4121,6 +4771,7 @@ def export_xsheet():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
+            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]})', color='positive')
 
         _confirm_overwrite(dest, do_export)
@@ -4527,6 +5178,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto overflow-y-hidden'):
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
+                ui.menu_item('New', on_click=lambda _: new_document())
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 # Submenu of this user's recently opened files. The File
                 # dropdown auto-closes on any click inside it, so stop this
@@ -4542,7 +5194,13 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Save As', on_click=lambda _: save_as())
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
-                ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
+                # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)
+                with ui.menu_item('Export', auto_close=False).on('click.stop', js_handler='() => {}'):
+                    with ui.item_section().props('side'):
+                        ui.icon('keyboard_arrow_right')
+                    with ui.menu().props('anchor="top end" self="top start" auto-close'):
+                        ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
+                        ui.menu_item('Export OCA', on_click=lambda _: export_oca())
                 ui.separator()
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
