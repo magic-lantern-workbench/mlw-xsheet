@@ -29,7 +29,7 @@ from pathlib import Path
 
 from nicegui import events, ui
 
-from dialog_ui import titled_card, within
+from dialog_ui import give_to_owner_of, titled_card, within
 
 
 class save_file(ui.dialog):
@@ -168,6 +168,7 @@ class save_file(ui.dialog):
                 except OSError as exc:
                     ui.notify(f'Could not create {name}: {exc.strerror or exc}', color='negative')
                     return
+                give_to_owner_of(folder, self.upper_limit or self.path)  # the data folder's owner, not root
                 dlg.close()
                 self.path = folder
                 self.update_grid()

@@ -155,6 +155,15 @@ Recent, the last Open folder, the reopened document) that fall outside it are ig
 app's bundled schemas can still be read for validation, and Select Schema offers them
 alongside the data folder when they live outside it, as in production.
 
+Every file the app writes for you gets the user and group that own the data folder: documents
+saved with **Save** or **Save As**, the **Export XSheet** and **Generate Report** PDFs, **Export
+XDTS** files, **Export OCA**'s whole `NAME.oca` folder, folders made with **New Folder** in the
+file dialogs, and the pop-up logs (and their folder) in the state folder. A file saved over
+keeps that owner too, and logs written as root before are fixed the next time they're written
+to. The development container runs as root, so without this they'd belong to root in your
+project directory; in production the app already runs as the user that owns `/data`, and
+there's nothing to change.
+
 ### Multiple users
 
 Several people can use one server at the same time. Every browser tab has its own editing

@@ -34,7 +34,7 @@ from nicegui import app, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from choose_folder import choose_folder as ChooseFolderDialog
-from dialog_ui import titled_card, within
+from dialog_ui import give_to_owner_of, titled_card, within
 import auth
 from tools import xsheet_to_xdts_extended
 from tools import xsheet_to_oca
@@ -313,10 +313,19 @@ def log_popup(message, level: str) -> None:
     stamp = popup_log_now().strftime('%Y-%m-%d %H:%M:%S %z')
     text = ' '.join(str(message).split())
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size >= LOG_MAX_BYTES:
+    rotated = path.exists() and path.stat().st_size >= LOG_MAX_BYTES
+    if rotated:
         path.replace(path.with_name(path.name + '.1'))
     with path.open('a', encoding='utf-8') as f:
         f.write(f'{stamp}  {level:<7}  {document}  {text}\n')
+    if rotated or path not in _logs_given_away:
+        # the logs folder and its files: the data folder's owner, not root (see dialog_ui.py) --
+        # once per file per run, which also fixes logs written as root before
+        give_to_owner_of(path.parent, BASE_DIR)
+        _logs_given_away.add(path)
+
+
+_logs_given_away: set[Path] = set()
 
 
 def notify(message, *args, **kwargs):
@@ -4347,6 +4356,7 @@ def save_file(on_saved=None):
         except Exception as exc:
             ui.notify(f'Failed to save {path}: {exc}', color='negative')
             return
+        give_to_owner_of(path, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
         sess.current_file['modified'] = False
         sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
@@ -4414,6 +4424,7 @@ def save_as(on_saved=None):
             except Exception as exc:
                 ui.notify(f'Failed to save {dest}: {exc}', color='negative')
                 return
+            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             forget_draft(sess.current_file['path'] or '')
             sess.current_file['path'] = str(dest)
             sess.current_file['modified'] = False
@@ -4477,6 +4488,7 @@ def export_xdts():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
+            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             ui.notify(f'Exported {dest}', color='positive')
 
         _confirm_overwrite(dest, do_export)
@@ -4615,6 +4627,7 @@ def _choose_oca_destination(text: str, source_name: str, options: dict, cels_dir
             except Exception as exc:
                 ui.notify(f'Export failed: {exc}', color='negative')
                 return
+            give_to_owner_of(summary['path'], BASE_DIR)  # the whole OCA folder: the data folder's owner, not root
             total = summary['copied'] + summary['placeholders']
             if options['images'] != 'placeholder':
                 images = 'no images'
@@ -4696,6 +4709,7 @@ def export_to_pdf():
                 except Exception as exc:
                     ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                     return
+                give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
                 ui.notify(f'Exported {dest}', color='positive')
 
             _confirm_overwrite(dest, do_export)
@@ -4757,6 +4771,7 @@ def export_xsheet():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
+            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]})', color='positive')
 
         _confirm_overwrite(dest, do_export)

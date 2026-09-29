@@ -24,6 +24,7 @@
 #
 # COPYRIGHT_END
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -48,6 +49,28 @@ def titled_card(title: str, *, classes: str = '', body_classes: str = 'gap-4'):
         ui.label(title).classes('w-full px-4 py-2 text-lg font-medium bg-primary text-white')
         with ui.column().classes(f'w-full p-4 {body_classes}') as body:
             yield body
+
+
+def give_to_owner_of(path, root) -> None:
+    """Give `path` -- and, for a folder, everything in it -- the user and
+    group that own `root` (the data folder), when the app runs as root, as
+    the development container does. Files the app writes into someone's
+    folder then belong to them, not to root. Running as another user (the
+    production container's app user, which owns /data) there's nothing to
+    change. Best effort: a file that can't be changed is left as it is."""
+    if not hasattr(os, 'geteuid') or os.geteuid() != 0:
+        return
+    try:
+        owner = Path(root).stat()
+    except OSError:
+        return
+    path = Path(path)
+    targets = [path, *path.rglob('*')] if path.is_dir() and not path.is_symlink() else [path]
+    for target in targets:
+        try:
+            os.chown(target, owner.st_uid, owner.st_gid, follow_symlinks=False)
+        except OSError:
+            pass
 
 
 def within(path, root) -> bool:
