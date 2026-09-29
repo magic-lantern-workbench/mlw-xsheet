@@ -184,7 +184,8 @@ def session() -> Session:
 #   'oca_export':     File > Export > Export OCA's last options: picture 'width' and
 #                     'height', 'images' ('placeholder' or 'none') and
 #                     'cels_dir' (a folder in the data folder, or '').
-DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False}
+DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False, 'blank_lines': 1}
+MAX_BLANK_LINES = 5
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
 
@@ -582,21 +583,96 @@ def _strip_insignificant_whitespace(node):
             _strip_insignificant_whitespace(child)
 
 
-def pretty_print_xml(text: str, indent: str = '    ') -> str:
-    """Reformat XML/XSD text with consistent indentation. Uses minidom (not
-    ElementTree) because it models the whole document, not just the root
-    element -- ElementTree silently drops comments that sit before/after the
-    root, which several files in this project rely on for header banners.
-    Raises xml.parsers.expat.ExpatError if the text isn't well-formed."""
+def _reindent_text(element, indent: str, depth: int = 0) -> None:
+    """Re-indent the text of elements whose only content is text over several
+    lines -- like <Notes> with the note on its own line -- to the new layout:
+    each line one level deeper than the tags, and the closing tag lined up
+    with the opening one. minidom writes such text as-is, which would leave
+    the closing tag wherever the original file had it. Text on one line, and
+    elements with mixed content, are left alone."""
+    children = element.childNodes
+    if len(children) == 1 and children[0].nodeType == children[0].TEXT_NODE and '\n' in children[0].data:
+        lines = [line.strip() for line in children[0].data.splitlines() if line.strip()]
+        if lines:
+            children[0].data = ('\n' + ''.join(f'{indent * (depth + 1)}{line}\n' for line in lines)
+                                + indent * depth)
+        return
+    for child in children:
+        if child.nodeType == child.ELEMENT_NODE:
+            _reindent_text(child, indent, depth + 1)
+
+
+def _space_siblings(lines: list[str], blank_lines: int) -> list[str]:
+    """Put `blank_lines` empty lines between sibling nodes -- elements,
+    comments, processing instructions -- of pretty-printed XML: before each
+    node that starts right after a node that ended at the same depth, but not
+    after an opening tag or before a closing tag, and not between consecutive
+    comments (so a banner made of several comment lines stays together).
+    Nesting is followed tag by
+    tag rather than by indentation, since an element's text can run over
+    several lines with its own; multi-line comments and CDATA are left as
+    they are."""
+    import re
+    if blank_lines <= 0:
+        return lines
+    token = re.compile(r'<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<!.*?>|</[^>]*>|<[^>]*?/>|<[^>]*>', re.S)
+    out: list[str] = []
+    depth = 0
+    last_ended = None  # depth at which the latest node ended, or None right after an opening tag
+    last_was_comment = False
+    open_block = None  # the end marker of a comment or CDATA section still open on an earlier line
+    for line in lines:
+        if open_block is not None:
+            out.append(line)
+            if open_block in line:
+                last_was_comment = open_block == '-->'
+                open_block = None
+                last_ended = depth
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith('<') and not stripped.startswith('</') and last_ended == depth \
+                and not (last_was_comment and stripped.startswith('<!--')):
+            out.extend([''] * blank_lines)
+        rest = line
+        for marker, end in (('<!--', '-->'), ('<![CDATA[', ']]>')):
+            start = rest.find(marker)
+            if start != -1 and rest.find(end, start + len(marker)) == -1:
+                open_block, rest = end, rest[:start]  # the tags before it still count
+                last_was_comment = False
+                break
+        for m in token.finditer(rest):
+            tag = m.group()
+            last_was_comment = tag.startswith('<!--')
+            if tag.startswith('</'):
+                depth = max(depth - 1, 0)
+                last_ended = depth
+            elif tag.startswith(('<!', '<?')) or tag.endswith('/>'):
+                last_ended = depth
+            else:
+                depth += 1
+                last_ended = None
+        out.append(line)
+    return out
+
+
+def pretty_print_xml(text: str, indent: str = '    ', blank_lines: int = 0) -> str:
+    """Reformat XML/XSD text with consistent indentation, and `blank_lines`
+    empty lines between sibling elements (see _space_siblings()). Uses
+    minidom (not ElementTree) because it models the whole document, not just
+    the root element -- ElementTree silently drops comments that sit
+    before/after the root, which several files in this project rely on for
+    header banners. Raises xml.parsers.expat.ExpatError if the text isn't
+    well-formed."""
     from xml.dom import minidom
 
     doc = minidom.parseString(text)
     _strip_insignificant_whitespace(doc)
+    _reindent_text(doc.documentElement, indent)
     pretty = doc.toprettyxml(indent=indent, newl='\n')
     lines = [ln for ln in pretty.split('\n') if ln.strip()]
     if lines and lines[0].startswith('<?xml'):
         lines = lines[1:]  # minidom's own declaration; rebuilt below to match the source
-    body = '\n'.join(lines) + '\n'
+    body = '\n'.join(_space_siblings(lines, blank_lines)) + '\n'
 
     import re
     decl_match = re.match(r'^\s*<\?xml\s+version="([^"]+)"(?:\s+encoding="([^"]+)")?\s*\?>', text)
@@ -617,6 +693,13 @@ def _format_indent_string() -> str:
     return ' ' * size
 
 
+def _format_blank_lines() -> int:
+    try:
+        return min(max(int(format_prefs().get('blank_lines', 1)), 0), MAX_BLANK_LINES)
+    except (TypeError, ValueError):
+        return 1
+
+
 def format_xml():
     """Pretty-print the editor's XML/XSD contents in place, using the current
     format preferences. Routed through _set_editor_text() so it participates in
@@ -626,7 +709,7 @@ def format_xml():
         ui.notify('Nothing to format', color='warning')
         return
     try:
-        formatted = pretty_print_xml(text, indent=_format_indent_string())
+        formatted = pretty_print_xml(text, indent=_format_indent_string(), blank_lines=_format_blank_lines())
     except Exception as exc:
         ui.notify(f'Format failed: {exc}', color='negative')
         return
@@ -659,6 +742,10 @@ def show_preferences_dialog():
                 indent_input = ui.number(
                     'Indent size (spaces)', value=prefs['indent_size'], min=1, max=8, step=1,
                 ).classes('w-full').bind_enabled_from(use_tabs_cb, 'value', backward=lambda v: not v)
+                blank_input = ui.number(
+                    f'Blank lines between elements (0–{MAX_BLANK_LINES})', value=_format_blank_lines(),
+                    min=0, max=MAX_BLANK_LINES, step=1, format='%d',
+                ).classes('w-full')
             with ui.tab_panel(recent_tab).classes('px-0 gap-2'):
                 ui.label('Used by File > Open Recent').classes('text-sm text-gray-500')
                 recent_input = ui.number(
@@ -780,6 +867,10 @@ def show_preferences_dialog():
                 prefs['indent_size'] = max(int(indent_input.value), 1)
             except (TypeError, ValueError):
                 prefs['indent_size'] = 4
+            try:
+                prefs['blank_lines'] = min(max(int(blank_input.value), 0), MAX_BLANK_LINES)
+            except (TypeError, ValueError):
+                prefs['blank_lines'] = DEFAULT_FORMAT_PREFS['blank_lines']
             set_format_prefs(prefs)
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
