@@ -184,7 +184,7 @@ def session() -> Session:
 #   'oca_export':     File > Export > Export OCA's last options: picture 'width' and
 #                     'height', 'images' ('placeholder' or 'none') and
 #                     'cels_dir' (a folder in the data folder, or '').
-DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False, 'blank_lines': 1}
+DEFAULT_FORMAT_PREFS = {'indent_size': 4, 'use_tabs': False, 'blank_lines': 1, 'attribute_per_line': True}
 MAX_BLANK_LINES = 5
 DEFAULT_RECENT_FILES_LIMIT = 5
 MAX_RECENT_FILES_LIMIT = 20
@@ -655,9 +655,45 @@ def _space_siblings(lines: list[str], blank_lines: int) -> list[str]:
     return out
 
 
-def pretty_print_xml(text: str, indent: str = '    ', blank_lines: int = 0) -> str:
-    """Reformat XML/XSD text with consistent indentation, and `blank_lines`
-    empty lines between sibling elements (see _space_siblings()). Uses
+def _split_attributes(lines: list[str], indent: str) -> list[str]:
+    """Put each attribute of a start tag with two or more attributes on its
+    own line, one indent deeper than the tag, with the tag's closing > or />
+    (and anything after it on that line) staying on the last attribute's
+    line -- the layout of the project's example files. A tag with a single
+    attribute stays on one line; comments, CDATA and text are left alone."""
+    import re
+    tag_re = re.compile(r'^(\s*)<([^\s/>!?]+)((?:\s+[^\s=]+="[^"]*")+)(\s*/?>)(.*)$')
+    attr_re = re.compile(r'[^\s=]+="[^"]*"')
+    out: list[str] = []
+    open_block = None
+    for line in lines:
+        if open_block is not None:
+            out.append(line)
+            if open_block in line:
+                open_block = None
+            continue
+        for marker, end in (('<!--', '-->'), ('<![CDATA[', ']]>')):
+            start = line.find(marker)
+            if start != -1 and line.find(end, start + len(marker)) == -1:
+                open_block = end
+        m = tag_re.match(line) if open_block is None else None
+        attrs = attr_re.findall(m.group(3)) if m else []
+        if len(attrs) < 2:
+            out.append(line)
+            continue
+        lead, name, _attrs, close, rest = m.groups()
+        out.append(f'{lead}<{name}')
+        out.extend(f'{lead}{indent}{a}' for a in attrs[:-1])
+        out.append(f'{lead}{indent}{attrs[-1]}{close.strip()}{rest}')
+    return out
+
+
+def pretty_print_xml(text: str, indent: str = '    ', blank_lines: int = 0,
+                     attribute_per_line: bool = False) -> str:
+    """Reformat XML/XSD text with consistent indentation, `blank_lines`
+    empty lines between sibling elements (see _space_siblings()), and --
+    with `attribute_per_line` -- each attribute of a multi-attribute tag on
+    its own line (see _split_attributes()). Uses
     minidom (not ElementTree) because it models the whole document, not just
     the root element -- ElementTree silently drops comments that sit
     before/after the root, which several files in this project rely on for
@@ -672,7 +708,10 @@ def pretty_print_xml(text: str, indent: str = '    ', blank_lines: int = 0) -> s
     lines = [ln for ln in pretty.split('\n') if ln.strip()]
     if lines and lines[0].startswith('<?xml'):
         lines = lines[1:]  # minidom's own declaration; rebuilt below to match the source
-    body = '\n'.join(_space_siblings(lines, blank_lines)) + '\n'
+    lines = _space_siblings(lines, blank_lines)
+    if attribute_per_line:
+        lines = _split_attributes(lines, indent)  # last: the other passes read one tag per line
+    body = '\n'.join(lines) + '\n'
 
     import re
     decl_match = re.match(r'^\s*<\?xml\s+version="([^"]+)"(?:\s+encoding="([^"]+)")?\s*\?>', text)
@@ -709,7 +748,8 @@ def format_xml():
         ui.notify('Nothing to format', color='warning')
         return
     try:
-        formatted = pretty_print_xml(text, indent=_format_indent_string(), blank_lines=_format_blank_lines())
+        formatted = pretty_print_xml(text, indent=_format_indent_string(), blank_lines=_format_blank_lines(),
+                                     attribute_per_line=bool(format_prefs().get('attribute_per_line', True)))
     except Exception as exc:
         ui.notify(f'Format failed: {exc}', color='negative')
         return
@@ -746,6 +786,10 @@ def show_preferences_dialog():
                     f'Blank lines between elements (0–{MAX_BLANK_LINES})', value=_format_blank_lines(),
                     min=0, max=MAX_BLANK_LINES, step=1, format='%d',
                 ).classes('w-full')
+                attr_line_cb = ui.checkbox('Put each attribute on its own line',
+                                           value=bool(prefs.get('attribute_per_line', True)))
+                ui.label('For tags with two or more attributes; off keeps each tag on one line.') \
+                    .classes('text-xs text-gray-500 -mt-2 pl-10')
             with ui.tab_panel(recent_tab).classes('px-0 gap-2'):
                 ui.label('Used by File > Open Recent').classes('text-sm text-gray-500')
                 recent_input = ui.number(
@@ -867,6 +911,7 @@ def show_preferences_dialog():
                 prefs['indent_size'] = max(int(indent_input.value), 1)
             except (TypeError, ValueError):
                 prefs['indent_size'] = 4
+            prefs['attribute_per_line'] = bool(attr_line_cb.value)
             try:
                 prefs['blank_lines'] = min(max(int(blank_input.value), 0), MAX_BLANK_LINES)
             except (TypeError, ValueError):

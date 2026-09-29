@@ -239,7 +239,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 | Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
 | Select Schema… | Manually choose the `.xsd` to validate against (remembered until cleared). In production, a **Data / Bundled schemas** switch also lets you pick one of the app's own schemas. |
 | Clear Schema | Forget the manual choice and return to auto-detection. |
-| Format | Pretty-print the current document using the indent and blank-line settings from Preferences > Format (one blank line between sibling elements by default), and mark it as modified. |
+| Format | Pretty-print the current document using the settings in Preferences > Format (by default: 4-space indents, one blank line between sibling elements, and each attribute of a multi-attribute tag on its own line), and mark it as modified. |
 
 Schema resolution order for **Validate against Schema**:
 1. A schema explicitly chosen via **Select Schema…**.
@@ -261,6 +261,18 @@ Report and Logs are saved per user; Login applies to everyone using the server:
     comments), 0–5, default 1. None go after an opening tag or before a closing tag, or between
     consecutive comments (so a banner of several comment lines stays together); 0 gives the
     compact layout of earlier versions.
+  - **Put each attribute on its own line** — on by default: a tag with two or more attributes
+    gets one attribute per line, one indent deeper than the tag, with its `>` or `/>` after the
+    last one (the layout of the example files). A tag with a single attribute, like
+    `<Frame number="1">`, stays on one line. Off keeps every tag on one line.
+
+    ```xml
+    <asset:Asset
+        id="BG001"
+        name="Starfield"
+        category="Background"
+        version="1"/>
+    ```
 
   Text that spans several lines inside an element (such as a `<Notes>` with the note on its own
   line) is re-indented one level deeper than its tags, with the closing tag lined up under the
