@@ -3578,18 +3578,24 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
 SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'polyline': ('Polyline', 'polyline'),
                     'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked')}
 SKETCHPAD_COLOR = '#e11d48'  # the pen's colour to start with
-# The colour chooser's palette: 64 colours, eight hues (a row each) in eight
-# shades, light to dark (its Spectrum and Tune views offer any other colour).
-SKETCHPAD_PALETTE = [
-    '#ffffff', '#e5e7eb', '#d1d5db', '#9ca3af', '#6b7280', '#4b5563', '#1f2937', '#000000',  # greys
-    '#fecdd3', '#fda4af', '#fb7185', '#f43f5e', '#e11d48', '#be123c', '#9f1239', '#881337',  # reds
-    '#fed7aa', '#fdba74', '#fb923c', '#f97316', '#ea580c', '#c2410c', '#9a3412', '#7c2d12',  # oranges
-    '#fef08a', '#fde047', '#facc15', '#eab308', '#ca8a04', '#a16207', '#854d0e', '#713f12',  # yellows
-    '#bbf7d0', '#86efac', '#4ade80', '#22c55e', '#16a34a', '#15803d', '#166534', '#14532d',  # greens
-    '#a5f3fc', '#67e8f9', '#22d3ee', '#06b6d4', '#0891b2', '#0e7490', '#155e75', '#164e63',  # cyans
-    '#bfdbfe', '#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1d4ed8', '#1e40af', '#1e3a8a',  # blues
-    '#ddd6fe', '#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed', '#6d28d9', '#5b21b6', '#4c1d95',  # violets
-]
+
+
+# The colour chooser's palette: 256 colours in 16 rows of 16 -- a row of
+# greys from white to black, then 15 hues round the colour wheel (every
+# 24 degrees, from red), each in 16 shades from light to dark. (Its Spectrum
+# and Tune views offer any other colour.)
+def _sketchpad_palette() -> list[str]:
+    import colorsys
+
+    def hexed(r, g, b):
+        return '#%02x%02x%02x' % tuple(round(v * 255) for v in (r, g, b))
+    greys = [hexed(v, v, v) for v in (1 - i / 15 for i in range(16))]
+    shades = [hexed(*colorsys.hls_to_rgb(hue / 360, 0.92 - 0.8 * i / 15, 0.85))
+              for hue in range(0, 360, 24) for i in range(16)]
+    return greys + shades
+
+
+SKETCHPAD_PALETTE = _sketchpad_palette()
 SKETCHPAD_WIDTH = 4  # the pen's width to start with, in pixels
 SKETCHPAD_WIDTHS = [1, 2, 3, 4, 6, 8, 12, 16]  # the brush chooser's quick sizes (its slider: 1-24)
 SKETCHPAD_MAX_WIDTH = 24
@@ -3792,7 +3798,7 @@ def _build_sketchpad_toolbar(sess) -> None:
                 picker.on('before-show', lambda: chooser_opened('color'))
                 picker.q_color.props(f'default-view=palette no-header format-model=hex '
                                      f':palette="{json.dumps(SKETCHPAD_PALETTE).replace(chr(34), chr(39))}"')
-                picker.q_color.classes('mlw-palette-8').style('width: 264px')  # the palette: 8 x 8
+                picker.q_color.classes('mlw-palette-16').style('width: 256px')  # the palette: 16 x 16, 16 px swatches
                 picker.set_color(SKETCHPAD_COLOR)
                 with picker, ui.row().classes('w-full justify-end gap-2 p-1'):  # picking leaves it open
                     ui.button('Cancel', on_click=lambda: chooser_cancel(picker, 'color')).props('dense flat size=sm')
@@ -5171,12 +5177,13 @@ def index():
 .mlw-sketchpad-toolbar .mlw-tool-on {
     box-shadow: 0 0 0 2px #2b5d8a;
 }
-/* the sketchpad's colour chooser: its 64 colours in eight rows of eight (in
-   the overrides layer: Quasar's width is !important, in a later layer) */
+/* the sketchpad's colour chooser: its 256 colours in 16 rows of 16, small
+   squares (in the overrides layer: Quasar's width is !important, in a later
+   layer) */
 @layer overrides {
-    .q-color-picker.mlw-palette-8 .q-color-picker__cube {
-        width: 12.5% !important;
-        padding-bottom: 12.5% !important;
+    .q-color-picker.mlw-palette-16 .q-color-picker__cube {
+        width: 6.25% !important;
+        padding-bottom: 6.25% !important;
     }
 }
 /* the colour chooser's swatches: a faint edge, so white shows too */
