@@ -118,6 +118,7 @@ class Session:
         # the Sketchpad's sketch as the browser last sent it (see handle_sketch_changed()), for
         # Save and Save As to write beside the document (see save_sketch_beside())
         self.sketch = {'count': 0, 'svg': ''}
+        self.sketch_modified = False  # changed since loaded or saved (see document_modified())
         self.sketchpad_toolbar = None
         self.sketchpad_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
@@ -533,6 +534,13 @@ def forget_draft(key: str) -> None:
         user_storage()['drafts'] = drafts
 
 
+def document_modified() -> bool:
+    """Whether the document has unsaved changes: to its text, or to its
+    Sketchpad sketch (saved beside it -- see save_sketch_beside())."""
+    sess = session()
+    return bool(sess.current_file.get('modified') or sess.sketch_modified)
+
+
 def remember_document() -> None:
     """Record this session's document in the user's storage: its unsaved
     text as a draft (or no draft, once it matches what's on disk again), and
@@ -541,13 +549,15 @@ def remember_document() -> None:
     sess = session()
     key = sess.current_file['path'] or ''
     drafts = _drafts()
-    if sess.current_file['modified']:
+    if document_modified():
         drafts[key] = {'text': _editor_text(), 'saved_content': sess.current_file['saved_content']}
+        if sess.sketch_modified:  # an unsaved sketch, too (see restore_sketch_draft())
+            drafts[key]['sketch'] = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
     else:
         drafts.pop(key, None)
     store = user_storage()
     store['drafts'] = drafts
-    store['last_document'] = key if (key or sess.current_file['modified']) else None
+    store['last_document'] = key if (key or document_modified()) else None
 
 
 def set_filename_label(name: str | None = None):
@@ -558,7 +568,7 @@ def set_filename_label(name: str | None = None):
             name = Path(sess.current_file['path']).name
         else:  # a new, never-saved document (File > New), or nothing open
             name = UNTITLED_NAME if _editor_text().strip() else 'No file'
-    label_text = name + (' *' if sess.current_file.get('modified') else '')
+    label_text = name + (' *' if document_modified() else '')
     if sess.filename_label is not None:
         sess.filename_label.set_text(label_text)
 
@@ -3650,6 +3660,7 @@ def reset_sketchpad() -> None:
     if sess.sketchpad_active:
         toggle_sketchpad(False)
     sess.sketch = {'count': 0, 'svg': ''}
+    sess.sketch_modified = False
     ui.run_javascript('window.mlwSketchpad && mlwSketchpad.reset()')
     update_sketchpad_item()
 
@@ -3665,9 +3676,36 @@ def sketch_path_for(document: Path | str) -> Path:
 
 def handle_sketch_changed(e) -> None:
     """The browser's sketch changed (see mlwSketchpad's changed()): keep
-    its SVG, for the next Save or Save As."""
+    its SVG, for the next Save or Save As, and whether it's unsaved -- which
+    marks the document as changed (see document_modified()), and keeps the
+    sketch in its draft."""
+    sess = session()
     args = e.args if isinstance(e.args, dict) else {}
-    session().sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
+    sess.sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
+    sess.sketch_modified = bool(args.get('dirty')) and sess.document_open
+    set_filename_label()
+    remember_document()
+
+
+def mark_sketch_saved() -> None:
+    """Save / Save As wrote the sketch: it's no longer unsaved."""
+    session().sketch_modified = False
+    ui.run_javascript('window.mlwSketchpad && mlwSketchpad.markSaved()')
+
+
+def restore_sketch_draft(draft: dict | None) -> None:
+    """A draft with an unsaved sketch (see remember_document()): load it,
+    still unsaved, and keep it in the draft (which loading the document's
+    text rewrote without it)."""
+    svg = (draft or {}).get('sketch')
+    if not svg:
+        return
+    sess = session()
+    sess.sketch = {'count': len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg)), 'svg': svg}
+    sess.sketch_modified = True
+    set_filename_label()
+    remember_document()
+    ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)}, true)')
 
 
 def _sketch_comments(document: Path) -> str:
@@ -4413,12 +4451,13 @@ def open_file(path: Path, restore_draft: bool | None = None):
     load_sketch_beside(path)
     add_recent_file(key)
     ui.notify(f'Opened {path.name}', color='positive')
-    if not draft or draft['text'] == text:
+    if not draft or (draft['text'] == text and not draft.get('sketch')):
         return
 
     def restore(_=None):
         _load_document(key, draft['text'], draft['saved_content'])
         load_sketch_beside(path)
+        restore_sketch_draft(draft)
         ui.notify(f'Restored unsaved changes to {path.name}', color='positive')
 
     if restore_draft:
@@ -4443,6 +4482,7 @@ def restore_last_document():
         open_file(Path(key), restore_draft=True)
     elif draft:  # never-saved document, or its file has since been removed
         _load_document(key or None, draft['text'], draft['saved_content'])
+        restore_sketch_draft(draft)
         ui.notify('Restored unsaved changes', color='positive')
 
 
@@ -4482,8 +4522,7 @@ def _then_with_check(then, question: str):
     first, if it has unsaved changes (Cancel / No / Yes, where Yes saves,
     through Save As for a never-saved document, and only goes on once the
     save went through)."""
-    sess = session()
-    if not sess.current_file.get('modified'):
+    if not document_modified():
         then()
         return
     with ui.dialog() as confirm_dialog, titled_card('Unsaved Changes'):
@@ -4743,6 +4782,7 @@ def save_file(on_saved=None):
             return
         give_to_owner_of(path, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
         sketch = save_sketch_beside(path)
+        mark_sketch_saved()
         sess.current_file['modified'] = False
         sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
@@ -4812,6 +4852,7 @@ def save_as(on_saved=None):
                 return
             give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
             sketch = save_sketch_beside(dest)
+            mark_sketch_saved()
             forget_draft(sess.current_file['path'] or '')
             sess.current_file['path'] = str(dest)
             sess.current_file['modified'] = False
@@ -5564,16 +5605,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     }
     // The server keeps a copy of the sketch, as SVG, for File > Save and
     // Save As to write beside the document (see handle_sketch_changed()):
-    // sent a moment after it changes -- not on every pointer move.
-    let sent = '[]', sendTimer = null;
-    function changed() {
+    // sent a moment after it changes -- not on every pointer move -- with
+    // whether it differs from the sketch last loaded or saved ('dirty'), so
+    // the document shows as changed and Close asks to save it.
+    let sent = '[]', saved = '[]', sendTimer = null;
+    function changed(force = false) {
         clearTimeout(sendTimer);
         sendTimer = setTimeout(() => {
             const now = JSON.stringify(st.shapes);
-            if (now === sent) return;
+            if (now === sent && !force) return;
             sent = now;
-            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG()});
-        }, 300);
+            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved});
+        }, force ? 0 : 300);
     }
     // A sketch saved as SVG (by toSVG()) back as shapes: each <path> a spline
     // (its anchors and, from its curves' control points, their tangents),
@@ -5828,16 +5871,21 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         },
         // a document opened with a sketch saved beside it (see fromSVG()): that
         // sketch, and nothing to undo
-        loadSVG(text) {
+        // (unsaved: a sketch from a draft, not yet saved beside the document)
+        loadSVG(text, unsaved = false) {
             const shapes = fromSVG(text);
             if (!shapes) return false;
             finishPoly(false);
             st.shapes = shapes; st.history = []; st.selected = -1; st.node = null; st.label = null;
+            saved = unsaved ? null : JSON.stringify(shapes);
             rebuildAll();
             return true;
         },
+        // File > Save / Save As wrote the sketch the server has (the last one
+        // sent): that's the saved sketch now; anything since is still unsaved
+        markSaved() { saved = sent; changed(true); },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
+        reset() { saved = '[]'; st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
         clear() { finishPoly(); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
         setPenColor(color) { st.color = color; },
