@@ -115,6 +115,9 @@ class Session:
         self.sketchpad_menu_icon = None
         self.sketchpad_item = None  # its menu item: enabled on the XSheet tab, with a document open
         self.document_open = False  # a document is in the editor: opened, new, or a restored draft
+        # the Sketchpad's sketch as the browser last sent it (see handle_sketch_changed()), for
+        # Save and Save As to write beside the document (see save_sketch_beside())
+        self.sketch = {'count': 0, 'svg': ''}
         self.sketchpad_toolbar = None
         self.sketchpad_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
@@ -3640,13 +3643,66 @@ def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
 
 def reset_sketchpad() -> None:
     """A document was opened or closed: turn the sketchpad off, and start
-    the next sketch afresh (the one drawn isn't saved yet, and belongs to
-    the document it was drawn on)."""
+    the next sketch afresh (a sketch belongs to the document it was drawn
+    on; opening one saved beside a document loads it -- see
+    load_sketch_beside())."""
     sess = session()
     if sess.sketchpad_active:
         toggle_sketchpad(False)
+    sess.sketch = {'count': 0, 'svg': ''}
     ui.run_javascript('window.mlwSketchpad && mlwSketchpad.reset()')
     update_sketchpad_item()
+
+
+# A document's sketch is saved beside it, as SVG: the same name, with .svg
+# in place of its extension (scene.xml -> scene.svg).
+EMPTY_SKETCH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" viewBox="0 0 0 0"/>'
+
+
+def sketch_path_for(document: Path | str) -> Path:
+    return Path(document).with_suffix('.svg')
+
+
+def handle_sketch_changed(e) -> None:
+    """The browser's sketch changed (see mlwSketchpad's changed()): keep
+    its SVG, for the next Save or Save As."""
+    args = e.args if isinstance(e.args, dict) else {}
+    session().sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
+
+
+def save_sketch_beside(document: Path) -> Path | None:
+    """File > Save / Save As: write the sketch beside `document` (see
+    sketch_path_for()). With no sketch, nothing is written -- unless a
+    sketch was saved there before, which is then emptied, so opening the
+    document doesn't bring back what was cleared. Returns the file written."""
+    sess = session()
+    dest = sketch_path_for(document)
+    if not sess.sketch['count'] and not dest.exists():
+        return None
+    svg = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
+    try:
+        dest.write_text(svg, encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to save the sketch to {dest}: {exc}', color='negative')
+        return None
+    give_to_owner_of(dest, BASE_DIR)
+    return dest
+
+
+def load_sketch_beside(document: Path) -> None:
+    """File > Open: if a sketch was saved beside `document` (see
+    sketch_path_for()), load it into the Sketchpad."""
+    source = sketch_path_for(document)
+    if not source.is_file():
+        return
+    try:
+        svg = source.read_text(encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to read the sketch {source}: {exc}', color='warning')
+        return
+    count = len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg))
+    session().sketch = {'count': count, 'svg': svg}
+    ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)})')
 
 
 def toggle_sketchpad(active: bool | None = None) -> None:
@@ -4325,6 +4381,7 @@ def open_file(path: Path, restore_draft: bool | None = None):
     key = str(path)
     draft = _drafts().get(key)
     _load_document(key, text, text)  # also drops the draft; restoring re-saves it
+    load_sketch_beside(path)
     add_recent_file(key)
     ui.notify(f'Opened {path.name}', color='positive')
     if not draft or draft['text'] == text:
@@ -4332,6 +4389,7 @@ def open_file(path: Path, restore_draft: bool | None = None):
 
     def restore(_=None):
         _load_document(key, draft['text'], draft['saved_content'])
+        load_sketch_beside(path)
         ui.notify(f'Restored unsaved changes to {path.name}', color='positive')
 
     if restore_draft:
@@ -4655,11 +4713,12 @@ def save_file(on_saved=None):
             ui.notify(f'Failed to save {path}: {exc}', color='negative')
             return
         give_to_owner_of(path, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+        sketch = save_sketch_beside(path)
         sess.current_file['modified'] = False
         sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
         remember_document()
-        ui.notify(f'Saved {path}', color='positive')
+        ui.notify(f'Saved {path}' + (f' and its sketch, {sketch.name}' if sketch else ''), color='positive')
         if on_saved is not None:
             on_saved()
 
@@ -4723,6 +4782,7 @@ def save_as(on_saved=None):
                 ui.notify(f'Failed to save {dest}: {exc}', color='negative')
                 return
             give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+            sketch = save_sketch_beside(dest)
             forget_draft(sess.current_file['path'] or '')
             sess.current_file['path'] = str(dest)
             sess.current_file['modified'] = False
@@ -4730,7 +4790,7 @@ def save_as(on_saved=None):
             set_filename_label(dest.name)
             remember_document()
             add_recent_file(str(dest))
-            ui.notify(f'Saved {dest}', color='positive')
+            ui.notify(f'Saved {dest}' + (f' and its sketch, {sketch.name}' if sketch else ''), color='positive')
             # keep the Hierarchy tree (and its editor-sync state) consistent
             # with the file's new name/location, even though the content is
             # unchanged
@@ -5471,6 +5531,71 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             h.classList.toggle('mlw-sketchpad-select', st.tool === 'select');
             build(svgOf(h), false, scrollOf(h));
         }
+        changed();
+    }
+    // The server keeps a copy of the sketch, as SVG, for File > Save and
+    // Save As to write beside the document (see handle_sketch_changed()):
+    // sent a moment after it changes -- not on every pointer move.
+    let sent = '[]', sendTimer = null;
+    function changed() {
+        clearTimeout(sendTimer);
+        sendTimer = setTimeout(() => {
+            const now = JSON.stringify(st.shapes);
+            if (now === sent) return;
+            sent = now;
+            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG()});
+        }, 300);
+    }
+    // A sketch saved as SVG (by toSVG()) back as shapes: each <path> a spline
+    // (its anchors and, from its curves' control points, their tangents),
+    // <polyline> a polyline, <rect> a rectangle and <circle> a circle, with
+    // their stroke colour and width. Anything else is left out.
+    function fromSVG(text) {
+        const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+        if (doc.querySelector('parsererror')) return null;
+        const num = (e, a) => parseFloat(e.getAttribute(a)) || 0;
+        const shapes = [];
+        doc.querySelectorAll('path, polyline, rect, circle').forEach(e => {
+            const style = {color: e.getAttribute('stroke') || '#000000', width: num(e, 'stroke-width') || 1};
+            const tag = e.tagName.toLowerCase();
+            if (tag === 'rect') {
+                const x = num(e, 'x'), y = num(e, 'y');
+                shapes.push({type: 'rect', ...style, points: [[x, y], [x + num(e, 'width'), y + num(e, 'height')]]});
+            } else if (tag === 'circle') {
+                const cx = num(e, 'cx'), cy = num(e, 'cy');
+                shapes.push({type: 'circle', ...style, points: [[cx, cy], [cx + num(e, 'r'), cy]]});
+            } else if (tag === 'polyline') {
+                const v = (e.getAttribute('points') || '').trim().split(/[\s,]+/).map(Number);
+                const points = [];
+                for (let i = 0; i + 1 < v.length; i += 2) points.push([v[i], v[i + 1]]);
+                if (points.length > 1) shapes.push({type: 'polyline', ...style, points});
+            } else {
+                const tokens = (e.getAttribute('d') || '').match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || [];
+                const points = [], tangents = [];
+                let cmd = null, i = 0;
+                const next = () => parseFloat(tokens[i++]);
+                while (i < tokens.length) {
+                    if (/[A-Za-z]/.test(tokens[i])) { cmd = tokens[i++]; continue; }
+                    if (cmd === 'M' && !points.length) {
+                        points.push([next(), next()]); tangents.push([0, 0, 0, 0]);
+                    } else if (cmd === 'C' && points.length) {
+                        const a = points[points.length - 1], c1 = [next(), next()], c2 = [next(), next()], b = [next(), next()];
+                        tangents[tangents.length - 1][2] = c1[0] - a[0]; tangents[tangents.length - 1][3] = c1[1] - a[1];
+                        points.push(b); tangents.push([c2[0] - b[0], c2[1] - b[1], 0, 0]);
+                    } else if (cmd === 'L' && points.length) {
+                        const a = points[points.length - 1], b = [next(), next()], dx = (b[0] - a[0]) / 3, dy = (b[1] - a[1]) / 3;
+                        tangents[tangents.length - 1][2] = dx; tangents[tangents.length - 1][3] = dy;
+                        points.push(b); tangents.push([-dx, -dy, 0, 0]);
+                    } else i++;  // anything else (a dot's "h0.01"): skipped
+                }
+                if (!points.length) return;
+                const n = points.length;  // the ends' unused handles: opposite the used one
+                tangents[0][0] = -tangents[0][2]; tangents[0][1] = -tangents[0][3];
+                tangents[n - 1][2] = -tangents[n - 1][0]; tangents[n - 1][3] = -tangents[n - 1][1];
+                shapes.push({type: 'spline', ...style, points, tangents});
+            }
+        });
+        return shapes;
     }
     function attach(host) {
         if (host._mlwSketchpad) return;
@@ -5669,6 +5794,16 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (!st.history.length) return false;
             st.shapes = st.history.pop();
             if (!st.shapes[st.selected]) st.selected = -1;
+            rebuildAll();
+            return true;
+        },
+        // a document opened with a sketch saved beside it (see fromSVG()): that
+        // sketch, and nothing to undo
+        loadSVG(text) {
+            const shapes = fromSVG(text);
+            if (!shapes) return false;
+            finishPoly(false);
+            st.shapes = shapes; st.history = []; st.selected = -1; st.node = null; st.label = null;
             rebuildAll();
             return true;
         },
@@ -6364,6 +6499,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
+            ui.on('mlw_sketch_changed', handle_sketch_changed)  # the sketch, for Save (see save_sketch_beside())
             # XSheet > Sketchpad: the sketchpad over everything above, and
             # its tools while it's on (see toggle_sketchpad() and mlwSketchpad)
             ui.element('div').classes('mlw-sketchpad')  # the SVG drawing goes in here (see mlwSketchpad)
