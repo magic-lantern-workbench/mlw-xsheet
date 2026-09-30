@@ -111,7 +111,7 @@ class Session:
         self.xml_tree = None
         self.xml_menu_button = None
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
-        self.overlay_active = False  # XSheet > Overlay: drawing on the overlay canvas (see toggle_overlay())
+        self.overlay_active = False  # XSheet > Overlay: sketching on the SVG overlay (see toggle_overlay())
         self.overlay_menu_icon = None
         self.overlay_toolbar = None
         self.overlay_tool_buttons: dict[str, ui.button] = {}
@@ -3577,11 +3577,12 @@ OVERLAY_WIDTHS = {'Thin': 2, 'Medium': 4, 'Thick': 8}
 
 
 def toggle_overlay(active: bool | None = None) -> None:
-    """XSheet > Overlay: turn sketching on the overlay canvas on or off. On,
-    the canvas over the XSheet tab takes the pointer (so the grid under it
-    can't be clicked) and its toolbar shows; off, the canvas ignores the
-    pointer entirely, so nothing can be drawn and the grid works as usual.
-    The sketch stays visible either way."""
+    """XSheet > Overlay: turn sketching on the SVG overlay on or off. On,
+    the overlay over the XSheet tab takes the pointer (so the grid under it
+    can't be clicked) and its toolbar shows (see _build_overlay_toolbar());
+    off, the overlay is hidden and
+    ignores the pointer, so nothing can be drawn and the grid works as
+    usual. The sketch is kept, and shows again when it's turned back on."""
     sess = session()
     sess.overlay_active = (not sess.overlay_active) if active is None else bool(active)
     if sess.overlay_menu_icon is not None:
@@ -3594,27 +3595,41 @@ def toggle_overlay(active: bool | None = None) -> None:
 
 
 def _build_overlay_toolbar(sess) -> None:
-    """The overlay's tools, shown while it's on: pen colours, pen sizes, the
-    eraser, Undo stroke, Clear and Done."""
+    """The overlay's tools, shown while it's on: the Pen and Select tools,
+    pen colours and sizes (which also restyle the selected spline), Delete
+    (the selected spline), Undo, Clear and Done."""
     buttons = sess.overlay_tool_buttons
 
-    def pick(group: str, key: str, js: str):
+    def mark(group: str, key: str):
         for name, button in buttons.items():
-            if name.startswith(group + ':') or (group == 'color' and name == 'tool:eraser'):
+            if name.startswith(group + ':'):
                 button.classes(remove='mlw-tool-on')
         buttons[f'{group}:{key}'].classes(add='mlw-tool-on')
-        ui.run_javascript(js)
 
-    def eraser():
-        for name, button in buttons.items():
-            if name.startswith('color:'):
-                button.classes(remove='mlw-tool-on')
-        buttons['tool:eraser'].classes(add='mlw-tool-on')
-        ui.run_javascript('mlwOverlay.setErase(true)')
+    def tool(name: str):
+        mark('tool', name)
+        ui.run_javascript(f'mlwOverlay.setTool({json.dumps(name)})')
+
+    async def colour(name: str, value: str):
+        mark('color', name)
+        if await ui.run_javascript(f'mlwOverlay.setColor({json.dumps(value)}); return mlwOverlay.selected()') == -1:
+            tool('pen')  # nothing selected: back to drawing, in that colour
+
+    def width(name: str, value: int):
+        mark('width', name)
+        ui.run_javascript(f'mlwOverlay.setWidth({value})')
+
+    async def delete_selected():
+        if not await ui.run_javascript('return mlwOverlay.deleteSelected()'):
+            ui.notify('Select a spline to delete first (the arrow tool)', color='info')
+
+    async def undo():
+        if not await ui.run_javascript('return mlwOverlay.undo()'):
+            ui.notify('Nothing to undo on the overlay', color='info')
 
     def confirm_clear():
         with ui.dialog() as dlg, titled_card('Clear Overlay'):
-            ui.label('Erase everything drawn on the overlay?')
+            ui.label('Delete every spline on the overlay? (Undo brings them back.)')
             with ui.row().classes('mt-4 justify-end gap-2'):
                 ui.button('No', on_click=dlg.close).props('outline size=sm')
 
@@ -3627,27 +3642,31 @@ def _build_overlay_toolbar(sess) -> None:
     with ui.card().classes('mlw-overlay-toolbar p-1 gap-1').props('flat bordered') as toolbar:
         with ui.row().classes('items-center gap-1 no-wrap'):
             ui.label('Overlay').classes('text-xs text-gray-600 px-1')
-            for name, color in OVERLAY_COLORS.items():
-                buttons[f'color:{name}'] = ui.button(
-                    on_click=lambda _, n=name, c=color: pick('color', n, f'mlwOverlay.setColor({json.dumps(c)})')) \
-                    .props('round dense size=xs unelevated').style(f'background: {color} !important') \
-                    .tooltip(f'{name} pen')
+            buttons['tool:pen'] = ui.button(icon='edit', on_click=lambda: tool('pen')) \
+                .props('flat dense size=sm').tooltip('Pen: draw a spline')
+            buttons['tool:select'] = ui.button(icon='north_west', on_click=lambda: tool('select')) \
+                .props('flat dense size=sm') \
+                .tooltip('Select a spline: drag its points to reshape it, or the spline to move it')
             ui.separator().props('vertical')
-            for name, width in OVERLAY_WIDTHS.items():
-                buttons[f'width:{name}'] = ui.button(
-                    icon='circle', on_click=lambda _, n=name, w=width: pick('width', n, f'mlwOverlay.setWidth({w})')) \
+            for name, value in OVERLAY_COLORS.items():
+                buttons[f'color:{name}'] = ui.button(on_click=lambda _, n=name, v=value: colour(n, v)) \
+                    .props('round dense size=xs unelevated').style(f'background: {value} !important') \
+                    .tooltip(f'{name} (the pen, and the selected spline)')
+            ui.separator().props('vertical')
+            for name, value in OVERLAY_WIDTHS.items():
+                buttons[f'width:{name}'] = ui.button(icon='circle', on_click=lambda _, n=name, v=value: width(n, v)) \
                     .props(f'flat dense size={ {"Thin": "6px", "Medium": "9px", "Thick": "13px"}[name] }') \
-                    .classes('px-1').tooltip(f'{name} pen')
+                    .classes('px-1').tooltip(f'{name} (the pen, and the selected spline)')
             ui.separator().props('vertical')
-            buttons['tool:eraser'] = ui.button(icon='auto_fix_normal', on_click=eraser).props('flat dense size=sm') \
-                .tooltip('Eraser')
-            ui.button(icon='undo', on_click=lambda: ui.run_javascript('mlwOverlay.undo()')).props('flat dense size=sm') \
-                .tooltip('Undo the last stroke')
+            ui.button(icon='delete', on_click=delete_selected).props('flat dense size=sm') \
+                .tooltip('Delete the selected spline (or press Delete)')
+            ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
             ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the overlay')
             ui.button('Done', on_click=lambda: toggle_overlay(False)).props('dense size=sm unelevated')
+    buttons['tool:pen'].classes(add='mlw-tool-on')
     buttons['color:Red'].classes(add='mlw-tool-on')
     buttons['width:Medium'].classes(add='mlw-tool-on')
-    ui.run_javascript('window.mlwOverlay && (mlwOverlay.setColor("#e11d48"), mlwOverlay.setWidth(4))')
+    ui.run_javascript('window.mlwOverlay && (mlwOverlay.setTool("pen"), mlwOverlay.setColor("#e11d48"), mlwOverlay.setWidth(4))')
     toolbar.set_visibility(sess.overlay_active)
     sess.overlay_toolbar = toolbar
 
@@ -4921,29 +4940,46 @@ def index():
     #   "querySelectorAll('.cm-line')[lineNumber]" silently picks whichever
     #   line happens to occupy that DOM position, not the requested document
     #   line. Falls back to a real <textarea> when CodeMirror isn't present.
-    # XSheet > Overlay: a transparent canvas over the XSheet tab to sketch on.
-    # The sketch is kept here, per browser tab, as strokes (not pixels), so it
-    # can be redrawn whenever the canvas is re-created -- Quasar removes the
-    # XSheet tab's panel while another tab is showing -- or resized. It is not
-    # saved with the document (yet). Off, the canvas ignores the pointer
-    # entirely, so the grid under it works as usual and nothing can be drawn.
+    # XSheet > Overlay: a transparent SVG drawing over the XSheet tab to sketch
+    # on. Each pen stroke becomes an editable spline: the points drawn are
+    # thinned to a few anchors (Ramer-Douglas-Peucker), and the stroke is a
+    # smooth cubic Bezier <path> through them (Catmull-Rom). The Select tool
+    # picks a spline: drag its anchor handles to reshape it, drag the spline
+    # to move it, and Delete removes it; the pen colours and sizes apply to
+    # the selected one. Every change can be undone. The sketch is kept here,
+    # per browser tab, as its splines, and the SVG is rebuilt from them
+    # whenever the overlay is re-created -- Quasar removes the XSheet tab's
+    # panel while another tab is showing. It is not saved with the document
+    # yet; mlwOverlay.toSVG() gives it as a stand-alone SVG document for when
+    # it is. Off, the overlay is hidden and ignores the pointer, so the grid
+    # under it works as usual and nothing can be drawn; the splines are kept.
     ui.add_body_html('''
 <style>
 .mlw-overlay {
     position: absolute;
     inset: 0;
+    z-index: 5;
+    overflow: hidden;
+    pointer-events: none;   /* off: the XSheet under it gets every click */
+    visibility: hidden;     /* ... and the sketch isn't shown (it's kept for next time) */
+}
+.mlw-overlay > svg {
+    display: block;
     width: 100%;
     height: 100%;
-    z-index: 5;
-    pointer-events: none;   /* off: the XSheet under it gets every click */
 }
 .mlw-overlay.mlw-overlay-active {
+    visibility: visible;
     pointer-events: auto;
     cursor: crosshair;
     touch-action: none;
     outline: 2px dashed rgba(88, 152, 212, 0.7);
     outline-offset: -2px;
 }
+.mlw-overlay.mlw-overlay-select { cursor: default; }
+.mlw-overlay .mlw-hit { cursor: pointer; }
+.mlw-overlay .mlw-selected-hit { cursor: move; }
+.mlw-overlay .mlw-handle { cursor: grab; }
 .mlw-overlay-toolbar {
     position: absolute;
     top: 4px;
@@ -4956,91 +4992,204 @@ def index():
 </style>
 <script>
 window.mlwOverlay = window.mlwOverlay || (() => {
-    const st = {strokes: [], active: false, color: '#e11d48', width: 3, erase: false};
-    const canvases = new Set();
+    const NS = 'http://www.w3.org/2000/svg';
+    // splines: [{color, width, points: [[x, y], ...]}] -- the anchors, in CSS pixels
+    const st = {splines: [], active: false, tool: 'pen', color: '#e11d48', width: 3, selected: -1, history: []};
+    const hosts = new Set();
+    const round = (v) => Math.round(v * 10) / 10;
+    const copy = (splines) => splines.map(s => ({...s, points: s.points.map(p => [...p])}));
+    const remember = () => { st.history.push(copy(st.splines)); if (st.history.length > 200) st.history.shift(); };
 
-    function paint(ctx, s, from) {
-        const pts = s.points;
-        ctx.save();
-        ctx.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over';
-        ctx.strokeStyle = s.color;
-        ctx.fillStyle = s.color;
-        ctx.lineWidth = s.width;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        if (pts.length === 1) {  // a dot
-            ctx.beginPath();
-            ctx.arc(pts[0][0], pts[0][1], s.width / 2, 0, 2 * Math.PI);
-            ctx.fill();
-        } else {
-            ctx.beginPath();
-            const start = Math.max(0, from - 1);
-            ctx.moveTo(pts[start][0], pts[start][1]);
-            for (let i = start + 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-            ctx.stroke();
+    // Ramer-Douglas-Peucker: the few points that keep the drawn line's shape
+    function simplify(points, tolerance) {
+        if (points.length < 3) return points;
+        const [ax, ay] = points[0], [bx, by] = points[points.length - 1];
+        let far = 0, at = 0;
+        for (let i = 1; i < points.length - 1; i++) {
+            const [px, py] = points[i];
+            const len = Math.hypot(bx - ax, by - ay);
+            const d = len ? Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len : Math.hypot(px - ax, py - ay);
+            if (d > far) { far = d; at = i; }
         }
-        ctx.restore();
+        if (far <= tolerance) return [points[0], points[points.length - 1]];
+        return [...simplify(points.slice(0, at + 1), tolerance).slice(0, -1), ...simplify(points.slice(at), tolerance)];
     }
-    function context(canvas) {
-        const dpr = window.devicePixelRatio || 1;
-        const w = canvas.clientWidth, h = canvas.clientHeight;
-        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-            canvas.width = Math.round(w * dpr);
-            canvas.height = Math.round(h * dpr);
+    // a smooth path through the anchors: Catmull-Rom segments as cubic Beziers
+    function splinePath(points) {
+        const p = points, n = p.length;
+        if (n === 1) return `M${round(p[0][0])} ${round(p[0][1])}h0.01`;  // a dot: round caps draw it
+        let d = `M${round(p[0][0])} ${round(p[0][1])}`;
+        if (n === 2) return d + `L${round(p[1][0])} ${round(p[1][1])}`;
+        for (let i = 0; i < n - 1; i++) {
+            const p0 = p[Math.max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[Math.min(i + 2, n - 1)];
+            const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+            const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+            d += `C${round(c1[0])} ${round(c1[1])} ${round(c2[0])} ${round(c2[1])} ${round(p2[0])} ${round(p2[1])}`;
         }
-        const ctx = canvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        return ctx;
+        return d;
     }
-    function redraw(canvas) {
-        const ctx = context(canvas);
-        ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-        for (const s of st.strokes) paint(ctx, s, 0);
+    function el(tag, attrs) {
+        const e = document.createElementNS(NS, tag);
+        for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+        return e;
     }
-    function redrawAll() {
-        for (const c of [...canvases]) { if (c.isConnected) redraw(c); else canvases.delete(c); }
+    function strokeAttrs(s) {
+        return {fill: 'none', stroke: s.color, 'stroke-width': s.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
     }
-    function attach(canvas) {
-        if (canvas._mlwOverlay) return;
-        canvas._mlwOverlay = true;
-        canvases.add(canvas);
-        new ResizeObserver(() => redraw(canvas)).observe(canvas);
-        let current = null;
-        const at = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-        canvas.addEventListener('pointerdown', (e) => {
+    // The drawing: one <path> per spline; with the overlay on, also a wide
+    // invisible copy to pick it by, and the selected one's highlight and handles.
+    function build(svg, plain) {
+        svg.replaceChildren();
+        st.splines.forEach((s, i) => svg.appendChild(el('path', {d: splinePath(s.points), ...strokeAttrs(s), 'data-spline': i})));
+        if (plain || !st.active) return;
+        if (st.tool === 'select') {
+            st.splines.forEach((s, i) => svg.appendChild(el('path', {
+                d: splinePath(s.points), fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14),
+                'stroke-linecap': 'round', 'pointer-events': 'stroke', 'data-spline': i,
+                class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+        }
+        const s = st.splines[st.selected];
+        if (st.tool === 'select' && s) {
+            svg.insertBefore(el('path', {d: splinePath(s.points), fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35,
+                'stroke-width': s.width + 8, 'stroke-linecap': 'round', 'pointer-events': 'none'}), svg.firstChild);
+            s.points.forEach(([x, y], k) => svg.appendChild(el('circle', {cx: x, cy: y, r: 5, fill: 'white', stroke: '#2b5d8a',
+                'stroke-width': 1.5, class: 'mlw-handle', 'data-spline': st.selected, 'data-point': k})));
+        }
+    }
+    function svgOf(host) {
+        let svg = host.querySelector(':scope > svg');
+        if (!svg) { svg = document.createElementNS(NS, 'svg'); host.appendChild(svg); }
+        return svg;
+    }
+    function rebuildAll() {
+        for (const h of [...hosts]) {
+            if (!h.isConnected) { hosts.delete(h); continue; }
+            h.classList.toggle('mlw-overlay-active', st.active);
+            h.classList.toggle('mlw-overlay-select', st.tool === 'select');
+            build(svgOf(h));
+        }
+    }
+    function attach(host) {
+        if (host._mlwOverlay) return;
+        host._mlwOverlay = true;
+        hosts.add(host);
+        let drag = null;  // {kind: 'draw' | 'point' | 'move', ...}
+        const at = (e) => { const r = host.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+        host.addEventListener('pointerdown', (e) => {
             if (!st.active || e.button > 0) return;
             e.preventDefault();
-            canvas.setPointerCapture(e.pointerId);
-            current = {color: st.color, width: st.erase ? st.width * 4 : st.width, erase: st.erase, points: [at(e)]};
-            st.strokes.push(current);
-            paint(context(canvas), current, 0);
+            host.setPointerCapture(e.pointerId);
+            const [x, y] = at(e);
+            if (st.tool === 'pen') {
+                remember();
+                const s = {color: st.color, width: st.width, points: [[x, y]]};
+                st.splines.push(s);
+                const live = el('path', {d: `M${x} ${y}h0.01`, ...strokeAttrs(s)});
+                svgOf(host).appendChild(live);
+                drag = {kind: 'draw', spline: s, raw: [[x, y]], live};
+                return;
+            }
+            const t = e.target, i = t.dataset ? +t.dataset.spline : NaN;
+            if (t.classList.contains('mlw-handle')) {
+                remember();
+                drag = {kind: 'point', spline: i, point: +t.dataset.point};
+            } else if (t.classList.contains('mlw-hit')) {
+                if (st.selected !== i) { st.selected = i; rebuildAll(); }
+                remember();
+                drag = {kind: 'move', spline: i, from: [x, y], moved: false};
+            } else if (st.selected !== -1) {
+                st.selected = -1;
+                rebuildAll();
+            }
         });
-        canvas.addEventListener('pointermove', (e) => {
-            if (!current) return;
-            current.points.push(at(e));
-            paint(context(canvas), current, current.points.length - 1);
+        host.addEventListener('pointermove', (e) => {
+            if (!drag) return;
+            const [x, y] = at(e);
+            if (drag.kind === 'draw') {
+                drag.raw.push([x, y]);
+                drag.live.setAttribute('d', 'M' + drag.raw.map(([a, b]) => `${round(a)} ${round(b)}`).join('L'));
+            } else if (drag.kind === 'point') {
+                st.splines[drag.spline].points[drag.point] = [x, y];
+                rebuildAll();
+            } else {
+                const dx = x - drag.from[0], dy = y - drag.from[1];
+                if (!dx && !dy) return;
+                st.splines[drag.spline].points.forEach(p => { p[0] += dx; p[1] += dy; });
+                drag.from = [x, y];
+                drag.moved = true;
+                rebuildAll();
+            }
         });
-        const end = () => { if (current) { current = null; redrawAll(); } };
-        canvas.addEventListener('pointerup', end);
-        canvas.addEventListener('pointercancel', end);
-        canvas.classList.toggle('mlw-overlay-active', st.active);
-        redraw(canvas);
+        const end = () => {
+            if (!drag) return;
+            if (drag.kind === 'draw') drag.spline.points = simplify(drag.raw, Math.max(1.5, drag.spline.width / 2));
+            else if (drag.kind === 'move' && !drag.moved) st.history.pop();  // a click to select: nothing to undo
+            drag = null;
+            rebuildAll();
+        };
+        host.addEventListener('pointerup', end);
+        host.addEventListener('pointercancel', end);
+        rebuildAll();
     }
-    new MutationObserver(() => document.querySelectorAll('canvas.mlw-overlay').forEach(attach))
+    document.addEventListener('keydown', (e) => {
+        if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
+        if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
+        e.preventDefault();
+        api.deleteSelected();
+    });
+    new MutationObserver(() => document.querySelectorAll('div.mlw-overlay').forEach(attach))
         .observe(document.body, {childList: true, subtree: true});
-    document.querySelectorAll('canvas.mlw-overlay').forEach(attach);
-    return {
-        setActive(on) {
-            st.active = !!on;
-            document.querySelectorAll('canvas.mlw-overlay').forEach(c => c.classList.toggle('mlw-overlay-active', st.active));
+    document.querySelectorAll('div.mlw-overlay').forEach(attach);
+    const api = {
+        setActive(on) { st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setTool(tool) { st.tool = tool === 'select' ? 'select' : 'pen'; if (st.tool === 'pen') st.selected = -1; rebuildAll(); },
+        // the pen's colour / width, and the selected spline's
+        setColor(color) {
+            st.color = color;
+            const s = st.splines[st.selected];
+            if (s && s.color !== color) { remember(); s.color = color; rebuildAll(); }
         },
-        setColor(color) { st.color = color; st.erase = false; },
-        setWidth(width) { st.width = width; },
-        setErase(on) { st.erase = !!on; },
-        undo() { st.strokes.pop(); redrawAll(); },
-        clear() { st.strokes = []; redrawAll(); },
-        strokeCount() { return st.strokes.length; },
+        setWidth(width) {
+            st.width = width;
+            const s = st.splines[st.selected];
+            if (s && s.width !== width) { remember(); s.width = width; rebuildAll(); }
+        },
+        deleteSelected() {
+            if (!st.splines[st.selected]) return false;
+            remember();
+            st.splines.splice(st.selected, 1);
+            st.selected = -1;
+            rebuildAll();
+            return true;
+        },
+        undo() {
+            if (!st.history.length) return false;
+            st.splines = st.history.pop();
+            if (!st.splines[st.selected]) st.selected = -1;
+            rebuildAll();
+            return true;
+        },
+        clear() { if (st.splines.length) { remember(); st.splines = []; st.selected = -1; rebuildAll(); } },
+        tool() { return st.tool; },
+        selected() { return st.selected; },
+        splineCount() { return st.splines.length; },
+        strokeCount() { return st.splines.length; },
+        splines() { return copy(st.splines); },
+        // The sketch as a stand-alone SVG document (width and height: the overlay's size, in CSS pixels).
+        toSVG() {
+            const host = [...hosts].find(h => h.isConnected);
+            const svg = document.createElementNS(NS, 'svg');
+            build(svg, true);
+            const w = host ? host.clientWidth : 0, h = host ? host.clientHeight : 0;
+            svg.setAttribute('xmlns', NS);
+            svg.setAttribute('width', w);
+            svg.setAttribute('height', h);
+            svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+            svg.querySelectorAll('[data-spline]').forEach(p => p.removeAttribute('data-spline'));
+            return new XMLSerializer().serializeToString(svg);
+        },
     };
+    return api;
 })();
 </script>
 ''')
@@ -5430,10 +5579,10 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.separator()
                 # a check box shows whether the overlay is on (see toggle_overlay())
                 with ui.menu_item(on_click=lambda _: toggle_overlay()) as overlay_item:
-                    with ui.item_section().props('avatar').classes('min-w-0 pr-2'):
-                        sess.overlay_menu_icon = ui.icon('check_box_outline_blank', size='xs')
                     with ui.item_section():
                         ui.label('Overlay')
+                    with ui.item_section().props('side'):  # the check box, at the right
+                        sess.overlay_menu_icon = ui.icon('check_box_outline_blank', size='xs')
                 sess.xsheet_view_items.append(overlay_item)
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
@@ -5667,9 +5816,9 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
-            # XSheet > Overlay: the sketching canvas over everything above, and
+            # XSheet > Overlay: the sketching overlay over everything above, and
             # its tools while it's on (see toggle_overlay() and mlwOverlay)
-            ui.element('canvas').classes('mlw-overlay')
+            ui.element('div').classes('mlw-overlay')  # the SVG drawing goes in here (see mlwOverlay)
             _build_overlay_toolbar(sess)
 
     # build initial tree from current editor value
