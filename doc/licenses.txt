@@ -1,14 +1,21 @@
 ====================================================================================================
-mlw-xsheet 1.0.0 -- Licenses and Copyright Notices
+mlw-xsheet 1.3.0 (in development) -- Licenses and Copyright Notices
 ====================================================================================================
 
 This file lists the license and copyright of mlw-xsheet itself and of every third-party component it
 uses or ships: the Python packages installed in its Docker image, the browser libraries bundled with
 NiceGUI, fonts, container base images, and third-party material in the repository.
 
-Generated on 2026-09-25 from the v1.0.0 release (commit 4d38308) and its production Docker image.
-Python dependency versions are the ones that image installed: requirements.txt gives minimum
-versions, so a later build may pick up newer releases with the same licenses.
+Generated on 2026-09-30 from the v1.3.0-features branch (commit 19f3ef8, in development after the
+v1.2.0 release) and a production Docker image freshly built from it. Python dependency versions are
+the ones that image installed: requirements.txt gives minimum versions, so a later build may pick up
+newer releases with the same licenses.
+
+Changes since the previous edition of this file (v1.0.0, 2026-09-25): one new Python package,
+opentelemetry-api 1.45.0 (Apache-2.0), now a dependency of fastapi; newer versions of fastapi
+(0.142.2), fonttools (4.66.1), fpdf2 (2.8.9) and uvicorn (0.54.0), with the same licenses. The
+browser libraries, fonts and container images are unchanged; CodeMirror now also serves the SVG
+tab's editor.
 
 This is a best-effort inventory, not legal advice. Each component's own license file is
 authoritative.
@@ -50,10 +57,10 @@ MIT                                   29     @uiw/codemirror-themes-all, AG Grid
                                              python-engineio, python-socketio, PyYAML, Quasar,
                                              simple-websocket, Socket.IO client, Tailwind CSS,
                                              typing-inspection, Vue, watchfiles, wsproto, xmlschema
+Apache-2.0                            8      aiofiles, aiosignal, frozenlist, multidict,
+                                             opentelemetry-api, propcache, python-multipart, yarl
 BSD-3-Clause                          8      click, httpcore, idna, MarkupSafe, python-dotenv,
                                              starlette, uvicorn, websockets
-Apache-2.0                            7      aiofiles, aiosignal, frozenlist, multidict, propcache,
-                                             python-multipart, yarl
 BSD (variant per package)             5      httpx, itsdangerous, Jinja2, tinycss2, webencodings
 PSF-2.0                               3      aiohappyeyeballs, defusedxml, typing_extensions
 MPL-2.0                               2      bidict, certifi
@@ -144,17 +151,17 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c), 2018-2026, SISSA (Scuola Internazionale Superiore di Studi Avanzati)
     Source:    https://github.com/sissaschool/elementpath
 
-  fastapi 0.141.1
+  fastapi 0.142.2
     License:   MIT
     Copyright: Copyright (c) 2018 Sebastián Ramírez
     Source:    https://github.com/fastapi/fastapi
 
-  fonttools 4.65.0
+  fonttools 4.66.1
     License:   MIT
     Copyright: Copyright (c) 2017 Just van Rossum
     Source:    http://github.com/fonttools/fonttools
 
-* fpdf2 2.8.8
+* fpdf2 2.8.9
     License:   LGPL-3.0-only
     Copyright: Olivier Plathey (FPDF) and the fpdf2 contributors
     Source:    https://py-pdf.github.io/fpdf2/
@@ -223,6 +230,11 @@ the rest are installed because a direct requirement depends on them.
     License:   MIT
     Copyright: Copyright (c) 2021 Zauberzeug GmbH
     Source:    https://nicegui.io
+
+  opentelemetry-api 1.45.0
+    License:   Apache-2.0
+    Copyright: Copyright The OpenTelemetry Authors
+    Source:    https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api
 
   orjson 3.12.0
     License:   MPL-2.0 AND (Apache-2.0 OR MIT)
@@ -306,7 +318,7 @@ the rest are installed because a direct requirement depends on them.
                Lee
     Source:    https://github.com/python/typing_extensions
 
-* uvicorn 0.53.0
+* uvicorn 0.54.0
     License:   BSD-3-Clause
     Copyright: Copyright © 2017-present, Encode OSS Ltd.
     Source:    https://uvicorn.dev/
@@ -394,7 +406,7 @@ Versions are read from the bundled files and NiceGUI's element package locks.
   CodeMirror 6 (codemirror, @codemirror/*, @lezer/*) 6.0.2
     License:   MIT
     Copyright: Copyright (c) Marijn Haverbeke and others
-    Used for:  XML editor
+    Used for:  XML and SVG editors
     Source:    https://codemirror.net
 
   @uiw/codemirror-themes-all 4.25.2
@@ -473,6 +485,10 @@ Served by NiceGUI for the user interface.
 
   tools/xdts.schema.json, tools/xdts-extended.schema.json, tools/xdts-extended.example.json
     Written for this project to describe XDTS data; covered by the mlw-xsheet MIT License.
+
+  tools/xsheet_to_oca.py, tools/oca_to_xsheet.py
+    Written for this project; they read and write the Open Cel Animation (OCA) format, but include
+    no material from the OCA project. Covered by the mlw-xsheet MIT License.
 
 ====================================================================================================
 8. Notes on copyleft licenses
