@@ -323,8 +323,14 @@ def popup_log_path() -> Path:
 
 def log_popup(message, level: str) -> None:
     """Append one pop-up to the user's log: date and time (with the UTC
-    offset), level, the open document and the message, on one line."""
+    offset), level, the logged-in user's name ('-' when no one is, as on the
+    login page), the open document and the message, on one line."""
     path = popup_log_path()
+    try:
+        user = auth.current_username() if app.storage.user.get('authenticated') else '-'
+    except Exception:
+        user = '-'
+    user = '_'.join(user.split()) or '-'  # one word, so the columns stay apart
     try:
         document = Path(session().current_file.get('path') or '').name or '(no file)'
     except Exception:
@@ -336,7 +342,7 @@ def log_popup(message, level: str) -> None:
     if rotated:
         path.replace(path.with_name(path.name + '.1'))
     with path.open('a', encoding='utf-8') as f:
-        f.write(f'{stamp}  {level:<7}  {document}  {text}\n')
+        f.write(f'{stamp}  {level:<7}  {user}  {document}  {text}\n')
     if rotated or path not in _logs_given_away:
         # the logs folder and its files: the data folder's owner, not root (see dialog_ui.py) --
         # once per file per run, which also fixes logs written as root before
@@ -361,6 +367,19 @@ def notify(message, *args, **kwargs):
 
 
 ui.notify = notify  # one place for every pop-up in the app, including auth.py and the dialogs
+
+
+def record_log_event(text: str) -> None:
+    """An entry in the user's pop-up log that isn't a pop-up: logging in and
+    out (see auth.record_event) -- when the log is on."""
+    try:
+        if popup_log_enabled():
+            log_popup(text, 'INFO')
+    except Exception:
+        pass
+
+
+auth.record_event = record_log_event
 
 
 def read_popup_log(max_lines: int = 1000) -> list[str]:

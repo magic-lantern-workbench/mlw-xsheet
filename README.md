@@ -318,11 +318,16 @@ Report and Logs are saved per user; Login applies to everyone using the server:
 - **Logs** — **Record pop-up messages in a log file** (on by default) keeps a record of every
   status pop-up the app shows you — confirmations, warnings and errors, from any menu or dialog,
   including the login page — one line each, with the date, time and UTC offset, the level
-  (SUCCESS, ERROR, WARNING or INFO), the open document and the message:
+  (SUCCESS, ERROR, WARNING or INFO), the logged-in user's name (`-` when no one is logged in, as
+  on the login page), the open document and the message:
 
   ```
-  2026-09-29 20:35:01 +0000  SUCCESS  xsheet-exposure.xml  Opened xsheet-exposure.xml
+  2026-09-29 20:35:01 +0000  SUCCESS  admin  xsheet-exposure.xml  Opened xsheet-exposure.xml
+  2026-09-29 20:34:52 +0000  ERROR    -  -  Incorrect user name or password
   ```
+
+  It also records each login and logout (not pop-ups, but in the log with them): `Logged in`,
+  `Logged out`, and `Logged out after N minute(s) of inactivity` for the idle time-out.
 
   The pop-ups are always shown; turning the option off only stops recording them. Each user
   (browser) has their own log in the state folder, at `logs/popups-ID.log` under
