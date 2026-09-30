@@ -5943,7 +5943,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
         if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
         e.preventDefault();
-        api.deleteSelected();
+        if (!api.deleteNode()) api.deleteSelected();  // a spline's selected anchor, or else the shape
     });
     new MutationObserver(() => document.querySelectorAll('div.mlw-sketchpad').forEach(attach))
         .observe(document.body, {childList: true, subtree: true});
@@ -5970,6 +5970,25 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             st.shapes.splice(st.selected, 1);
             st.selected = -1;
             st.node = null;
+            rebuildAll();
+            return true;
+        },
+        // The selected spline's selected anchor (see st.node): it goes, and the
+        // curve joins its neighbours, keeping their tangents; the next anchor
+        // (or, at the end, the one before) is selected, so Delete again takes
+        // that. A spline of two anchors isn't left as a dot: it goes whole.
+        // false if no anchor is selected.
+        deleteNode() {
+            const s = st.shapes[st.selected];
+            if (!s || s.type !== 'spline' || !st.node || st.node[0] !== st.selected) return false;
+            const k = st.node[1];
+            if (k < 0 || k >= s.points.length) return false;
+            if (s.points.length <= 2) return api.deleteSelected();
+            remember();
+            tangentsOf(s);
+            s.points.splice(k, 1);
+            s.tangents.splice(k, 1);
+            st.node = [st.selected, Math.min(k, s.points.length - 1)];
             rebuildAll();
             return true;
         },
