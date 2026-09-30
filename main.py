@@ -5054,10 +5054,10 @@ async def export_xsheet():
     source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
 
     style = sess.xsheet_style  # export what's on screen
-    sketch = []
+    sketch = None
     if export_sketch_pref():
         try:
-            sketch = await ui.run_javascript('return window.mlwSketchpad ? mlwSketchpad.sheetShapes() : []') or []
+            sketch = await ui.run_javascript('return window.mlwSketchpad ? mlwSketchpad.sheetShapes() : null')
         except Exception as exc:  # no answer from the browser: export without it
             print('DEBUG: sketchpad sheetShapes failed:', exc)
 
@@ -5375,10 +5375,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         return svg;
     }
     // For XSheet > Export XSheet (see sheetShapes()): where the sheet's
-    // columns and rows are, in the sketch's coordinates -- each column's left
-    // and width, and each row's top, height and frames (a collapsed run's
-    // row stands for several). Kept from the last time the grid was
-    // showing, as the XML tab doesn't have it.
+    // columns and rows are, in the sketch's coordinates -- the grid's left
+    // edge and width, each column's left and width, and each row's top,
+    // height and frames (a collapsed run's row stands for several). Kept
+    // from the last time the grid was showing, as the XML tab doesn't have it.
     let geometry = null;
     function sheetGeometry(host) {
         const panel = host.parentElement, grid = panel && panel.querySelector('.mlw-xsheet-grid');
@@ -5403,20 +5403,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (n.rowTop != null && Number.isFinite(start)) rows.push([top + n.rowTop, n.rowHeight, start, Number.isFinite(end) ? end : start]);
         });
         rows.sort((a, b) => a[0] - b[0]);
-        if (columns.length && rows.length) geometry = {columns, rows};
+        const gr = grid.getBoundingClientRect();
+        if (columns.length && rows.length) geometry = {left: gr.left - hr.left, width: gr.width, columns, rows};
         return geometry;
     }
-    // A point on the sheet, as [column, frame]: the column's index plus how
-    // far across it, and the frame's number plus how far down it (a frame
-    // runs from n to n + 1). Beyond the first or last, it carries on at their size.
-    function toSheet([x, y], {columns, rows}) {
-        let i = columns.findIndex(([l, w]) => x < l + w);
-        if (i === -1) i = columns.length - 1;
-        const [l, w] = columns[i];
+    // A point on the sheet, as [x, frame]: pixels from the grid's left edge,
+    // and the frame's number plus how far down it (a frame runs from n to
+    // n + 1; above the first or below the last, it carries on at their size).
+    function toSheet([x, y], {left, rows}) {
         let j = rows.findIndex(([t, h]) => y < t + h);
         if (j === -1) j = rows.length - 1;
         const [t, h, a, b] = rows[j];
-        return [round3(i + (x - l) / w), round3(a + (y - t) / h * (b - a + 1))];
+        return [round3(x - left), round3(a + (y - t) / h * (b - a + 1))];
     }
     const round3 = (v) => Math.round(v * 1000) / 1000;
     // a shape as the points of a line through it: a spline's curves and a
@@ -5700,19 +5698,26 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         splines() { return copy(st.shapes); },        // earlier names, kept
         splineCount() { return st.shapes.length; },
         strokeCount() { return st.shapes.length; },
-        // For XSheet > Export XSheet: each shape as a line through the sheet --
-        // {color, width (in rows), closed, points: [[column, frame], ...]} (see
-        // toSheet()) -- so it can be drawn on the PDF's own layout of the sheet;
-        // [] with no sketch, or none of the grid to place it by.
+        // For XSheet > Export XSheet (see export_pdf._draw_sketch()): the grid
+        // as it's laid out -- its width, and its columns' [left, width] (from
+        // its left edge) and rows' [first frame, last frame, height], in
+        // pixels -- and each shape as a line through it: {color, width,
+        // closed, points: [[x, frame], ...]} (see toSheet()), so the PDF can
+        // lay the sheet out the same way and draw the sketch on it, at one
+        // scale. null with no sketch, or none of the grid to place it by.
         sheetShapes() {
             const host = [...hosts].find(h => h.isConnected);
             const geo = host ? sheetGeometry(host) : geometry;
-            if (!geo || !st.shapes.length) return [];
-            const rowH = geo.rows[0][1] || 1;
-            return st.shapes.map(s => {
-                const {closed, points} = outline(s);
-                return {color: s.color, width: round3(s.width / rowH), closed, points: points.map(pt => toSheet(pt, geo))};
-            });
+            if (!geo || !st.shapes.length) return null;
+            return {
+                width: round3(geo.width),
+                columns: geo.columns.map(([l, w]) => [round3(l - geo.left), round3(w)]),
+                rows: geo.rows.map(([, h, a, b]) => [a, b, round3(h)]),
+                shapes: st.shapes.map(s => {
+                    const {closed, points} = outline(s);
+                    return {color: s.color, width: s.width, closed, points: points.map(pt => toSheet(pt, geo))};
+                }),
+            };
         },
         // The sketch as a stand-alone SVG document, in CSS pixels: the whole
         // sheet (the sketchpad's size, plus however far the grid scrolls).
