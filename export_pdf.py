@@ -381,12 +381,15 @@ _SHEET_LOOKS = {
 }
 
 
-def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: str = 'traditional') -> None:
+def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: str = 'traditional') -> dict:
     """Draw an XSheet table by hand, in the look of `style` (see
     _SHEET_LOOKS): centred bold headings (repeated on each page), rows that
     grow to fit wrapped text, and -- in both styles, like the view -- a
     heavier rule after the last frame of each second (rows with _second).
-    Each column: key, header, weight (relative width), align, wrap, frame."""
+    Each column: key, header, weight (relative width), align, wrap, frame.
+
+    Returns where it all went, for _draw_sketch(): the columns' 'lefts' and
+    'widths', and 'rows' -- each row's (page, top, height, frame)."""
     look = _SHEET_LOOKS[style]
     font, font_size, line_h = look['font'], look['font_size'], look['line_h']
     pad_x, pad_y = look['pad_x'], look['pad_y']
@@ -432,6 +435,7 @@ def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: s
         pdf.set_line_width(look['grid_w'])
         rules.clear()
 
+    placed: list[tuple[int, float, float, object]] = []
     pdf.set_auto_page_break(False)
     draw_header()
     for index, row in enumerate(rows):
@@ -458,16 +462,88 @@ def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: s
             x += width
         if row.get('_second'):
             rules.append(y + height)
+        placed.append((pdf.page, y, height, row.get('Frame')))
         pdf.set_y(y + height)
     draw_rules()
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.567)  # fpdf2's default (0.2 mm)
     pdf.set_auto_page_break(True, margin=MARGIN)
+    lefts = [pdf.l_margin + sum(widths[:i]) for i in range(len(widths))]
+    return {'lefts': lefts, 'widths': widths, 'rows': placed}
+
+
+def _draw_sketch(pdf: FPDF, layout: dict, sketch: list[dict]) -> None:
+    """Draw the XSheet tab's Sketchpad sketch over the table
+    _draw_sheet_table() drew (its `layout`), on each page it crosses and
+    clipped to that page's rows. Each shape is a line through the sheet (see
+    the browser's mlwSketchpad.sheetShapes()): its colour, its width in rows,
+    whether it's closed, and its points as [column, frame] -- a column's
+    index plus how far across it, a frame's number plus how far down it --
+    so a mark made on a frame lands on that frame's row, whatever the PDF's
+    column widths, row heights and page breaks."""
+    from bisect import bisect_right
+    from fpdf.enums import StrokeCapStyle, StrokeJoinStyle
+    placed = [(page, top, h, frame) for page, top, h, frame in layout['rows'] if isinstance(frame, int)]
+    if not placed or not sketch:
+        return
+    lefts, widths = layout['lefts'], layout['widths']
+    frames = [frame for *_, frame in placed]
+    # every row one after the other, as if on one long page
+    starts, run = [], 0.0
+    for _, _, h, _ in placed:
+        starts.append(run)
+        run += h
+    total = run
+
+    def down(f: float) -> float:  # a frame position -> how far down the long page
+        if f < frames[0]:
+            return (f - frames[0]) * placed[0][2]
+        if f >= frames[-1] + 1:
+            return total + (f - frames[-1] - 1) * placed[-1][2]
+        k = bisect_right(frames, f) - 1
+        after = frames[k + 1] if k + 1 < len(frames) else frames[k] + 1
+        return starts[k] + (f - frames[k]) / max(after - frames[k], 1) * placed[k][2]
+
+    def across(c: float) -> float:  # a column position -> x
+        i = min(max(int(c // 1), 0), len(widths) - 1)
+        return lefts[i] + (c - i) * widths[i]
+
+    # each page's stretch of the long page, and where it's drawn
+    pages: dict[int, list[float]] = {}
+    for (page, top, h, _), start in zip(placed, starts):
+        if page not in pages:
+            pages[page] = [start, start + h, top]
+        pages[page][1] = start + h
+    row_h = min(h for _, _, h, _ in placed)
+    shapes = []
+    for shape in sketch:
+        points = [(across(c), down(f)) for c, f in shape.get('points') or []]
+        if not points:
+            continue
+        colour = str(shape.get('color') or '#000000').lstrip('#')
+        try:
+            rgb = tuple(int(colour[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            rgb = (0, 0, 0)
+        width = max(float(shape.get('width') or 0) * row_h, 0.2)
+        shapes.append((points, rgb, width, bool(shape.get('closed'))))
+    last_page = pdf.page
+    for page, (v0, v1, top) in pages.items():
+        pdf.page = page
+        with pdf.rect_clip(pdf.l_margin, top, sum(widths), v1 - v0):
+            for points, rgb, width, closed in shapes:
+                ys = [v for _, v in points]
+                if max(ys) < v0 - width or min(ys) > v1 + width:
+                    continue  # not on this page
+                with pdf.local_context(draw_color=rgb, line_width=width, stroke_cap_style=StrokeCapStyle.ROUND,
+                                       stroke_join_style=StrokeJoinStyle.ROUND):
+                    pdf.polyline([(x, top + v - v0) for x, v in points], polygon=closed, style='D')
+    pdf.page = last_page
 
 
 def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
                         title: str = 'Untitled', source_text: str | None = None,
-                        style: str = 'classic') -> bytes:
+                        style: str = 'classic', sketch: list[dict] | None = None) -> bytes:
     """Render the Exposure Sheet grid (as already computed by main.py's
     parse_exposure_sheet()) as a paginated, landscape PDF, in either XSheet
     style -- the same shape as the XSheet tab's on-screen grid, including
@@ -484,7 +560,10 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
     layer_ids/rows) is used, best-effort, to show the document's
     <Production> and <VersionControl> fields on page 1, and the view's
     header (counts and Production info) above the grid, which always starts
-    on page 2."""
+    on page 2.
+
+    `sketch`: the XSheet tab's Sketchpad sketch, drawn over the grid (see
+    _draw_sketch()); None or [] for none."""
     pdf = _new_pdf(orientation='L')
     _write_title_block(pdf, f'{title} - Exposure Sheet')
 
@@ -515,7 +594,8 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
             {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
             {'key': 'Camera', 'header': 'Camera Moves', 'weight': 1.1, 'align': 'C'},
         ]
-        _draw_sheet_table(pdf, columns, rows, 'traditional')
+        layout = _draw_sheet_table(pdf, columns, rows, 'traditional')
+        _draw_sketch(pdf, layout, sketch or [])
         return bytes(pdf.output())
 
     columns = [
@@ -526,5 +606,6 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
         {'key': 'Audio', 'header': 'Audio', 'weight': 0.9, 'align': 'C', 'wrap': True},
         {'key': 'Notes', 'header': 'Notes', 'weight': 1.6, 'wrap': True},
     ]
-    _draw_sheet_table(pdf, columns, rows, 'classic')
+    layout = _draw_sheet_table(pdf, columns, rows, 'classic')
+    _draw_sketch(pdf, layout, sketch or [])
     return bytes(pdf.output())

@@ -180,6 +180,9 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
+#   'export_sketch':  whether XSheet > Export XSheet draws the Sketchpad's
+#                     sketch over the grid (default: yes); set in File >
+#                     Preferences > Report.
 #   'popup_log':      whether this user's status pop-ups (ui.notify) are
 #                     recorded in their log file (default: yes); set in File >
 #                     Preferences > Logs. See the "Pop-up log" section below.
@@ -422,6 +425,14 @@ def report_sections() -> list[str]:
 
 def report_include_raw() -> bool:
     return bool(user_storage().get('report_include_raw', True))
+
+
+def export_sketch_pref() -> bool:
+    return bool(user_storage().get('export_sketch', True))
+
+
+def set_export_sketch_pref(include: bool) -> None:
+    user_storage()['export_sketch'] = bool(include)
 
 
 def oca_export_options() -> dict:
@@ -837,6 +848,10 @@ def show_preferences_dialog():
                     ui.button('Clear all', on_click=lambda: set_all_sections(False)).props('flat dense size=sm no-caps')
                 raw_box = ui.checkbox('Add the raw XML of the whole document as an appendix', value=report_include_raw()) \
                     .props('dense').classes('mt-1')
+                ui.separator().classes('my-2')
+                ui.label('XSheet > Export XSheet').classes('text-sm text-gray-500')
+                sketch_box = ui.checkbox('Include the Sketchpad sketch, drawn over the exposure sheet',
+                                         value=export_sketch_pref()).props('dense')
             with ui.tab_panel(logs_tab).classes('px-0 gap-2'):
                 ui.label('Status pop-ups are always shown; this also keeps a record of them, each with its '
                          'date and time.').classes('text-sm text-gray-500')
@@ -937,6 +952,7 @@ def show_preferences_dialog():
             set_format_prefs(prefs)
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
+            set_export_sketch_pref(sketch_box.value)
             set_popup_log_enabled(log_box.value)
             set_popup_log_time(time_radio.value, zone_select.value if time_radio.value == 'custom' else None)
             try:
@@ -5020,10 +5036,13 @@ def export_to_pdf():
         do_generate([])
 
 
-def export_xsheet():
+async def export_xsheet():
     """Render the XSheet tab's Exposure Sheet grid (not the raw XML -- see
     export_to_pdf() for that) as a paginated landscape PDF, in the XSheet
-    style being viewed, and save it via a Save As-style dialog."""
+    style being viewed, and save it via a Save As-style dialog. Unless
+    Preferences > Report says not to, the Sketchpad's sketch (as it is now)
+    is drawn over the grid, each mark on the frames and columns it was
+    made on (see mlwSketchpad.sheetShapes() and export_pdf._draw_sketch())."""
     sess = session()
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
@@ -5035,6 +5054,12 @@ def export_xsheet():
     source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
 
     style = sess.xsheet_style  # export what's on screen
+    sketch = []
+    if export_sketch_pref():
+        try:
+            sketch = await ui.run_javascript('return window.mlwSketchpad ? mlwSketchpad.sheetShapes() : []') or []
+        except Exception as exc:  # no answer from the browser: export without it
+            print('DEBUG: sketchpad sheetShapes failed:', exc)
 
     def file_selected_callback(files):
         if not files:
@@ -5042,7 +5067,7 @@ def export_xsheet():
         dest = Path(files[0])
         try:
             pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text,
-                                                       style=style)
+                                                       style=style, sketch=sketch)
         except Exception as exc:
             ui.notify(f'XSheet PDF export failed: {exc}', color='negative')
             return
@@ -5054,7 +5079,8 @@ def export_xsheet():
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
             give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
-            ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]})', color='positive')
+            with_sketch = ', with the sketch' if sketch else ''
+            ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]}{with_sketch})', color='positive')
 
         _confirm_overwrite(dest, do_export)
 
@@ -5348,6 +5374,76 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (!svg) { svg = document.createElementNS(NS, 'svg'); host.appendChild(svg); }
         return svg;
     }
+    // For XSheet > Export XSheet (see sheetShapes()): where the sheet's
+    // columns and rows are, in the sketch's coordinates -- each column's left
+    // and width, and each row's top, height and frames (a collapsed run's
+    // row stands for several). Kept from the last time the grid was
+    // showing, as the XML tab doesn't have it.
+    let geometry = null;
+    function sheetGeometry(host) {
+        const panel = host.parentElement, grid = panel && panel.querySelector('.mlw-xsheet-grid');
+        const g = gridOf(host);
+        if (!grid || !g || !g.body || !grid.offsetParent) return geometry;  // not showing: as it was
+        let api = null;
+        try { api = getElement(grid.id.slice(1)).api; } catch (e) {}
+        try { api = api || mounted_app.$refs['r' + grid.id.slice(1)].api; } catch (e) {}
+        if (!api) return geometry;
+        const hr = host.getBoundingClientRect(), [sx] = scrollOf(host);
+        const pinnedLeft = panel.querySelector('.mlw-xsheet-grid .ag-pinned-left-cols-container');
+        const columns = api.getAllDisplayedColumns().map(c => {
+            const pinned = c.getPinned() === 'left' && pinnedLeft;
+            const left = pinned ? pinnedLeft.getBoundingClientRect().left - hr.left + sx : g.cols.getBoundingClientRect().left - hr.left;
+            return [left + c.getLeft(), c.getActualWidth()];
+        }).sort((a, b) => a[0] - b[0]);
+        const top = g.body.getBoundingClientRect().top - hr.top;
+        const rows = [];
+        api.forEachNode(n => {
+            const d = n.data || {};
+            const start = +(d._range_start ?? d.Frame), end = typeof d.Frame === 'number' ? d.Frame : +(d._range_end ?? d.Frame);
+            if (n.rowTop != null && Number.isFinite(start)) rows.push([top + n.rowTop, n.rowHeight, start, Number.isFinite(end) ? end : start]);
+        });
+        rows.sort((a, b) => a[0] - b[0]);
+        if (columns.length && rows.length) geometry = {columns, rows};
+        return geometry;
+    }
+    // A point on the sheet, as [column, frame]: the column's index plus how
+    // far across it, and the frame's number plus how far down it (a frame
+    // runs from n to n + 1). Beyond the first or last, it carries on at their size.
+    function toSheet([x, y], {columns, rows}) {
+        let i = columns.findIndex(([l, w]) => x < l + w);
+        if (i === -1) i = columns.length - 1;
+        const [l, w] = columns[i];
+        let j = rows.findIndex(([t, h]) => y < t + h);
+        if (j === -1) j = rows.length - 1;
+        const [t, h, a, b] = rows[j];
+        return [round3(i + (x - l) / w), round3(a + (y - t) / h * (b - a + 1))];
+    }
+    const round3 = (v) => Math.round(v * 1000) / 1000;
+    // a shape as the points of a line through it: a spline's curves and a
+    // circle sampled finely enough to look smooth; closed for a rectangle or circle
+    function outline(s) {
+        const p = s.points;
+        if (s.type === 'rect') {
+            const [[x1, y1], [x2, y2] = [x1, y1]] = p;
+            return {closed: true, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]};
+        }
+        if (s.type === 'circle') {
+            const r = radius(s), [cx, cy] = p[0];
+            return {closed: true, points: Array.from({length: 48}, (_, k) => [cx + r * Math.cos(k * Math.PI / 24), cy + r * Math.sin(k * Math.PI / 24)])};
+        }
+        if (s.type !== 'spline' || p.length < 2) return {closed: false, points: p.length === 1 ? [p[0], p[0]] : p};
+        const t = tangentsOf(s), out = [p[0]];
+        for (let i = 0; i < p.length - 1; i++) {
+            const a = p[i], d = p[i + 1];
+            const b = [a[0] + t[i][2], a[1] + t[i][3]], c = [d[0] + t[i + 1][0], d[1] + t[i + 1][1]];
+            for (let k = 1; k <= 12; k++) {
+                const u = k / 12, v = 1 - u;
+                out.push([v * v * v * a[0] + 3 * v * v * u * b[0] + 3 * v * u * u * c[0] + u * u * u * d[0],
+                          v * v * v * a[1] + 3 * v * v * u * b[1] + 3 * v * u * u * c[1] + u * u * u * d[1]]);
+            }
+        }
+        return {closed: false, points: out};
+    }
     // the grid scrolled: move the sketch with it
     function follow(host) {
         const g = host.querySelector(':scope > svg > g.mlw-sheet');
@@ -5518,6 +5614,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             drag = null;
             st.label = null;
             rebuildAll();
+            sheetGeometry(host);  // for an export from the XML tab (see sheetShapes())
         };
         host.addEventListener('pointerup', end);
         host.addEventListener('pointercancel', end);
@@ -5545,7 +5642,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         .observe(document.body, {childList: true, subtree: true});
     document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
-        setActive(on) { finishPoly(); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setActive(on) { finishPoly(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
         // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
         setTool(tool) { finishPoly(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
         setShape(shape) { st.shape = ['polyline', 'rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
@@ -5603,6 +5700,20 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         splines() { return copy(st.shapes); },        // earlier names, kept
         splineCount() { return st.shapes.length; },
         strokeCount() { return st.shapes.length; },
+        // For XSheet > Export XSheet: each shape as a line through the sheet --
+        // {color, width (in rows), closed, points: [[column, frame], ...]} (see
+        // toSheet()) -- so it can be drawn on the PDF's own layout of the sheet;
+        // [] with no sketch, or none of the grid to place it by.
+        sheetShapes() {
+            const host = [...hosts].find(h => h.isConnected);
+            const geo = host ? sheetGeometry(host) : geometry;
+            if (!geo || !st.shapes.length) return [];
+            const rowH = geo.rows[0][1] || 1;
+            return st.shapes.map(s => {
+                const {closed, points} = outline(s);
+                return {color: s.color, width: round3(s.width / rowH), closed, points: points.map(pt => toSheet(pt, geo))};
+            });
+        },
         // The sketch as a stand-alone SVG document, in CSS pixels: the whole
         // sheet (the sketchpad's size, plus however far the grid scrolls).
         toSVG() {
