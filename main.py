@@ -111,10 +111,10 @@ class Session:
         self.xml_tree = None
         self.xml_menu_button = None
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
-        self.overlay_active = False  # XSheet > Overlay: sketching on the SVG overlay (see toggle_overlay())
-        self.overlay_menu_icon = None
-        self.overlay_toolbar = None
-        self.overlay_tool_buttons: dict[str, ui.button] = {}
+        self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
+        self.sketchpad_menu_icon = None
+        self.sketchpad_toolbar = None
+        self.sketchpad_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
         self.validation_status_label = None
         self.schema_label = None
@@ -3572,33 +3572,53 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
     return {(r['_range_start'], r['_range_end']) for r in display if r.get('_range_start') is not None}
 
 
-OVERLAY_COLORS = {'Red': '#e11d48', 'Blue': '#2563eb', 'Green': '#16a34a', 'Black': '#111827'}
-OVERLAY_WIDTHS = {'Thin': 2, 'Medium': 4, 'Thick': 8}
+# The sketchpad's shapes, as the Shape chooser lists them: key -> (name, icon).
+SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'rect': ('Rectangle', 'crop_square'),
+                  'circle': ('Circle', 'radio_button_unchecked')}
+SKETCHPAD_COLOR = '#e11d48'  # the pen's colour to start with
+# The colour chooser's palette (its Spectrum and Tune views offer any colour).
+SKETCHPAD_PALETTE = [
+    '#e11d48', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#16a34a',
+    '#14b8a6', '#06b6d4', '#2563eb', '#4f46e5', '#7c3aed', '#c026d3',
+    '#db2777', '#92400e', '#78716c', '#111827', '#6b7280', '#ffffff',
+    '#fecaca', '#fed7aa', '#fef08a', '#bbf7d0', '#bae6fd', '#ddd6fe',
+]
+SKETCHPAD_WIDTH = 4  # the pen's width to start with, in pixels
+SKETCHPAD_WIDTHS = [1, 2, 3, 4, 6, 8, 12, 16]  # the brush chooser's quick sizes (its slider: 1-24)
+SKETCHPAD_MAX_WIDTH = 24
 
 
-def toggle_overlay(active: bool | None = None) -> None:
-    """XSheet > Overlay: turn sketching on the SVG overlay on or off. On,
-    the overlay over the XSheet tab takes the pointer (so the grid under it
-    can't be clicked) and its toolbar shows (see _build_overlay_toolbar());
-    off, the overlay is hidden and
+def toggle_sketchpad(active: bool | None = None) -> None:
+    """XSheet > Sketchpad: turn sketching on the SVG sketchpad on or off. On,
+    the sketchpad over the XSheet tab takes the pointer (so the grid under it
+    can't be clicked) and its toolbar shows (see _build_sketchpad_toolbar());
+    off, the sketchpad is hidden and
     ignores the pointer, so nothing can be drawn and the grid works as
     usual. The sketch is kept, and shows again when it's turned back on."""
     sess = session()
-    sess.overlay_active = (not sess.overlay_active) if active is None else bool(active)
-    if sess.overlay_menu_icon is not None:
-        sess.overlay_menu_icon.name = 'check_box' if sess.overlay_active else 'check_box_outline_blank'
-    if sess.overlay_toolbar is not None:
-        sess.overlay_toolbar.set_visibility(sess.overlay_active)
-    ui.run_javascript(f'window.mlwOverlay && window.mlwOverlay.setActive({json.dumps(sess.overlay_active)})')
-    if sess.overlay_active:
-        ui.notify('Overlay on: draw on the XSheet. Done (or XSheet > Overlay) turns it off.', color='info')
+    sess.sketchpad_active = (not sess.sketchpad_active) if active is None else bool(active)
+    if sess.sketchpad_menu_icon is not None:
+        sess.sketchpad_menu_icon.name = 'check_box' if sess.sketchpad_active else 'check_box_outline_blank'
+    if sess.sketchpad_toolbar is not None:
+        sess.sketchpad_toolbar.set_visibility(sess.sketchpad_active)
+    ui.run_javascript(f'window.mlwSketchpad && window.mlwSketchpad.setActive({json.dumps(sess.sketchpad_active)})')
+    if sess.sketchpad_active:
+        ui.notify('Sketchpad on: draw on the XSheet. XSheet > Sketchpad turns it off.', color='info')
 
 
-def _build_overlay_toolbar(sess) -> None:
-    """The overlay's tools, shown while it's on: the Pen and Select tools,
-    pen colours and sizes (which also restyle the selected spline), Delete
-    (the selected spline), Undo, Clear and Done."""
-    buttons = sess.overlay_tool_buttons
+def _build_sketchpad_toolbar(sess) -> None:
+    """The sketchpad's tools, shown while it's on: the Shape tool (a button
+    showing the shape it draws -- Spline, Rectangle or Circle -- which opens a
+    chooser for it) and the Select tool; the colour and the brush size, each
+    a button showing it which opens a chooser, both setting the pen and
+    restyling the selected shape; Delete (the selected shape), Undo and
+    Clear. XSheet > Sketchpad turns it off.
+
+    The colour and brush choosers apply a choice at once, so its effect
+    shows. Cancel puts back what was there when the chooser opened (the
+    pen's setting, and the selected shape); Done keeps it, as a single undo
+    step."""
+    buttons = sess.sketchpad_tool_buttons
 
     def mark(group: str, key: str):
         for name, button in buttons.items():
@@ -3607,68 +3627,174 @@ def _build_overlay_toolbar(sess) -> None:
         buttons[f'{group}:{key}'].classes(add='mlw-tool-on')
 
     def tool(name: str):
+        """'draw' (the chosen shape) or 'select'."""
         mark('tool', name)
-        ui.run_javascript(f'mlwOverlay.setTool({json.dumps(name)})')
+        ui.run_javascript(f'mlwSketchpad.setTool({json.dumps(name)})')
 
-    async def colour(name: str, value: str):
-        mark('color', name)
-        if await ui.run_javascript(f'mlwOverlay.setColor({json.dumps(value)}); return mlwOverlay.selected()') == -1:
-            tool('pen')  # nothing selected: back to drawing, in that colour
+    def shape(key: str):
+        """Draw this shape from now on (see SKETCHPAD_SHAPES), from the Shape chooser."""
+        shape_button.props(f'icon={SKETCHPAD_SHAPES[key][1]}')
+        shape_button.tooltip_element.text = f'Shape: {SKETCHPAD_SHAPES[key][0]} (click to choose another)'
+        mark('tool', 'draw')
+        ui.run_javascript(f'mlwSketchpad.setShape({json.dumps(key)})')
 
-    def width(name: str, value: int):
-        mark('width', name)
-        ui.run_javascript(f'mlwOverlay.setWidth({value})')
+    pen = {'color': SKETCHPAD_COLOR, 'width': SKETCHPAD_WIDTH}  # the pen's settings, as the choosers left them
+    opened = {'color': None, 'width': None, 'mark': 0}  # what they were when a chooser opened
+    quiet = {'on': False}  # the brush slider set by Cancel: show, don't apply
+
+    def show_colour(value: str):
+        color_button.style(f'background: {value} !important; border: 2px solid white; box-shadow: 0 0 0 1px #9ca3af')
+        width_preview.style(f'stroke: {value}') if width_preview is not None else None
+
+    def show_width(value: int):
+        brush_icon.props(f'size={min(6 + value, 24)}px')
+
+    async def chooser_opened(kind: str):
+        opened[kind] = pen[kind]
+        opened['mark'] = await ui.run_javascript('return mlwSketchpad.historyLength()')
+
+    async def colour(value: str):
+        if not value:
+            return
+        pen['color'] = value
+        show_colour(value)
+        if await ui.run_javascript(f'mlwSketchpad.setColor({json.dumps(value)}); return mlwSketchpad.selected()') == -1:
+            tool('draw')  # nothing selected: back to drawing, in that colour
+
+    def width(value) -> None:
+        if quiet['on']:
+            return
+        try:
+            value = min(max(int(value), 1), SKETCHPAD_MAX_WIDTH)
+        except (TypeError, ValueError):
+            return
+        pen['width'] = value
+        show_width(value)
+        if width_slider.value != value:
+            width_slider.value = value
+        width_preview.props(f'stroke-width={value}')
+        width_label.set_text(f'{value} px')
+        ui.run_javascript(f'mlwSketchpad.setWidth({value})')
+
+    def chooser_done(menu):
+        menu.close()
+        ui.run_javascript(f'mlwSketchpad.squashTo({opened["mark"]})')  # every change made in it: one undo step
+
+    def chooser_cancel(menu, kind: str):
+        menu.close()
+        before = opened[kind]
+        if before is None:
+            return
+        pen[kind] = before
+        setter = 'setPenColor' if kind == 'color' else 'setPenWidth'
+        ui.run_javascript(f'mlwSketchpad.revertTo({opened["mark"]}); mlwSketchpad.{setter}({json.dumps(before)})')
+        if kind == 'color':
+            show_colour(before)
+            picker.set_color(before)
+        else:
+            show_width(before)
+            quiet['on'] = True
+            try:
+                width_slider.value = before
+            finally:
+                quiet['on'] = False
+            width_preview.props(f'stroke-width={before}')
+            width_label.set_text(f'{before} px')
 
     async def delete_selected():
-        if not await ui.run_javascript('return mlwOverlay.deleteSelected()'):
-            ui.notify('Select a spline to delete first (the arrow tool)', color='info')
+        if not await ui.run_javascript('return mlwSketchpad.deleteSelected()'):
+            ui.notify('Select a shape to delete first (the arrow tool)', color='info')
 
     async def undo():
-        if not await ui.run_javascript('return mlwOverlay.undo()'):
-            ui.notify('Nothing to undo on the overlay', color='info')
+        if not await ui.run_javascript('return mlwSketchpad.undo()'):
+            ui.notify('Nothing to undo on the sketchpad', color='info')
 
     def confirm_clear():
-        with ui.dialog() as dlg, titled_card('Clear Overlay'):
-            ui.label('Delete every spline on the overlay? (Undo brings them back.)')
+        with ui.dialog() as dlg, titled_card('Clear Sketchpad'):
+            ui.label('Delete every shape on the sketchpad? (Undo brings them back.)')
             with ui.row().classes('mt-4 justify-end gap-2'):
                 ui.button('No', on_click=dlg.close).props('outline size=sm')
 
                 def do_clear():
                     dlg.close()
-                    ui.run_javascript('mlwOverlay.clear()')
+                    ui.run_javascript('mlwSketchpad.clear()')
                 ui.button('Yes', on_click=do_clear).props('size=sm')
         dlg.open()
 
-    with ui.card().classes('mlw-overlay-toolbar p-1 gap-1').props('flat bordered') as toolbar:
+    with ui.card().classes('mlw-sketchpad-toolbar p-1 gap-1').props('flat bordered') as toolbar:
         with ui.row().classes('items-center gap-1 no-wrap'):
-            ui.label('Overlay').classes('text-xs text-gray-600 px-1')
-            buttons['tool:pen'] = ui.button(icon='edit', on_click=lambda: tool('pen')) \
-                .props('flat dense size=sm').tooltip('Pen: draw a spline')
+            ui.label('Sketchpad').classes('text-xs text-gray-600 px-1')
+            # the Shape tool: a button showing the shape it draws, which opens the shape chooser
+            with ui.button(icon=SKETCHPAD_SHAPES['spline'][1]).props('flat dense size=sm') as shape_button:
+                shape_button.tooltip_element = ui.tooltip('Shape: Spline (click to choose another)')
+                with ui.menu().props('anchor="bottom left" self="top left" auto-close'):
+                    ui.label('Shape').classes('text-xs text-gray-500 px-3 pt-2')
+                    for key, (label, icon) in SKETCHPAD_SHAPES.items():
+                        with ui.menu_item(on_click=lambda _, k=key: shape(k)):
+                            with ui.item_section().props('avatar').classes('min-w-0 pr-3'):
+                                ui.icon(icon, size='xs')
+                            with ui.item_section():
+                                ui.label(label)
+            buttons['tool:draw'] = shape_button
             buttons['tool:select'] = ui.button(icon='north_west', on_click=lambda: tool('select')) \
                 .props('flat dense size=sm') \
-                .tooltip('Select a spline: drag its points to reshape it, or the spline to move it')
+                .tooltip('Select a shape: drag its handles to reshape it, or the shape to move it')
             ui.separator().props('vertical')
-            for name, value in OVERLAY_COLORS.items():
-                buttons[f'color:{name}'] = ui.button(on_click=lambda _, n=name, v=value: colour(n, v)) \
-                    .props('round dense size=xs unelevated').style(f'background: {value} !important') \
-                    .tooltip(f'{name} (the pen, and the selected spline)')
+            # one button in the current colour; it opens a colour chooser: a
+            # palette, or any colour in its Spectrum and Tune views
+            with ui.button().props('round dense size=sm unelevated') \
+                    .style(f'background: {SKETCHPAD_COLOR} !important; border: 2px solid white; box-shadow: 0 0 0 1px #9ca3af') \
+                    .tooltip('Colour: the pen, and the selected shape') as color_button:
+                picker = ui.color_picker(on_pick=lambda e: colour(e.color))
+                picker.on('before-show', lambda: chooser_opened('color'))
+                picker.q_color.props(f'default-view=palette no-header format-model=hex '
+                                     f':palette="{json.dumps(SKETCHPAD_PALETTE).replace(chr(34), chr(39))}"')
+                picker.q_color.style('width: 264px')  # room for the palette's 24 colours, in three rows
+                picker.set_color(SKETCHPAD_COLOR)
+                with picker, ui.row().classes('w-full justify-end gap-2 p-1'):  # picking leaves it open
+                    ui.button('Cancel', on_click=lambda: chooser_cancel(picker, 'color')).props('dense flat size=sm')
+                    ui.button('Done', on_click=lambda: chooser_done(picker)).props('dense size=sm unelevated')
+            buttons['color:current'] = color_button
             ui.separator().props('vertical')
-            for name, value in OVERLAY_WIDTHS.items():
-                buttons[f'width:{name}'] = ui.button(icon='circle', on_click=lambda _, n=name, v=value: width(n, v)) \
-                    .props(f'flat dense size={ {"Thin": "6px", "Medium": "9px", "Thick": "13px"}[name] }') \
-                    .classes('px-1').tooltip(f'{name} (the pen, and the selected spline)')
+            # one button showing the brush size (its dot grows with it); it opens the brush chooser
+            width_preview = None
+            with ui.button().props('flat dense').classes('px-1') \
+                    .tooltip('Brush size: the pen, and the selected shape'):
+                brush_icon = ui.icon('circle', color='grey-8')
+                with ui.menu().props('anchor="bottom middle" self="top middle"') as brush_menu:
+                    brush_menu.on('before-show', lambda: chooser_opened('width'))
+                    with ui.column().classes('p-3 gap-2 w-[240px]'):
+                        with ui.row().classes('w-full items-center justify-between'):
+                            ui.label('Brush').classes('text-sm font-medium')
+                            width_label = ui.label(f'{SKETCHPAD_WIDTH} px').classes('text-sm text-gray-600')
+                        # a line in the brush's size and the pen's colour
+                        with ui.element('svg').props('viewBox="0 0 200 32" width="100%" height="32"'):
+                            width_preview = ui.element('line').props(
+                                f'x1=14 y1=16 x2=186 y2=16 stroke-linecap=round stroke-width={SKETCHPAD_WIDTH}') \
+                                .style(f'stroke: {SKETCHPAD_COLOR}')
+                        width_slider = ui.slider(min=1, max=SKETCHPAD_MAX_WIDTH, step=1, value=SKETCHPAD_WIDTH,
+                                                 on_change=lambda e: width(e.value)).props('label dense')
+                        with ui.row().classes('w-full gap-1 justify-between'):
+                            for size in SKETCHPAD_WIDTHS:
+                                ui.button(str(size), on_click=lambda _, v=size: width(v)) \
+                                    .props('dense flat size=sm no-caps').classes('min-w-0 px-1') \
+                                    .tooltip(f'{size} px')
+                        with ui.row().classes('w-full justify-end gap-2'):
+                            ui.button('Cancel', on_click=lambda: chooser_cancel(brush_menu, 'width')) \
+                                .props('dense flat size=sm')
+                            ui.button('Done', on_click=lambda: chooser_done(brush_menu)) \
+                                .props('dense size=sm unelevated')
+            show_width(SKETCHPAD_WIDTH)
             ui.separator().props('vertical')
             ui.button(icon='delete', on_click=delete_selected).props('flat dense size=sm') \
-                .tooltip('Delete the selected spline (or press Delete)')
+                .tooltip('Delete the selected shape (or press Delete)')
             ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
-            ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the overlay')
-            ui.button('Done', on_click=lambda: toggle_overlay(False)).props('dense size=sm unelevated')
-    buttons['tool:pen'].classes(add='mlw-tool-on')
-    buttons['color:Red'].classes(add='mlw-tool-on')
-    buttons['width:Medium'].classes(add='mlw-tool-on')
-    ui.run_javascript('window.mlwOverlay && (mlwOverlay.setTool("pen"), mlwOverlay.setColor("#e11d48"), mlwOverlay.setWidth(4))')
-    toolbar.set_visibility(sess.overlay_active)
-    sess.overlay_toolbar = toolbar
+            ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the sketchpad')
+    buttons['tool:draw'].classes(add='mlw-tool-on')
+    ui.run_javascript(f'window.mlwSketchpad && (mlwSketchpad.setShape("spline"), mlwSketchpad.setColor({json.dumps(SKETCHPAD_COLOR)}), '
+                      f'mlwSketchpad.setWidth({SKETCHPAD_WIDTH}))')
+    toolbar.set_visibility(sess.sketchpad_active)
+    sess.sketchpad_toolbar = toolbar
 
 
 def collapse_frames() -> None:
@@ -4940,22 +5066,27 @@ def index():
     #   "querySelectorAll('.cm-line')[lineNumber]" silently picks whichever
     #   line happens to occupy that DOM position, not the requested document
     #   line. Falls back to a real <textarea> when CodeMirror isn't present.
-    # XSheet > Overlay: a transparent SVG drawing over the XSheet tab to sketch
-    # on. Each pen stroke becomes an editable spline: the points drawn are
-    # thinned to a few anchors (Ramer-Douglas-Peucker), and the stroke is a
-    # smooth cubic Bezier <path> through them (Catmull-Rom). The Select tool
-    # picks a spline: drag its anchor handles to reshape it, drag the spline
-    # to move it, and Delete removes it; the pen colours and sizes apply to
-    # the selected one. Every change can be undone. The sketch is kept here,
+    # XSheet > Sketchpad: a transparent SVG drawing over the XSheet tab to sketch
+    # on, in three shapes. A Spline stroke is thinned to a few anchors
+    # (Ramer-Douglas-Peucker) and drawn as a smooth cubic Bezier <path> through
+    # them (Catmull-Rom); a Rectangle is dragged corner to corner, and a Circle
+    # from its centre out. The Select tool picks a shape: drag its handles to
+    # reshape it (a spline's anchors, a rectangle's corners, a circle's edge),
+    # drag the shape to move it, and Delete removes it; the colour and brush
+    # apply to the selected one. Click one of a selected spline's anchors to
+    # show its direction handles (tangents): drag one to set the curve's slope there
+    # and, by its length (magnitude), how far the curve holds it; the handle
+    # opposite turns to keep the curve smooth, unless Alt is held (a corner).
+    # Every change can be undone. The sketch is kept here,
     # per browser tab, as its splines, and the SVG is rebuilt from them
-    # whenever the overlay is re-created -- Quasar removes the XSheet tab's
+    # whenever the sketchpad is re-created -- Quasar removes the XSheet tab's
     # panel while another tab is showing. It is not saved with the document
-    # yet; mlwOverlay.toSVG() gives it as a stand-alone SVG document for when
-    # it is. Off, the overlay is hidden and ignores the pointer, so the grid
+    # yet; mlwSketchpad.toSVG() gives it as a stand-alone SVG document for when
+    # it is. Off, the sketchpad is hidden and ignores the pointer, so the grid
     # under it works as usual and nothing can be drawn; the splines are kept.
     ui.add_body_html('''
 <style>
-.mlw-overlay {
+.mlw-sketchpad {
     position: absolute;
     inset: 0;
     z-index: 5;
@@ -4963,12 +5094,12 @@ def index():
     pointer-events: none;   /* off: the XSheet under it gets every click */
     visibility: hidden;     /* ... and the sketch isn't shown (it's kept for next time) */
 }
-.mlw-overlay > svg {
+.mlw-sketchpad > svg {
     display: block;
     width: 100%;
     height: 100%;
 }
-.mlw-overlay.mlw-overlay-active {
+.mlw-sketchpad.mlw-sketchpad-active {
     visibility: visible;
     pointer-events: auto;
     cursor: crosshair;
@@ -4976,29 +5107,39 @@ def index():
     outline: 2px dashed rgba(88, 152, 212, 0.7);
     outline-offset: -2px;
 }
-.mlw-overlay.mlw-overlay-select { cursor: default; }
-.mlw-overlay .mlw-hit { cursor: pointer; }
-.mlw-overlay .mlw-selected-hit { cursor: move; }
-.mlw-overlay .mlw-handle { cursor: grab; }
-.mlw-overlay-toolbar {
+.mlw-sketchpad.mlw-sketchpad-select { cursor: default; }
+.mlw-sketchpad .mlw-hit { cursor: pointer; }
+.mlw-sketchpad .mlw-selected-hit { cursor: move; }
+.mlw-sketchpad .mlw-handle { cursor: grab; }
+.mlw-sketchpad .mlw-tangent { cursor: crosshair; }
+.mlw-sketchpad-toolbar {
     position: absolute;
     top: 4px;
     right: 12px;
     z-index: 6;
 }
-.mlw-overlay-toolbar .mlw-tool-on {
+.mlw-sketchpad-toolbar .mlw-tool-on {
     box-shadow: 0 0 0 2px #2b5d8a;
+}
+/* the colour chooser's swatches: a faint edge, so white shows too */
+.q-color-picker__cube {
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 </style>
 <script>
-window.mlwOverlay = window.mlwOverlay || (() => {
+window.mlwSketchpad = window.mlwSketchpad || (() => {
     const NS = 'http://www.w3.org/2000/svg';
-    // splines: [{color, width, points: [[x, y], ...]}] -- the anchors, in CSS pixels
-    const st = {splines: [], active: false, tool: 'pen', color: '#e11d48', width: 3, selected: -1, history: []};
+    // shapes: [{type: 'spline' | 'rect' | 'circle', color, width, points: [[x, y], ...]}], in CSS pixels.
+    // spline: its anchors, and tangents: per anchor [inX, inY, outX, outY], its two direction handles
+    // relative to it (their direction sets the curve's slope there, their length -- the magnitude --
+    // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
+    const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4,  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
+                selected: -1, node: null, history: [], label: null};  // node: [shape, anchor] whose arms show
     const hosts = new Set();
     const round = (v) => Math.round(v * 10) / 10;
-    const copy = (splines) => splines.map(s => ({...s, points: s.points.map(p => [...p])}));
-    const remember = () => { st.history.push(copy(st.splines)); if (st.history.length > 200) st.history.shift(); };
+    const copy = (shapes) => shapes.map(s => ({...s, points: s.points.map(p => [...p]),
+                                               ...(s.tangents ? {tangents: s.tangents.map(t => [...t])} : {})}));
+    const remember = () => { st.history.push(copy(st.shapes)); if (st.history.length > 200) st.history.shift(); };
 
     // Ramer-Douglas-Peucker: the few points that keep the drawn line's shape
     function simplify(points, tolerance) {
@@ -5014,17 +5155,28 @@ window.mlwOverlay = window.mlwOverlay || (() => {
         if (far <= tolerance) return [points[0], points[points.length - 1]];
         return [...simplify(points.slice(0, at + 1), tolerance).slice(0, -1), ...simplify(points.slice(at), tolerance)];
     }
-    // a smooth path through the anchors: Catmull-Rom segments as cubic Beziers
-    function splinePath(points) {
-        const p = points, n = p.length;
+    // Each anchor's direction handles for a smooth curve through the anchors
+    // (Catmull-Rom): along the line from the previous anchor to the next, a
+    // sixth of it each way. A new spline starts with these; then they're its own.
+    function autoTangents(p) {
+        const n = p.length;
+        return p.map((pt, i) => {
+            const a = p[Math.max(i - 1, 0)], b = p[Math.min(i + 1, n - 1)];
+            const dx = (b[0] - a[0]) / 6, dy = (b[1] - a[1]) / 6;
+            return [-dx, -dy, dx, dy];
+        });
+    }
+    const tangentsOf = (s) => (s.tangents && s.tangents.length === s.points.length) ? s.tangents : (s.tangents = autoTangents(s.points));
+    // the spline: a cubic Bezier from each anchor to the next, pulled by the
+    // first one's out-handle and the second one's in-handle
+    function splinePath(s) {
+        const p = s.points, n = p.length;
         if (n === 1) return `M${round(p[0][0])} ${round(p[0][1])}h0.01`;  // a dot: round caps draw it
+        const t = tangentsOf(s);
         let d = `M${round(p[0][0])} ${round(p[0][1])}`;
-        if (n === 2) return d + `L${round(p[1][0])} ${round(p[1][1])}`;
         for (let i = 0; i < n - 1; i++) {
-            const p0 = p[Math.max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[Math.min(i + 2, n - 1)];
-            const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
-            const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
-            d += `C${round(c1[0])} ${round(c1[1])} ${round(c2[0])} ${round(c2[1])} ${round(p2[0])} ${round(p2[1])}`;
+            const c1 = [p[i][0] + t[i][2], p[i][1] + t[i][3]], c2 = [p[i + 1][0] + t[i + 1][0], p[i + 1][1] + t[i + 1][1]];
+            d += `C${round(c1[0])} ${round(c1[1])} ${round(c2[0])} ${round(c2[1])} ${round(p[i + 1][0])} ${round(p[i + 1][1])}`;
         }
         return d;
     }
@@ -5033,27 +5185,76 @@ window.mlwOverlay = window.mlwOverlay || (() => {
         for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
         return e;
     }
+    const radius = (s) => Math.hypot(s.points[1][0] - s.points[0][0], s.points[1][1] - s.points[0][1]);
+    // the shape's SVG element, with the given presentation attributes
+    function shapeEl(s, attrs) {
+        const [[x1, y1], [x2, y2] = [x1, y1]] = s.points;
+        if (s.type === 'rect')
+            return el('rect', {x: round(Math.min(x1, x2)), y: round(Math.min(y1, y2)), width: round(Math.abs(x2 - x1)),
+                               height: round(Math.abs(y2 - y1)), ...attrs});
+        if (s.type === 'circle') return el('circle', {cx: round(x1), cy: round(y1), r: round(radius(s)), ...attrs});
+        return el('path', {d: splinePath(s), ...attrs});
+    }
     function strokeAttrs(s) {
         return {fill: 'none', stroke: s.color, 'stroke-width': s.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
     }
-    // The drawing: one <path> per spline; with the overlay on, also a wide
+    // where a selected shape's handles go: a spline's anchors, a rectangle's
+    // corners, and four points round a circle's edge
+    function handlesOf(s) {
+        const [[x1, y1], [x2, y2]] = s.points.length > 1 ? s.points : [s.points[0], s.points[0]];
+        if (s.type === 'rect') return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+        if (s.type === 'circle') { const r = radius(s); return [[x1 + r, y1], [x1, y1 + r], [x1 - r, y1], [x1, y1 - r]]; }
+        return s.points;
+    }
+    function dragHandle(s, k, x, y) {
+        if (s.type === 'rect') {
+            const p = s.points;
+            if (k === 0) p[0] = [x, y];
+            else if (k === 1) { p[1][0] = x; p[0][1] = y; }
+            else if (k === 2) p[1] = [x, y];
+            else { p[0][0] = x; p[1][1] = y; }
+        } else if (s.type === 'circle') {
+            s.points[1] = [x, y];  // the radius follows the handle
+        } else {
+            s.points[k] = [x, y];
+        }
+    }
+    // The drawing: one element per shape; with the sketchpad on, also a wide
     // invisible copy to pick it by, and the selected one's highlight and handles.
     function build(svg, plain) {
         svg.replaceChildren();
-        st.splines.forEach((s, i) => svg.appendChild(el('path', {d: splinePath(s.points), ...strokeAttrs(s), 'data-spline': i})));
-        if (plain || !st.active) return;
-        if (st.tool === 'select') {
-            st.splines.forEach((s, i) => svg.appendChild(el('path', {
-                d: splinePath(s.points), fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14),
-                'stroke-linecap': 'round', 'pointer-events': 'stroke', 'data-spline': i,
-                class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+        st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {...strokeAttrs(s), 'data-shape': i})));
+        if (plain || !st.active || st.tool !== 'select') return;
+        st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {
+            fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14), 'stroke-linecap': 'round',
+            'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+        const s = st.shapes[st.selected];
+        if (!s) return;
+        svg.insertBefore(shapeEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': s.width + 8,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none'}), svg.firstChild);
+        if (s.type === 'spline' && s.points.length > 1) {
+            // the selected anchor's direction handles: an arm to a knob each side
+            // (none before the first anchor, or after the last)
+            const t = tangentsOf(s), last = s.points.length - 1;
+            const node = st.node && st.node[0] === st.selected ? st.node[1] : -1;
+            s.points.forEach(([x, y], k) => k === node && [['in', 0], ['out', 2]].forEach(([side, o]) => {
+                if ((side === 'in' && k === 0) || (side === 'out' && k === last)) return;
+                const hx = x + t[k][o], hy = y + t[k][o + 1];
+                svg.appendChild(el('line', {x1: x, y1: y, x2: hx, y2: hy, stroke: '#2b5d8a', 'stroke-width': 1,
+                                            'pointer-events': 'none', class: 'mlw-arm'}));
+                svg.appendChild(el('circle', {cx: hx, cy: hy, r: 4, fill: '#2b5d8a', stroke: 'white', 'stroke-width': 1,
+                    class: 'mlw-tangent', 'data-shape': st.selected, 'data-point': k, 'data-side': side}));
+            }));
         }
-        const s = st.splines[st.selected];
-        if (st.tool === 'select' && s) {
-            svg.insertBefore(el('path', {d: splinePath(s.points), fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35,
-                'stroke-width': s.width + 8, 'stroke-linecap': 'round', 'pointer-events': 'none'}), svg.firstChild);
-            s.points.forEach(([x, y], k) => svg.appendChild(el('circle', {cx: x, cy: y, r: 5, fill: 'white', stroke: '#2b5d8a',
-                'stroke-width': 1.5, class: 'mlw-handle', 'data-spline': st.selected, 'data-point': k})));
+        const node = s.type === 'spline' && st.node && st.node[0] === st.selected ? st.node[1] : -1;
+        handlesOf(s).forEach(([x, y], k) => svg.appendChild(el('circle', {cx: x, cy: y, r: 5, fill: k === node ? '#2b5d8a' : 'white',
+            stroke: '#2b5d8a', 'stroke-width': 1.5, class: 'mlw-handle', 'data-shape': st.selected, 'data-point': k})));
+        if (st.label) {  // while a direction handle is dragged: its angle and magnitude
+            const [lx, ly, text] = st.label;
+            const tx = el('text', {x: lx + 10, y: ly - 10, 'font-size': 11, 'font-family': 'sans-serif', fill: '#1c3f60',
+                                   stroke: 'white', 'stroke-width': 3, 'paint-order': 'stroke', 'pointer-events': 'none'});
+            tx.textContent = text;
+            svg.appendChild(tx);
         }
     }
     function svgOf(host) {
@@ -5064,14 +5265,14 @@ window.mlwOverlay = window.mlwOverlay || (() => {
     function rebuildAll() {
         for (const h of [...hosts]) {
             if (!h.isConnected) { hosts.delete(h); continue; }
-            h.classList.toggle('mlw-overlay-active', st.active);
-            h.classList.toggle('mlw-overlay-select', st.tool === 'select');
+            h.classList.toggle('mlw-sketchpad-active', st.active);
+            h.classList.toggle('mlw-sketchpad-select', st.tool === 'select');
             build(svgOf(h));
         }
     }
     function attach(host) {
-        if (host._mlwOverlay) return;
-        host._mlwOverlay = true;
+        if (host._mlwSketchpad) return;
+        host._mlwSketchpad = true;
         hosts.add(host);
         let drag = null;  // {kind: 'draw' | 'point' | 'move', ...}
         const at = (e) => { const r = host.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
@@ -5080,25 +5281,31 @@ window.mlwOverlay = window.mlwOverlay || (() => {
             e.preventDefault();
             host.setPointerCapture(e.pointerId);
             const [x, y] = at(e);
-            if (st.tool === 'pen') {
+            if (st.tool === 'draw') {
                 remember();
-                const s = {color: st.color, width: st.width, points: [[x, y]]};
-                st.splines.push(s);
-                const live = el('path', {d: `M${x} ${y}h0.01`, ...strokeAttrs(s)});
+                const s = {type: st.shape, color: st.color, width: st.width, points: st.shape === 'spline' ? [[x, y]] : [[x, y], [x, y]]};
+                st.shapes.push(s);
+                const live = shapeEl(s, strokeAttrs(s));
                 svgOf(host).appendChild(live);
-                drag = {kind: 'draw', spline: s, raw: [[x, y]], live};
+                drag = {kind: 'draw', shape: s, raw: [[x, y]], live};
                 return;
             }
-            const t = e.target, i = t.dataset ? +t.dataset.spline : NaN;
-            if (t.classList.contains('mlw-handle')) {
+            const t = e.target, i = t.dataset ? +t.dataset.shape : NaN;
+            if (t.classList.contains('mlw-tangent')) {
                 remember();
-                drag = {kind: 'point', spline: i, point: +t.dataset.point};
+                drag = {kind: 'tangent', shape: i, point: +t.dataset.point, side: t.dataset.side};
+            } else if (t.classList.contains('mlw-handle')) {
+                remember();
+                drag = {kind: 'point', shape: i, point: +t.dataset.point};
+                st.node = [i, +t.dataset.point];  // a spline's anchor: show its arms
+                rebuildAll();
             } else if (t.classList.contains('mlw-hit')) {
-                if (st.selected !== i) { st.selected = i; rebuildAll(); }
+                if (st.selected !== i || st.node) { st.selected = i; st.node = null; rebuildAll(); }
                 remember();
-                drag = {kind: 'move', spline: i, from: [x, y], moved: false};
+                drag = {kind: 'move', shape: i, from: [x, y], moved: false};
             } else if (st.selected !== -1) {
                 st.selected = -1;
+                st.node = null;
                 rebuildAll();
             }
         });
@@ -5106,15 +5313,41 @@ window.mlwOverlay = window.mlwOverlay || (() => {
             if (!drag) return;
             const [x, y] = at(e);
             if (drag.kind === 'draw') {
-                drag.raw.push([x, y]);
-                drag.live.setAttribute('d', 'M' + drag.raw.map(([a, b]) => `${round(a)} ${round(b)}`).join('L'));
+                const s = drag.shape;
+                if (s.type === 'spline') {
+                    drag.raw.push([x, y]);
+                    drag.live.setAttribute('d', 'M' + drag.raw.map(([a, b]) => `${round(a)} ${round(b)}`).join('L'));  // the raw stroke, until it's done
+                } else {
+                    s.points[1] = [x, y];
+                    const next = shapeEl(s, strokeAttrs(s));
+                    drag.live.replaceWith(next);
+                    drag.live = next;
+                }
+            } else if (drag.kind === 'tangent') {
+                // this handle follows the pointer: its direction and its length (magnitude). The one
+                // opposite keeps its own length but turns to stay in line, so the curve stays smooth
+                // through the anchor -- unless Alt is held, which moves this one alone (a corner).
+                drag.moved = true;
+                const s = st.shapes[drag.shape], k = drag.point, t = tangentsOf(s)[k];
+                const [ax, ay] = s.points[k], dx = x - ax, dy = y - ay, len = Math.hypot(dx, dy);
+                const [o, other] = drag.side === 'in' ? [0, 2] : [2, 0];
+                t[o] = dx; t[o + 1] = dy;
+                const hasOther = !((drag.side === 'in' && k === s.points.length - 1) || (drag.side === 'out' && k === 0));
+                if (!e.altKey && hasOther && len > 0) {
+                    const keep = Math.hypot(t[other], t[other + 1]) || len;
+                    t[other] = -dx / len * keep; t[other + 1] = -dy / len * keep;
+                }
+                const angle = Math.round(Math.atan2(-dy, dx) * 180 / Math.PI);
+                st.label = [x, y, `∠ ${angle}° · ${Math.round(len)} px`];
+                rebuildAll();
             } else if (drag.kind === 'point') {
-                st.splines[drag.spline].points[drag.point] = [x, y];
+                drag.moved = true;
+                dragHandle(st.shapes[drag.shape], drag.point, x, y);
                 rebuildAll();
             } else {
                 const dx = x - drag.from[0], dy = y - drag.from[1];
                 if (!dx && !dy) return;
-                st.splines[drag.spline].points.forEach(p => { p[0] += dx; p[1] += dy; });
+                st.shapes[drag.shape].points.forEach(p => { p[0] += dx; p[1] += dy; });
                 drag.from = [x, y];
                 drag.moved = true;
                 rebuildAll();
@@ -5122,9 +5355,17 @@ window.mlwOverlay = window.mlwOverlay || (() => {
         });
         const end = () => {
             if (!drag) return;
-            if (drag.kind === 'draw') drag.spline.points = simplify(drag.raw, Math.max(1.5, drag.spline.width / 2));
-            else if (drag.kind === 'move' && !drag.moved) st.history.pop();  // a click to select: nothing to undo
+            if (drag.kind === 'draw') {
+                const s = drag.shape;
+                if (s.type === 'spline') { s.points = simplify(drag.raw, Math.max(1.5, s.width / 2)); s.tangents = autoTangents(s.points); }
+                else {
+                    const [[x1, y1], [x2, y2]] = s.points;
+                    const tiny = s.type === 'rect' ? Math.abs(x2 - x1) < 2 && Math.abs(y2 - y1) < 2 : radius(s) < 2;
+                    if (tiny) { st.shapes.pop(); st.history.pop(); }  // a click, not a drag: nothing drawn
+                }
+            } else if (!drag.moved) st.history.pop();  // a click to select (a shape, or an anchor): nothing to undo
             drag = null;
+            st.label = null;
             rebuildAll();
         };
         host.addEventListener('pointerup', end);
@@ -5137,45 +5378,66 @@ window.mlwOverlay = window.mlwOverlay || (() => {
         e.preventDefault();
         api.deleteSelected();
     });
-    new MutationObserver(() => document.querySelectorAll('div.mlw-overlay').forEach(attach))
+    new MutationObserver(() => document.querySelectorAll('div.mlw-sketchpad').forEach(attach))
         .observe(document.body, {childList: true, subtree: true});
-    document.querySelectorAll('div.mlw-overlay').forEach(attach);
+    document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
         setActive(on) { st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
-        setTool(tool) { st.tool = tool === 'select' ? 'select' : 'pen'; if (st.tool === 'pen') st.selected = -1; rebuildAll(); },
-        // the pen's colour / width, and the selected spline's
+        // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
+        setTool(tool) { st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setShape(shape) { st.shape = ['rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
+        // the pen's colour / width, and the selected shape's
         setColor(color) {
             st.color = color;
-            const s = st.splines[st.selected];
+            const s = st.shapes[st.selected];
             if (s && s.color !== color) { remember(); s.color = color; rebuildAll(); }
         },
         setWidth(width) {
             st.width = width;
-            const s = st.splines[st.selected];
+            const s = st.shapes[st.selected];
             if (s && s.width !== width) { remember(); s.width = width; rebuildAll(); }
         },
         deleteSelected() {
-            if (!st.splines[st.selected]) return false;
+            if (!st.shapes[st.selected]) return false;
             remember();
-            st.splines.splice(st.selected, 1);
+            st.shapes.splice(st.selected, 1);
             st.selected = -1;
+            st.node = null;
             rebuildAll();
             return true;
         },
         undo() {
             if (!st.history.length) return false;
-            st.splines = st.history.pop();
-            if (!st.splines[st.selected]) st.selected = -1;
+            st.shapes = st.history.pop();
+            if (!st.shapes[st.selected]) st.selected = -1;
             rebuildAll();
             return true;
         },
-        clear() { if (st.splines.length) { remember(); st.splines = []; st.selected = -1; rebuildAll(); } },
+        clear() { if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        // the pen alone, leaving the selected shape as it is
+        setPenColor(color) { st.color = color; },
+        setPenWidth(width) { st.width = width; },
+        // For the colour and brush choosers: where the undo history stood when
+        // one opened; Cancel goes back there, and Done makes everything since
+        // then a single undo step.
+        historyLength() { return st.history.length; },
+        revertTo(n) {
+            if (st.history.length <= n) return;
+            st.shapes = st.history[n];
+            st.history.length = n;
+            if (!st.shapes[st.selected]) st.selected = -1;
+            rebuildAll();
+        },
+        squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; },
         tool() { return st.tool; },
+        shape() { return st.shape; },
         selected() { return st.selected; },
-        splineCount() { return st.splines.length; },
-        strokeCount() { return st.splines.length; },
-        splines() { return copy(st.splines); },
-        // The sketch as a stand-alone SVG document (width and height: the overlay's size, in CSS pixels).
+        shapes() { return copy(st.shapes); },
+        shapeCount() { return st.shapes.length; },
+        splines() { return copy(st.shapes); },        // earlier names, kept
+        splineCount() { return st.shapes.length; },
+        strokeCount() { return st.shapes.length; },
+        // The sketch as a stand-alone SVG document (width and height: the sketchpad's size, in CSS pixels).
         toSVG() {
             const host = [...hosts].find(h => h.isConnected);
             const svg = document.createElementNS(NS, 'svg');
@@ -5185,7 +5447,7 @@ window.mlwOverlay = window.mlwOverlay || (() => {
             svg.setAttribute('width', w);
             svg.setAttribute('height', h);
             svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-            svg.querySelectorAll('[data-spline]').forEach(p => p.removeAttribute('data-spline'));
+            svg.querySelectorAll('[data-shape]').forEach(p => p.removeAttribute('data-shape'));
             return new XMLSerializer().serializeToString(svg);
         },
     };
@@ -5577,13 +5839,13 @@ window.mlwSelectRange = function(elementId, from, to) {
                     ui.menu_item('Expand Frames', on_click=lambda _: expand_frames()),
                 ]
                 ui.separator()
-                # a check box shows whether the overlay is on (see toggle_overlay())
-                with ui.menu_item(on_click=lambda _: toggle_overlay()) as overlay_item:
+                # a check box shows whether the sketchpad is on (see toggle_sketchpad())
+                with ui.menu_item(on_click=lambda _: toggle_sketchpad()) as sketchpad_item:
                     with ui.item_section():
-                        ui.label('Overlay')
+                        ui.label('Sketchpad')
                     with ui.item_section().props('side'):  # the check box, at the right
-                        sess.overlay_menu_icon = ui.icon('check_box_outline_blank', size='xs')
-                sess.xsheet_view_items.append(overlay_item)
+                        sess.sketchpad_menu_icon = ui.icon('check_box_outline_blank', size='xs')
+                sess.xsheet_view_items.append(sketchpad_item)
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
                 ui.menu_item('Generate Report', on_click=lambda _: export_to_pdf())
@@ -5768,7 +6030,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full').props('dense') \
                     as sess.validation_panel:
                 sess.validation_results_container = ui.column().classes('w-full gap-1')
-        with ui.tab_panel(xsheet_tab).classes('gap-2 relative'):  # relative: the overlay covers this panel
+        with ui.tab_panel(xsheet_tab).classes('gap-2 relative'):  # relative: the sketchpad covers this panel
             # "Exposure Sheet" with the frame/layer count beside it, then the
             # document's Production info on the line below.
             with ui.row().classes('items-baseline gap-3'):
@@ -5816,10 +6078,10 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
-            # XSheet > Overlay: the sketching overlay over everything above, and
-            # its tools while it's on (see toggle_overlay() and mlwOverlay)
-            ui.element('div').classes('mlw-overlay')  # the SVG drawing goes in here (see mlwOverlay)
-            _build_overlay_toolbar(sess)
+            # XSheet > Sketchpad: the sketchpad over everything above, and
+            # its tools while it's on (see toggle_sketchpad() and mlwSketchpad)
+            ui.element('div').classes('mlw-sketchpad')  # the SVG drawing goes in here (see mlwSketchpad)
+            _build_sketchpad_toolbar(sess)
 
     # build initial tree from current editor value
     try:
