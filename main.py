@@ -119,6 +119,12 @@ class Session:
         # Save and Save As to write beside the document (see save_sketch_beside())
         self.sketch = {'count': 0, 'svg': ''}
         self.sketch_modified = False  # changed since loaded or saved (see document_modified())
+        self.svg_editor = None        # the SVG tab's editor: the sketch's .svg (see refresh_svg_editor())
+        self.svg_status = None
+        self.suppress_svg_editor_change = False
+        self.svg_editor_invalid = False  # its text isn't well-formed SVG (yet): kept as typed
+        self.svg_editor_stale = False    # the sketch changed while another tab was showing
+        self.main_tab = 'XSheet'      # the XSheet / XML / SVG tab showing (see on_main_tab_change())
         self.sketchpad_toolbar = None
         self.sketchpad_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
@@ -141,7 +147,7 @@ class Session:
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
         self.xsheet_refresh_in_place = False  # the next grid rebuild just replaces the rows (see edit_xsheet_notes())
-        self.main_tabs = None  # the XSheet / XML tabs (see xml_tab_active())
+        self.main_tabs = None  # the XSheet / XML / SVG tabs (see xml_tab_active())
 
         # This user's app.storage.user, captured while index() still has the
         # page request (event handlers and timers don't always carry one).
@@ -3636,7 +3642,7 @@ def update_xsheet_view_items(on_xsheet_tab: bool | None = None) -> None:
     the sketch is pinned to the sheet's rows, which they would move."""
     sess = session()
     if on_xsheet_tab is None:
-        on_xsheet_tab = not xml_tab_active()
+        on_xsheet_tab = sess.main_tab == 'XSheet'
     for item in sess.xsheet_view_items:
         item.set_enabled(on_xsheet_tab and not sess.sketchpad_active)
 
@@ -3646,7 +3652,7 @@ def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     once a document is open (opened, new, or a restored draft)."""
     sess = session()
     if on_xsheet_tab is None:
-        on_xsheet_tab = not xml_tab_active()
+        on_xsheet_tab = sess.main_tab == 'XSheet'
     if sess.sketchpad_item is not None:
         sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open)
 
@@ -3663,6 +3669,7 @@ def reset_sketchpad() -> None:
     sess.sketch_modified = False
     ui.run_javascript('window.mlwSketchpad && mlwSketchpad.reset()')
     update_sketchpad_item()
+    refresh_svg_editor()
 
 
 # A document's sketch is saved beside it, as SVG: the same name, with .svg
@@ -3683,6 +3690,11 @@ def handle_sketch_changed(e) -> None:
     args = e.args if isinstance(e.args, dict) else {}
     sess.sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
     sess.sketch_modified = bool(args.get('dirty')) and sess.document_open
+    if args.get('source') != 'editor':  # (the editor's own change: left as it's being typed)
+        if sess.main_tab == 'SVG':
+            refresh_svg_editor()
+        else:  # not showing: brought up to date when its tab is shown (see on_main_tab_change())
+            sess.svg_editor_stale = True
     set_filename_label()
     remember_document()
 
@@ -3706,12 +3718,14 @@ def restore_sketch_draft(draft: dict | None) -> None:
     set_filename_label()
     remember_document()
     ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)}, true)')
+    refresh_svg_editor()
 
 
-def _sketch_comments(document: Path) -> str:
+def _sketch_comments(document: Path | None) -> str:
     """The comments at the top of a saved sketch: the XSheet document it
     belongs to (its path in the data folder), and that document's
-    <Production> info, as its elements."""
+    <Production> info, as its elements. (document None: a new document,
+    not saved yet.)"""
     from xml.sax.saxutils import escape
 
     def safe(text: str) -> str:  # '--' can't be in a comment
@@ -3719,12 +3733,16 @@ def _sketch_comments(document: Path) -> str:
         while '--' in text:
             text = text.replace('--', '- -')
         return text
-    try:
-        where = Path(document).resolve().relative_to(Path(BASE_DIR).resolve())
-    except ValueError:
-        where = Path(document).name
-    lines = [f'<!-- Sketchpad sketch for the XSheet document {safe(str(where))}',
-             f'     (saved beside it by the Magic Lantern XSheet Viewer; opening {safe(Path(document).name)} loads it) -->']
+    if document is None:
+        lines = [f'<!-- Sketchpad sketch for the XSheet document {UNTITLED_NAME}',
+                 '     (not saved yet: Save As saves it beside the document, as <name>.svg) -->']
+    else:
+        try:
+            where = Path(document).resolve().relative_to(Path(BASE_DIR).resolve())
+        except ValueError:
+            where = Path(document).name
+        lines = [f'<!-- Sketchpad sketch for the XSheet document {safe(str(where))}',
+                 f'     (saved beside it by the Magic Lantern XSheet Viewer; opening {safe(Path(document).name)} loads it) -->']
     info = read_production_info(_editor_text())
     if info:
         lines.append('<!--')
@@ -3733,6 +3751,76 @@ def _sketch_comments(document: Path) -> str:
         lines.append('  </Production>')
         lines.append('-->')
     return '\n'.join(lines) + '\n'
+
+
+def _pretty_svg(svg: str) -> str:
+    """A sketch's SVG (as mlwSketchpad.toSVG() gives it, on one line) an
+    element to a line, indented by depth -- for the SVG tab's editor, and
+    the file (see sketch_file_text())."""
+    lines, depth = [], 0
+    for tag in re.findall(r'<[^>]+>|[^<]+', svg.strip()):
+        if not tag.strip():
+            continue
+        if tag.startswith('</'):
+            depth = max(depth - 1, 0)
+        lines.append('  ' * depth + tag.strip())
+        if tag.startswith('<') and not tag.startswith(('</', '<?', '<!')) and not tag.endswith('/>'):
+            depth += 1
+    return '\n'.join(lines)
+
+
+def sketch_file_text(document: Path | None = None) -> str:
+    """The sketch as its .svg file has it: the comments naming its document
+    and giving its <Production> info (see _sketch_comments()), then the SVG,
+    an element to a line. Shown in the SVG tab's editor; written by Save."""
+    sess = session()
+    if document is None and sess.current_file.get('path'):
+        document = Path(sess.current_file['path'])
+    svg = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
+    body = re.sub(r'^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--.*?-->\s*)*', '', svg, flags=re.S)  # a loaded file's comments
+    return _sketch_comments(document) + _pretty_svg(body or EMPTY_SKETCH_SVG) + '\n'
+
+
+def refresh_svg_editor() -> None:
+    """Show the sketch in the SVG tab's editor (see sketch_file_text()) --
+    empty, and not editable, with no document open."""
+    sess = session()
+    if sess.svg_editor is None:
+        return
+    text = sketch_file_text() if sess.document_open else ''
+    sess.svg_editor_invalid = sess.svg_editor_stale = False
+    if sess.svg_editor.value != text:
+        sess.suppress_svg_editor_change = True
+        sess.svg_editor.value = text
+        sess.suppress_svg_editor_change = False
+    sess.svg_editor.set_enabled(sess.document_open)
+    if sess.svg_status is not None:
+        sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.'
+                                 if sess.document_open else 'Open a document to see its sketch here.')
+        sess.svg_status.classes(remove='text-negative', add='text-gray-500')
+
+
+async def on_svg_editor_change(e) -> None:
+    """The SVG tab's editor changed: its text becomes the Sketchpad sketch
+    (see mlwSketchpad.applySVG()), unless it isn't well-formed yet -- then
+    the sketch stays as it was, and a note says why."""
+    sess = session()
+    if sess.suppress_svg_editor_change or not sess.document_open:
+        return
+    text = e.value if hasattr(e, 'value') else ''
+    try:
+        result = await ui.run_javascript(f'return window.mlwSketchpad ? mlwSketchpad.applySVG({json.dumps(text)}) : "invalid"')
+    except Exception:
+        return
+    if sess.svg_status is None:
+        return
+    sess.svg_editor_invalid = result == 'invalid'
+    if result == 'invalid':
+        sess.svg_status.set_text('Not well-formed SVG (yet): the sketch is unchanged until it is.')
+        sess.svg_status.classes(remove='text-gray-500', add='text-negative')
+    else:
+        sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.')
+        sess.svg_status.classes(remove='text-negative', add='text-gray-500')
 
 
 def save_sketch_beside(document: Path) -> Path | None:
@@ -3746,9 +3834,8 @@ def save_sketch_beside(document: Path) -> Path | None:
     dest = sketch_path_for(document)
     if not sess.sketch['count'] and not dest.exists():
         return None
-    svg = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
     try:
-        dest.write_text(_sketch_comments(document) + svg + '\n', encoding='utf-8')
+        dest.write_text(sketch_file_text(document), encoding='utf-8')
     except Exception as exc:
         ui.notify(f'Failed to save the sketch to {dest}: {exc}', color='negative')
         return None
@@ -3770,6 +3857,7 @@ def load_sketch_beside(document: Path) -> None:
     count = len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg))
     session().sketch = {'count': count, 'svg': svg}
     ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)})')
+    refresh_svg_editor()
 
 
 def toggle_sketchpad(active: bool | None = None) -> None:
@@ -5608,16 +5696,20 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // sent a moment after it changes -- not on every pointer move -- with
     // whether it differs from the sketch last loaded or saved ('dirty'), so
     // the document shows as changed and Close asks to save it.
-    let sent = '[]', saved = '[]', sendTimer = null;
+    // 'source': 'editor' for a change made in the SVG tab's editor (see
+    // applySVG()), which the server then leaves as it is typed.
+    let sent = '[]', saved = '[]', sendTimer = null, origin = null;
     function changed(force = false) {
         clearTimeout(sendTimer);
         sendTimer = setTimeout(() => {
             const now = JSON.stringify(st.shapes);
             if (now === sent && !force) return;
             sent = now;
-            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved});
+            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved, source: origin});
+            origin = null;
         }, force ? 0 : 300);
     }
+    let editorEdit = 0;  // when the SVG tab's editor last changed the sketch
     // A sketch saved as SVG (by toSVG()) back as shapes: each <path> a spline
     // (its anchors and, from its curves' control points, their tangents),
     // <polyline> a polyline, <rect> a rectangle and <circle> a circle, with
@@ -5670,7 +5762,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         return shapes;
     }
     function attach(host) {
-        if (host._mlwSketchpad) return;
+        if (host._mlwSketchpad) {  // back on the page (its tab shown again): drawn afresh
+            if (!hosts.has(host)) { hosts.add(host); rebuildAll(); }
+            return;
+        }
         host._mlwSketchpad = true;
         hosts.add(host);
         let drag = null;  // {kind: 'draw' | 'point' | 'move', ...}
@@ -5884,6 +5979,21 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         // File > Save / Save As wrote the sketch the server has (the last one
         // sent): that's the saved sketch now; anything since is still unsaved
         markSaved() { saved = sent; changed(true); },
+        // The SVG tab's editor changed: its text as the sketch (see fromSVG()) --
+        // 'ok', 'same' (no change to the shapes) or 'invalid' (not well-formed:
+        // the sketch is left as it is). A burst of typing is one Undo step.
+        applySVG(text) {
+            const shapes = fromSVG(text);
+            if (!shapes) return 'invalid';
+            if (JSON.stringify(shapes) === JSON.stringify(st.shapes)) return 'same';
+            finishPoly(false);
+            if (Date.now() - editorEdit > 1500) remember();
+            editorEdit = Date.now();
+            st.shapes = shapes; st.selected = -1; st.node = null; st.label = null;
+            origin = 'editor';
+            rebuildAll();
+            return 'ok';
+        },
         // a document opened or closed: no sketch, nothing to undo
         reset() { saved = '[]'; st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
         clear() { finishPoly(); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
@@ -5933,13 +6043,16 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         },
         // The sketch as a stand-alone SVG document, in CSS pixels: the whole
         // sheet (the sketchpad's size, plus however far the grid scrolls).
+        // (Its size is as the sheet was last shown, when another tab is showing.)
         toSVG() {
             const host = [...hosts].find(h => h.isConnected);
             const svg = document.createElementNS(NS, 'svg');
             build(svg, true);
             const g = host && gridOf(host);
-            const w = host ? host.clientWidth + (g && g.cols ? g.cols.scrollWidth - g.cols.clientWidth : 0) : 0;
-            const h = host ? host.clientHeight + (g && g.body ? g.body.scrollHeight - g.body.clientHeight : 0) : 0;
+            if (host && host.clientWidth) st.size = [
+                host.clientWidth + (g && g.cols ? g.cols.scrollWidth - g.cols.clientWidth : 0),
+                host.clientHeight + (g && g.body ? g.body.scrollHeight - g.body.clientHeight : 0)];
+            const [w, h] = st.size || [0, 0];
             svg.setAttribute('xmlns', NS);
             svg.setAttribute('width', w);
             svg.setAttribute('height', h);
@@ -6403,28 +6516,36 @@ window.mlwSelectRange = function(elementId, from, to) {
         # the Tab element itself, even though ui.tab_panels(value=xml_tab)
         # elsewhere in this file is given the element -- nicegui reports
         # client-originated tab changes by name.
-        switching_to_xsheet = (new_value == 'XSheet')
-        if sess.xml_menu_button is not None:
-            sess.xml_menu_button.disable() if switching_to_xsheet else sess.xml_menu_button.enable()
-        update_xsheet_view_items(switching_to_xsheet)
-        update_sketchpad_item(switching_to_xsheet)
+        # the tab being left, and the one shown now (XSheet, XML or SVG)
+        leaving, showing = sess.main_tab, str(new_value)
+        sess.main_tab = showing
+        if sess.xml_menu_button is not None:  # the XML menu acts on the XML editor
+            sess.xml_menu_button.enable() if showing == 'XML' else sess.xml_menu_button.disable()
+        update_xsheet_view_items(showing == 'XSheet')
+        update_sketchpad_item(showing == 'XSheet')
         try:
-            if switching_to_xsheet:
+            if leaving == 'XML':
                 offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
                 if offset is not None:
                     sess.tab_view_state['xml_cursor_offset'] = int(offset)
+            elif leaving == 'XSheet' and sess.xsheet_grid is not None:
+                top_row = await sess.xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
+                if top_row is not None:
+                    sess.tab_view_state['xsheet_top_row'] = int(top_row)
+            if showing == 'XSheet':
                 if sess.xsheet_grid is not None and sess.tab_view_state['xsheet_top_row'] is not None:
                     import asyncio
                     rebuild_xsheet_from_current()
                     await asyncio.sleep(0.15)
                     sess.xsheet_grid.run_grid_method('ensureIndexVisible', sess.tab_view_state['xsheet_top_row'], 'top')
-            else:
-                if sess.xsheet_grid is not None:
-                    top_row = await sess.xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
-                    if top_row is not None:
-                        sess.tab_view_state['xsheet_top_row'] = int(top_row)
+            elif showing == 'XML':
                 if sess.tab_view_state['xml_cursor_offset'] is not None:
                     ui.run_javascript(f"window.mlwHighlightLine({sess.editor.id}, {sess.tab_view_state['xml_cursor_offset']});")
+            elif showing == 'SVG' and (sess.svg_editor_stale or not sess.svg_editor_invalid):
+                # the Sketchpad's edits made meanwhile, and the document's Production
+                # info as its comments have it (half-typed text is kept, unless the
+                # sketch was changed elsewhere since)
+                refresh_svg_editor()
         except Exception:
             pass
 
@@ -6433,6 +6554,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         # XSheet first; the shortcuts follow the tabs' positions
         xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
         xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
+        svg_tab = ui.tab('SVG').tooltip('Ctrl+Alt+3')  # the Sketchpad sketch's .svg
 
     # The XSheet tab is showing when the page opens; the XML menu acts on the
     # editor, so it starts disabled until the XML tab is chosen.
@@ -6581,6 +6703,16 @@ window.mlwSelectRange = function(elementId, from, to) {
             # its tools while it's on (see toggle_sketchpad() and mlwSketchpad)
             ui.element('div').classes('mlw-sketchpad')  # the SVG drawing goes in here (see mlwSketchpad)
             _build_sketchpad_toolbar(sess)
+        with ui.tab_panel(svg_tab).classes('gap-1'):
+            # The Sketchpad sketch as its .svg file has it (see sketch_file_text()),
+            # kept in step both ways: editing it here changes the sketch (see
+            # on_svg_editor_change()), and the Sketchpad's edits show here (see
+            # refresh_svg_editor()). Save and Save As write it beside the document.
+            ui.label('Sketchpad SVG').classes('text-sm font-medium')
+            sess.svg_status = ui.label('').classes('text-xs text-gray-500')
+            sess.svg_editor = ui.codemirror(value='', language='xml', on_change=on_svg_editor_change) \
+                .classes('w-full').style('min-height: 80vh')
+            refresh_svg_editor()
 
     # build initial tree from current editor value
     try:
@@ -6608,14 +6740,16 @@ window.mlwSelectRange = function(elementId, from, to) {
         # it fired on both keydown and keyup -- both fixed below.
         if not e.action.keydown:
             return
-        if e.key == 'z' and e.modifiers.ctrl:
+        if e.key == 'z' and e.modifiers.ctrl and sess.main_tab != 'SVG':  # (the SVG editor undoes its own)
             do_undo()
-        elif e.key == 'y' and e.modifiers.ctrl:
+        elif e.key == 'y' and e.modifiers.ctrl and sess.main_tab != 'SVG':
             do_redo()
         elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'XSheet'
         elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'XML'
+        elif e.key.number == 3 and e.modifiers.ctrl and e.modifiers.alt:
+            main_tabs.value = 'SVG'
     ui.keyboard(on_key=handle_keyboard)
 
 

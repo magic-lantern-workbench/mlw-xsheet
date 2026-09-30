@@ -196,9 +196,10 @@ switching browsers starts fresh settings.
 - **Header** — `File`, `Edit`, `XSheet`, `XML` and `About` dropdown menus (About has the app info, with the license in a scrollable tab, and the document's Reviews) on the
   left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
-  Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
-- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, and `XML`
-  (Editor + Hierarchy tree). `Ctrl+Alt+1`/`Ctrl+Alt+2` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
+  Select Schema, …) act on the editor, so they're disabled while looking at the XSheet or SVG tab.
+- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, `XML`
+  (Editor + Hierarchy tree) and `SVG` (the Sketchpad sketch's `.svg`, in an editor; see [SVG tab](#svg-tab)).
+  `Ctrl+Alt+1`/`Ctrl+Alt+2`/`Ctrl+Alt+3` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
 - **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
   collapsible tree mirroring the document's element structure.
 - **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
@@ -458,12 +459,30 @@ layer already uses, and names containing `"` `'` `<` `>` or `&` are refused. The
 
 **XSheet > Export XSheet** prints this layout when it's the style you're viewing.
 
+### SVG tab
+
+**Sketchpad SVG**, an editor showing the Sketchpad sketch as its `.svg` file has it (see the Sketchpad row of the
+[XSheet menu](#xsheet-menu)) — the comments naming the document and giving its `<Production>`
+info, then the SVG, an element to a line — kept in step both ways. Edit it and the sketch
+follows: change a shape's `stroke` colour, `stroke-width`, position or size, delete a line, or
+type a new `<rect>`, `<circle>`, `<polyline>` or `<path>` (a spline: `M` then `C` curves, whose
+control points become its tangents), and the Sketchpad draws it that way — a burst of typing is a
+single Sketchpad Undo step. While the text isn't well-formed (half-way through a tag, say), a
+note says so and the sketch stays as it was. The other way, whatever you draw or change on the
+Sketchpad shows here when you come back to this tab. Only those four elements are sketch
+shapes: anything else, and edits to the comments, are dropped when the file is next written.
+Editing here marks the document as changed; **Save** writes exactly what the editor shows. With
+no document open, the editor is empty and can't be edited.
+
 ### Keyboard shortcuts
 
 - `Ctrl+Z` — Undo
 - `Ctrl+Y` — Redo
 - `Ctrl+Alt+1` — Switch to the XSheet tab
 - `Ctrl+Alt+2` — Switch to the XML tab
+- `Ctrl+Alt+3` — Switch to the SVG tab
+
+(On the SVG tab, `Ctrl+Z` and `Ctrl+Y` undo and redo in the SVG editor itself.)
 
 (`Ctrl+O` and `Ctrl+S` are intentionally not bound — browsers reserve those shortcuts for
 their own Open/Save dialogs and won't let a web page override them. Use the File menu instead.
