@@ -110,7 +110,7 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
-        self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
+        self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: enabled on the XSheet tab, with the sketchpad off
         self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
         self.sketchpad_menu_icon = None
         self.sketchpad_item = None  # its menu item: enabled on the XSheet tab, with a document open
@@ -3595,6 +3595,17 @@ SKETCHPAD_WIDTHS = [1, 2, 3, 4, 6, 8, 12, 16]  # the brush chooser's quick sizes
 SKETCHPAD_MAX_WIDTH = 24
 
 
+def update_xsheet_view_items(on_xsheet_tab: bool | None = None) -> None:
+    """XSheet > Collapse Frames and Expand Frames act on the grid: they can
+    be chosen only on the XSheet tab, and not while the sketchpad is on --
+    the sketch is pinned to the sheet's rows, which they would move."""
+    sess = session()
+    if on_xsheet_tab is None:
+        on_xsheet_tab = not xml_tab_active()
+    for item in sess.xsheet_view_items:
+        item.set_enabled(on_xsheet_tab and not sess.sketchpad_active)
+
+
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     """XSheet > Sketchpad can be chosen only on the XSheet tab, and only
     once a document is open (opened, new, or a restored draft)."""
@@ -3630,6 +3641,7 @@ def toggle_sketchpad(active: bool | None = None) -> None:
         ui.notify('Open a document first to sketch on it', color='info')
     if sess.sketchpad_menu_icon is not None:
         sess.sketchpad_menu_icon.name = 'check_box' if sess.sketchpad_active else 'check_box_outline_blank'
+    update_xsheet_view_items()
     if sess.sketchpad_toolbar is not None:
         sess.sketchpad_toolbar.set_visibility(sess.sketchpad_active)
     ui.run_javascript(f'window.mlwSketchpad && window.mlwSketchpad.setActive({json.dumps(sess.sketchpad_active)})')
@@ -5982,8 +5994,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
-                # these act on the grid, so they're disabled on the XML tab
-                # (see on_main_tab_change() below)
+                # these act on the grid, so they are disabled on the XML tab and
+                # while the sketchpad is on (see update_xsheet_view_items())
                 sess.xsheet_view_items = [
                     ui.menu_item('Collapse Frames', on_click=lambda _: collapse_frames()),
                     ui.menu_item('Expand Frames', on_click=lambda _: expand_frames()),
@@ -6059,8 +6071,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         switching_to_xsheet = (new_value == 'XSheet')
         if sess.xml_menu_button is not None:
             sess.xml_menu_button.disable() if switching_to_xsheet else sess.xml_menu_button.enable()
-        for item in sess.xsheet_view_items:
-            item.set_enabled(switching_to_xsheet)
+        update_xsheet_view_items(switching_to_xsheet)
         update_sketchpad_item(switching_to_xsheet)
         try:
             if switching_to_xsheet:
