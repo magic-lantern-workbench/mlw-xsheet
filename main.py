@@ -113,6 +113,8 @@ class Session:
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
         self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
         self.sketchpad_menu_icon = None
+        self.sketchpad_item = None  # its menu item: enabled on the XSheet tab, with a document open
+        self.document_open = False  # a document is in the editor: opened, new, or a restored draft
         self.sketchpad_toolbar = None
         self.sketchpad_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
@@ -3588,6 +3590,27 @@ SKETCHPAD_WIDTHS = [1, 2, 3, 4, 6, 8, 12, 16]  # the brush chooser's quick sizes
 SKETCHPAD_MAX_WIDTH = 24
 
 
+def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
+    """XSheet > Sketchpad can be chosen only on the XSheet tab, and only
+    once a document is open (opened, new, or a restored draft)."""
+    sess = session()
+    if on_xsheet_tab is None:
+        on_xsheet_tab = not xml_tab_active()
+    if sess.sketchpad_item is not None:
+        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open)
+
+
+def reset_sketchpad() -> None:
+    """A document was opened or closed: turn the sketchpad off, and start
+    the next sketch afresh (the one drawn isn't saved yet, and belongs to
+    the document it was drawn on)."""
+    sess = session()
+    if sess.sketchpad_active:
+        toggle_sketchpad(False)
+    ui.run_javascript('window.mlwSketchpad && mlwSketchpad.reset()')
+    update_sketchpad_item()
+
+
 def toggle_sketchpad(active: bool | None = None) -> None:
     """XSheet > Sketchpad: turn sketching on the SVG sketchpad on or off. On,
     the sketchpad over the XSheet tab takes the pointer (so the grid under it
@@ -3597,6 +3620,9 @@ def toggle_sketchpad(active: bool | None = None) -> None:
     usual. The sketch is kept, and shows again when it's turned back on."""
     sess = session()
     sess.sketchpad_active = (not sess.sketchpad_active) if active is None else bool(active)
+    if sess.sketchpad_active and not sess.document_open:
+        sess.sketchpad_active = False
+        ui.notify('Open a document first to sketch on it', color='info')
     if sess.sketchpad_menu_icon is not None:
         sess.sketchpad_menu_icon.name = 'check_box' if sess.sketchpad_active else 'check_box_outline_blank'
     if sess.sketchpad_toolbar is not None:
@@ -4208,6 +4234,8 @@ def _load_document(path: str | None, text: str, saved_content: str):
     sess.current_file['saved_content'] = saved_content
     set_filename_label()
     sess.xsheet_collapsed_ranges.clear()
+    sess.document_open = True
+    reset_sketchpad()  # a sketch belongs to the document it was drawn on
     # initialize undo/redo stacks
     sess.undo_stack.clear()
     sess.redo_stack.clear()
@@ -4304,6 +4332,8 @@ def close_file():
     set_validation_status('')
     clear_validation_panel()
     sess.xsheet_collapsed_ranges.clear()
+    sess.document_open = False
+    reset_sketchpad()
     # suppress change handler when clearing editor
     sess.suppress_editor_change = True
     sess.editor.value = ''
@@ -5077,8 +5107,10 @@ def index():
     # show its direction handles (tangents): drag one to set the curve's slope there
     # and, by its length (magnitude), how far the curve holds it; the handle
     # opposite turns to keep the curve smooth, unless Alt is held (a corner).
-    # Every change can be undone. The sketch is kept here,
-    # per browser tab, as its splines, and the SVG is rebuilt from them
+    # Every change can be undone. The sketch is pinned to the sheet: it
+    # scrolls with the grid and spans all of it (see scrollOf()), and the
+    # wheel over the sketchpad still scrolls the grid. It is kept here,
+    # per browser tab, as its shapes, and the SVG is rebuilt from them
     # whenever the sketchpad is re-created -- Quasar removes the XSheet tab's
     # panel while another tab is showing. It is not saved with the document
     # yet; mlwSketchpad.toSVG() gives it as a stand-alone SVG document for when
@@ -5219,10 +5251,28 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             s.points[k] = [x, y];
         }
     }
+    // The sketch is pinned to the sheet, not the screen: its coordinates are
+    // the sketchpad's plus how far the grid is scrolled, so a mark made on a
+    // frame stays on it as the grid scrolls, and the sketch spans every frame
+    // and column, not just those showing.
+    function gridOf(host) {
+        const panel = host.parentElement;
+        return panel && {body: panel.querySelector('.mlw-xsheet-grid .ag-body-viewport'),  // scrolls down
+                         cols: panel.querySelector('.mlw-xsheet-grid .ag-center-cols-viewport'),  // shows across
+                         across: panel.querySelector('.mlw-xsheet-grid .ag-body-horizontal-scroll-viewport')};  // scrolls across
+    }
+    function scrollOf(host) {
+        const g = gridOf(host);
+        return [g && g.cols ? g.cols.scrollLeft : 0, g && g.body ? g.body.scrollTop : 0];
+    }
     // The drawing: one element per shape; with the sketchpad on, also a wide
     // invisible copy to pick it by, and the selected one's highlight and handles.
-    function build(svg, plain) {
+    // They go in one <g>, shifted by the grid's scroll (see scrollOf()).
+    function build(svg, plain, [sx, sy] = [0, 0]) {
         svg.replaceChildren();
+        const g = el('g', plain ? {} : {transform: `translate(${-sx} ${-sy})`, class: 'mlw-sheet'});
+        svg.appendChild(g);
+        svg = g;
         st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {...strokeAttrs(s), 'data-shape': i})));
         if (plain || !st.active || st.tool !== 'select') return;
         st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {
@@ -5262,12 +5312,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (!svg) { svg = document.createElementNS(NS, 'svg'); host.appendChild(svg); }
         return svg;
     }
+    // the grid scrolled: move the sketch with it
+    function follow(host) {
+        const g = host.querySelector(':scope > svg > g.mlw-sheet');
+        const [sx, sy] = scrollOf(host);
+        if (g) g.setAttribute('transform', `translate(${-sx} ${-sy})`);
+    }
     function rebuildAll() {
         for (const h of [...hosts]) {
             if (!h.isConnected) { hosts.delete(h); continue; }
             h.classList.toggle('mlw-sketchpad-active', st.active);
             h.classList.toggle('mlw-sketchpad-select', st.tool === 'select');
-            build(svgOf(h));
+            build(svgOf(h), false, scrollOf(h));
         }
     }
     function attach(host) {
@@ -5275,7 +5331,23 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         host._mlwSketchpad = true;
         hosts.add(host);
         let drag = null;  // {kind: 'draw' | 'point' | 'move', ...}
-        const at = (e) => { const r = host.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+        // where the pointer is on the sheet (see scrollOf())
+        const at = (e) => {
+            const r = host.getBoundingClientRect(), [sx, sy] = scrollOf(host);
+            return [e.clientX - r.left + sx, e.clientY - r.top + sy];
+        };
+        // Scrolling (it doesn't bubble, but it can be caught on its way down)
+        // moves the sketch with the grid; and with the sketchpad on, the
+        // wheel over it still scrolls the grid.
+        host.parentElement.addEventListener('scroll', () => follow(host), true);
+        host.addEventListener('wheel', (e) => {
+            const g = gridOf(host);
+            if (!st.active || !g || !g.body) return;
+            e.preventDefault();
+            if (!e.shiftKey) g.body.scrollTop += e.deltaY;
+            const dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+            if (dx && g.across) g.across.scrollLeft += dx;
+        }, {passive: false});
         host.addEventListener('pointerdown', (e) => {
             if (!st.active || e.button > 0) return;
             e.preventDefault();
@@ -5286,7 +5358,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 const s = {type: st.shape, color: st.color, width: st.width, points: st.shape === 'spline' ? [[x, y]] : [[x, y], [x, y]]};
                 st.shapes.push(s);
                 const live = shapeEl(s, strokeAttrs(s));
-                svgOf(host).appendChild(live);
+                svgOf(host).querySelector(':scope > g.mlw-sheet').appendChild(live);
                 drag = {kind: 'draw', shape: s, raw: [[x, y]], live};
                 return;
             }
@@ -5413,6 +5485,8 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             rebuildAll();
             return true;
         },
+        // a document opened or closed: no sketch, nothing to undo
+        reset() { st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
         clear() { if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
         setPenColor(color) { st.color = color; },
@@ -5437,12 +5511,15 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         splines() { return copy(st.shapes); },        // earlier names, kept
         splineCount() { return st.shapes.length; },
         strokeCount() { return st.shapes.length; },
-        // The sketch as a stand-alone SVG document (width and height: the sketchpad's size, in CSS pixels).
+        // The sketch as a stand-alone SVG document, in CSS pixels: the whole
+        // sheet (the sketchpad's size, plus however far the grid scrolls).
         toSVG() {
             const host = [...hosts].find(h => h.isConnected);
             const svg = document.createElementNS(NS, 'svg');
             build(svg, true);
-            const w = host ? host.clientWidth : 0, h = host ? host.clientHeight : 0;
+            const g = host && gridOf(host);
+            const w = host ? host.clientWidth + (g && g.cols ? g.cols.scrollWidth - g.cols.clientWidth : 0) : 0;
+            const h = host ? host.clientHeight + (g && g.body ? g.body.scrollHeight - g.body.clientHeight : 0) : 0;
             svg.setAttribute('xmlns', NS);
             svg.setAttribute('width', w);
             svg.setAttribute('height', h);
@@ -5845,7 +5922,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                         ui.label('Sketchpad')
                     with ui.item_section().props('side'):  # the check box, at the right
                         sess.sketchpad_menu_icon = ui.icon('check_box_outline_blank', size='xs')
-                sess.xsheet_view_items.append(sketchpad_item)
+                sess.sketchpad_item = sketchpad_item
+                update_sketchpad_item(True)  # the page opens on the XSheet tab (see update_sketchpad_item())
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
                 ui.menu_item('Generate Report', on_click=lambda _: export_to_pdf())
@@ -5910,6 +5988,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xml_menu_button.disable() if switching_to_xsheet else sess.xml_menu_button.enable()
         for item in sess.xsheet_view_items:
             item.set_enabled(switching_to_xsheet)
+        update_sketchpad_item(switching_to_xsheet)
         try:
             if switching_to_xsheet:
                 offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
