@@ -3575,15 +3575,20 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
 
 
 # The sketchpad's shapes, as the Shape chooser lists them: key -> (name, icon).
-SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'rect': ('Rectangle', 'crop_square'),
-                  'circle': ('Circle', 'radio_button_unchecked')}
+SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'polyline': ('Polyline', 'polyline'),
+                    'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked')}
 SKETCHPAD_COLOR = '#e11d48'  # the pen's colour to start with
-# The colour chooser's palette (its Spectrum and Tune views offer any colour).
+# The colour chooser's palette: 64 colours, eight hues (a row each) in eight
+# shades, light to dark (its Spectrum and Tune views offer any other colour).
 SKETCHPAD_PALETTE = [
-    '#e11d48', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#16a34a',
-    '#14b8a6', '#06b6d4', '#2563eb', '#4f46e5', '#7c3aed', '#c026d3',
-    '#db2777', '#92400e', '#78716c', '#111827', '#6b7280', '#ffffff',
-    '#fecaca', '#fed7aa', '#fef08a', '#bbf7d0', '#bae6fd', '#ddd6fe',
+    '#ffffff', '#e5e7eb', '#d1d5db', '#9ca3af', '#6b7280', '#4b5563', '#1f2937', '#000000',  # greys
+    '#fecdd3', '#fda4af', '#fb7185', '#f43f5e', '#e11d48', '#be123c', '#9f1239', '#881337',  # reds
+    '#fed7aa', '#fdba74', '#fb923c', '#f97316', '#ea580c', '#c2410c', '#9a3412', '#7c2d12',  # oranges
+    '#fef08a', '#fde047', '#facc15', '#eab308', '#ca8a04', '#a16207', '#854d0e', '#713f12',  # yellows
+    '#bbf7d0', '#86efac', '#4ade80', '#22c55e', '#16a34a', '#15803d', '#166534', '#14532d',  # greens
+    '#a5f3fc', '#67e8f9', '#22d3ee', '#06b6d4', '#0891b2', '#0e7490', '#155e75', '#164e63',  # cyans
+    '#bfdbfe', '#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1d4ed8', '#1e40af', '#1e3a8a',  # blues
+    '#ddd6fe', '#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed', '#6d28d9', '#5b21b6', '#4c1d95',  # violets
 ]
 SKETCHPAD_WIDTH = 4  # the pen's width to start with, in pixels
 SKETCHPAD_WIDTHS = [1, 2, 3, 4, 6, 8, 12, 16]  # the brush chooser's quick sizes (its slider: 1-24)
@@ -3634,7 +3639,7 @@ def toggle_sketchpad(active: bool | None = None) -> None:
 
 def _build_sketchpad_toolbar(sess) -> None:
     """The sketchpad's tools, shown while it's on: the Shape tool (a button
-    showing the shape it draws -- Spline, Rectangle or Circle -- which opens a
+    showing the shape it draws -- Spline, Polyline, Rectangle or Circle -- which opens a
     chooser for it) and the Select tool; the colour and the brush size, each
     a button showing it which opens a chooser, both setting the pen and
     restyling the selected shape; Delete (the selected shape), Undo and
@@ -3775,7 +3780,7 @@ def _build_sketchpad_toolbar(sess) -> None:
                 picker.on('before-show', lambda: chooser_opened('color'))
                 picker.q_color.props(f'default-view=palette no-header format-model=hex '
                                      f':palette="{json.dumps(SKETCHPAD_PALETTE).replace(chr(34), chr(39))}"')
-                picker.q_color.style('width: 264px')  # room for the palette's 24 colours, in three rows
+                picker.q_color.classes('mlw-palette-8').style('width: 264px')  # the palette: 8 x 8
                 picker.set_color(SKETCHPAD_COLOR)
                 with picker, ui.row().classes('w-full justify-end gap-2 p-1'):  # picking leaves it open
                     ui.button('Cancel', on_click=lambda: chooser_cancel(picker, 'color')).props('dense flat size=sm')
@@ -5097,11 +5102,12 @@ def index():
     #   line happens to occupy that DOM position, not the requested document
     #   line. Falls back to a real <textarea> when CodeMirror isn't present.
     # XSheet > Sketchpad: a transparent SVG drawing over the XSheet tab to sketch
-    # on, in three shapes. A Spline stroke is thinned to a few anchors
+    # on, in four shapes. A Spline stroke is thinned to a few anchors
     # (Ramer-Douglas-Peucker) and drawn as a smooth cubic Bezier <path> through
-    # them (Catmull-Rom); a Rectangle is dragged corner to corner, and a Circle
+    # them (Catmull-Rom); a Polyline is clicked point by point (a double-click
+    # or Enter ends it); a Rectangle is dragged corner to corner, and a Circle
     # from its centre out. The Select tool picks a shape: drag its handles to
-    # reshape it (a spline's anchors, a rectangle's corners, a circle's edge),
+    # reshape it (a spline's anchors, a polyline's points, a rectangle's corners, a circle's edge),
     # drag the shape to move it, and Delete removes it; the colour and brush
     # apply to the selected one. Click one of a selected spline's anchors to
     # show its direction handles (tangents): drag one to set the curve's slope there
@@ -5153,6 +5159,14 @@ def index():
 .mlw-sketchpad-toolbar .mlw-tool-on {
     box-shadow: 0 0 0 2px #2b5d8a;
 }
+/* the sketchpad's colour chooser: its 64 colours in eight rows of eight (in
+   the overrides layer: Quasar's width is !important, in a later layer) */
+@layer overrides {
+    .q-color-picker.mlw-palette-8 .q-color-picker__cube {
+        width: 12.5% !important;
+        padding-bottom: 12.5% !important;
+    }
+}
 /* the colour chooser's swatches: a faint edge, so white shows too */
 .q-color-picker__cube {
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
@@ -5166,7 +5180,8 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // relative to it (their direction sets the curve's slope there, their length -- the magnitude --
     // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
     const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4,  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
-                selected: -1, node: null, history: [], label: null};  // node: [shape, anchor] whose arms show
+                selected: -1, node: null, history: [], label: null,  // node: [shape, anchor] whose arms show
+                poly: null};  // the polyline being drawn: its last point follows the pointer
     const hosts = new Set();
     const round = (v) => Math.round(v * 10) / 10;
     const copy = (shapes) => shapes.map(s => ({...s, points: s.points.map(p => [...p]),
@@ -5221,6 +5236,8 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // the shape's SVG element, with the given presentation attributes
     function shapeEl(s, attrs) {
         const [[x1, y1], [x2, y2] = [x1, y1]] = s.points;
+        if (s.type === 'polyline')
+            return el('polyline', {points: s.points.map(([x, y]) => `${round(x)},${round(y)}`).join(' '), ...attrs});
         if (s.type === 'rect')
             return el('rect', {x: round(Math.min(x1, x2)), y: round(Math.min(y1, y2)), width: round(Math.abs(x2 - x1)),
                                height: round(Math.abs(y2 - y1)), ...attrs});
@@ -5230,8 +5247,8 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     function strokeAttrs(s) {
         return {fill: 'none', stroke: s.color, 'stroke-width': s.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
     }
-    // where a selected shape's handles go: a spline's anchors, a rectangle's
-    // corners, and four points round a circle's edge
+    // where a selected shape's handles go: a spline's anchors, a polyline's
+    // points, a rectangle's corners, and four points round a circle's edge
     function handlesOf(s) {
         const [[x1, y1], [x2, y2]] = s.points.length > 1 ? s.points : [s.points[0], s.points[0]];
         if (s.type === 'rect') return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
@@ -5318,6 +5335,22 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         const [sx, sy] = scrollOf(host);
         if (g) g.setAttribute('transform', `translate(${-sx} ${-sy})`);
     }
+    // The polyline being drawn is done (a double-click, Enter, or anything
+    // else -- another tool, shape or document): its last point, the one
+    // following the pointer, goes. One point or none isn't a line: it's dropped.
+    function finishPoly(keep = true) {
+        const s = st.poly;
+        if (!s) return;
+        st.poly = null;
+        s.points.pop();
+        const same = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1;
+        s.points = s.points.filter((pt, i) => i === 0 || !same(pt, s.points[i - 1]));  // a double-click's extra point
+        if (!keep || s.points.length < 2) {
+            st.shapes.splice(st.shapes.indexOf(s), 1);
+            st.history.pop();
+        }
+        rebuildAll();
+    }
     function rebuildAll() {
         for (const h of [...hosts]) {
             if (!h.isConnected) { hosts.delete(h); continue; }
@@ -5331,6 +5364,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         host._mlwSketchpad = true;
         hosts.add(host);
         let drag = null;  // {kind: 'draw' | 'point' | 'move', ...}
+        let lastClick = {time: 0, at: [0, 0]};  // drawing a polyline: to tell a double-click
         // where the pointer is on the sheet (see scrollOf())
         const at = (e) => {
             const r = host.getBoundingClientRect(), [sx, sy] = scrollOf(host);
@@ -5353,6 +5387,27 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             e.preventDefault();
             host.setPointerCapture(e.pointerId);
             const [x, y] = at(e);
+            if (st.tool === 'draw' && st.shape === 'polyline') {
+                // Polyline: each click adds a point, a double-click (or Enter) ends it. (A
+                // double-click is told here, from the time and distance since the last click:
+                // redrawing replaces what was clicked on, so no 'dblclick' event comes.)
+                const now = e.timeStamp, last = lastClick;
+                lastClick = {time: now, at: [x, y]};
+                if (st.poly && now - last.time < 400 && Math.hypot(x - last.at[0], y - last.at[1]) < 6) {
+                    finishPoly();  // its extra points go
+                    lastClick = {time: 0, at: [0, 0]};
+                } else if (!st.poly) {
+                    remember();
+                    st.poly = {type: 'polyline', color: st.color, width: st.width, points: [[x, y], [x, y]]};
+                    st.shapes.push(st.poly);
+                    rebuildAll();
+                } else {
+                    st.poly.points[st.poly.points.length - 1] = [x, y];
+                    st.poly.points.push([x, y]);
+                    rebuildAll();
+                }
+                return;
+            }
             if (st.tool === 'draw') {
                 remember();
                 const s = {type: st.shape, color: st.color, width: st.width, points: st.shape === 'spline' ? [[x, y]] : [[x, y], [x, y]]};
@@ -5382,6 +5437,11 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             }
         });
         host.addEventListener('pointermove', (e) => {
+            if (st.poly && !drag) {  // the polyline's next segment follows the pointer
+                st.poly.points[st.poly.points.length - 1] = at(e);
+                rebuildAll();
+                return;
+            }
             if (!drag) return;
             const [x, y] = at(e);
             if (drag.kind === 'draw') {
@@ -5444,9 +5504,21 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         host.addEventListener('pointercancel', end);
         rebuildAll();
     }
+    // Drawing a polyline: Enter ends it, Escape drops it, Backspace takes back
+    // its last point -- caught on the way down, before a focused toolbar
+    // button (the Shape button, say) could take Enter as a click.
+    window.addEventListener('keydown', (e) => {
+        if (!st.active || !st.poly || !['Enter', 'Escape', 'Backspace'].includes(e.key)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Backspace' && st.poly.points.length > 2) {
+            st.poly.points.splice(st.poly.points.length - 2, 1);
+            rebuildAll();
+        } else finishPoly(e.key === 'Enter');
+    }, true);
     document.addEventListener('keydown', (e) => {
-        if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
         if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
+        if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
         e.preventDefault();
         api.deleteSelected();
     });
@@ -5454,10 +5526,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         .observe(document.body, {childList: true, subtree: true});
     document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
-        setActive(on) { st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setActive(on) { finishPoly(); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
         // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
-        setTool(tool) { st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
-        setShape(shape) { st.shape = ['rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
+        setTool(tool) { finishPoly(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setShape(shape) { st.shape = ['polyline', 'rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
         // the pen's colour / width, and the selected shape's
         setColor(color) {
             st.color = color;
@@ -5479,6 +5551,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return true;
         },
         undo() {
+            if (st.poly) { finishPoly(false); return true; }  // drawing a polyline: Undo drops it
             if (!st.history.length) return false;
             st.shapes = st.history.pop();
             if (!st.shapes[st.selected]) st.selected = -1;
@@ -5486,8 +5559,8 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return true;
         },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
-        clear() { if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        reset() { st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
+        clear() { finishPoly(); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
         setPenColor(color) { st.color = color; },
         setPenWidth(width) { st.width = width; },
