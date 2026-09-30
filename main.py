@@ -111,6 +111,10 @@ class Session:
         self.xml_tree = None
         self.xml_menu_button = None
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
+        self.overlay_active = False  # XSheet > Overlay: drawing on the overlay canvas (see toggle_overlay())
+        self.overlay_menu_icon = None
+        self.overlay_toolbar = None
+        self.overlay_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
         self.validation_status_label = None
         self.schema_label = None
@@ -3568,6 +3572,86 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
     return {(r['_range_start'], r['_range_end']) for r in display if r.get('_range_start') is not None}
 
 
+OVERLAY_COLORS = {'Red': '#e11d48', 'Blue': '#2563eb', 'Green': '#16a34a', 'Black': '#111827'}
+OVERLAY_WIDTHS = {'Thin': 2, 'Medium': 4, 'Thick': 8}
+
+
+def toggle_overlay(active: bool | None = None) -> None:
+    """XSheet > Overlay: turn sketching on the overlay canvas on or off. On,
+    the canvas over the XSheet tab takes the pointer (so the grid under it
+    can't be clicked) and its toolbar shows; off, the canvas ignores the
+    pointer entirely, so nothing can be drawn and the grid works as usual.
+    The sketch stays visible either way."""
+    sess = session()
+    sess.overlay_active = (not sess.overlay_active) if active is None else bool(active)
+    if sess.overlay_menu_icon is not None:
+        sess.overlay_menu_icon.name = 'check_box' if sess.overlay_active else 'check_box_outline_blank'
+    if sess.overlay_toolbar is not None:
+        sess.overlay_toolbar.set_visibility(sess.overlay_active)
+    ui.run_javascript(f'window.mlwOverlay && window.mlwOverlay.setActive({json.dumps(sess.overlay_active)})')
+    if sess.overlay_active:
+        ui.notify('Overlay on: draw on the XSheet. Done (or XSheet > Overlay) turns it off.', color='info')
+
+
+def _build_overlay_toolbar(sess) -> None:
+    """The overlay's tools, shown while it's on: pen colours, pen sizes, the
+    eraser, Undo stroke, Clear and Done."""
+    buttons = sess.overlay_tool_buttons
+
+    def pick(group: str, key: str, js: str):
+        for name, button in buttons.items():
+            if name.startswith(group + ':') or (group == 'color' and name == 'tool:eraser'):
+                button.classes(remove='mlw-tool-on')
+        buttons[f'{group}:{key}'].classes(add='mlw-tool-on')
+        ui.run_javascript(js)
+
+    def eraser():
+        for name, button in buttons.items():
+            if name.startswith('color:'):
+                button.classes(remove='mlw-tool-on')
+        buttons['tool:eraser'].classes(add='mlw-tool-on')
+        ui.run_javascript('mlwOverlay.setErase(true)')
+
+    def confirm_clear():
+        with ui.dialog() as dlg, titled_card('Clear Overlay'):
+            ui.label('Erase everything drawn on the overlay?')
+            with ui.row().classes('mt-4 justify-end gap-2'):
+                ui.button('No', on_click=dlg.close).props('outline size=sm')
+
+                def do_clear():
+                    dlg.close()
+                    ui.run_javascript('mlwOverlay.clear()')
+                ui.button('Yes', on_click=do_clear).props('size=sm')
+        dlg.open()
+
+    with ui.card().classes('mlw-overlay-toolbar p-1 gap-1').props('flat bordered') as toolbar:
+        with ui.row().classes('items-center gap-1 no-wrap'):
+            ui.label('Overlay').classes('text-xs text-gray-600 px-1')
+            for name, color in OVERLAY_COLORS.items():
+                buttons[f'color:{name}'] = ui.button(
+                    on_click=lambda _, n=name, c=color: pick('color', n, f'mlwOverlay.setColor({json.dumps(c)})')) \
+                    .props('round dense size=xs unelevated').style(f'background: {color} !important') \
+                    .tooltip(f'{name} pen')
+            ui.separator().props('vertical')
+            for name, width in OVERLAY_WIDTHS.items():
+                buttons[f'width:{name}'] = ui.button(
+                    icon='circle', on_click=lambda _, n=name, w=width: pick('width', n, f'mlwOverlay.setWidth({w})')) \
+                    .props(f'flat dense size={ {"Thin": "6px", "Medium": "9px", "Thick": "13px"}[name] }') \
+                    .classes('px-1').tooltip(f'{name} pen')
+            ui.separator().props('vertical')
+            buttons['tool:eraser'] = ui.button(icon='auto_fix_normal', on_click=eraser).props('flat dense size=sm') \
+                .tooltip('Eraser')
+            ui.button(icon='undo', on_click=lambda: ui.run_javascript('mlwOverlay.undo()')).props('flat dense size=sm') \
+                .tooltip('Undo the last stroke')
+            ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the overlay')
+            ui.button('Done', on_click=lambda: toggle_overlay(False)).props('dense size=sm unelevated')
+    buttons['color:Red'].classes(add='mlw-tool-on')
+    buttons['width:Medium'].classes(add='mlw-tool-on')
+    ui.run_javascript('window.mlwOverlay && (mlwOverlay.setColor("#e11d48"), mlwOverlay.setWidth(4))')
+    toolbar.set_visibility(sess.overlay_active)
+    sess.overlay_toolbar = toolbar
+
+
 def collapse_frames() -> None:
     """XSheet > Collapse Frames: collapse every run of identical rows in the
     view. Updates the grid in place, without scrolling."""
@@ -4837,6 +4921,129 @@ def index():
     #   "querySelectorAll('.cm-line')[lineNumber]" silently picks whichever
     #   line happens to occupy that DOM position, not the requested document
     #   line. Falls back to a real <textarea> when CodeMirror isn't present.
+    # XSheet > Overlay: a transparent canvas over the XSheet tab to sketch on.
+    # The sketch is kept here, per browser tab, as strokes (not pixels), so it
+    # can be redrawn whenever the canvas is re-created -- Quasar removes the
+    # XSheet tab's panel while another tab is showing -- or resized. It is not
+    # saved with the document (yet). Off, the canvas ignores the pointer
+    # entirely, so the grid under it works as usual and nothing can be drawn.
+    ui.add_body_html('''
+<style>
+.mlw-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 5;
+    pointer-events: none;   /* off: the XSheet under it gets every click */
+}
+.mlw-overlay.mlw-overlay-active {
+    pointer-events: auto;
+    cursor: crosshair;
+    touch-action: none;
+    outline: 2px dashed rgba(88, 152, 212, 0.7);
+    outline-offset: -2px;
+}
+.mlw-overlay-toolbar {
+    position: absolute;
+    top: 4px;
+    right: 12px;
+    z-index: 6;
+}
+.mlw-overlay-toolbar .mlw-tool-on {
+    box-shadow: 0 0 0 2px #2b5d8a;
+}
+</style>
+<script>
+window.mlwOverlay = window.mlwOverlay || (() => {
+    const st = {strokes: [], active: false, color: '#e11d48', width: 3, erase: false};
+    const canvases = new Set();
+
+    function paint(ctx, s, from) {
+        const pts = s.points;
+        ctx.save();
+        ctx.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over';
+        ctx.strokeStyle = s.color;
+        ctx.fillStyle = s.color;
+        ctx.lineWidth = s.width;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        if (pts.length === 1) {  // a dot
+            ctx.beginPath();
+            ctx.arc(pts[0][0], pts[0][1], s.width / 2, 0, 2 * Math.PI);
+            ctx.fill();
+        } else {
+            ctx.beginPath();
+            const start = Math.max(0, from - 1);
+            ctx.moveTo(pts[start][0], pts[start][1]);
+            for (let i = start + 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+    function context(canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+            canvas.width = Math.round(w * dpr);
+            canvas.height = Math.round(h * dpr);
+        }
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return ctx;
+    }
+    function redraw(canvas) {
+        const ctx = context(canvas);
+        ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+        for (const s of st.strokes) paint(ctx, s, 0);
+    }
+    function redrawAll() {
+        for (const c of [...canvases]) { if (c.isConnected) redraw(c); else canvases.delete(c); }
+    }
+    function attach(canvas) {
+        if (canvas._mlwOverlay) return;
+        canvas._mlwOverlay = true;
+        canvases.add(canvas);
+        new ResizeObserver(() => redraw(canvas)).observe(canvas);
+        let current = null;
+        const at = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+        canvas.addEventListener('pointerdown', (e) => {
+            if (!st.active || e.button > 0) return;
+            e.preventDefault();
+            canvas.setPointerCapture(e.pointerId);
+            current = {color: st.color, width: st.erase ? st.width * 4 : st.width, erase: st.erase, points: [at(e)]};
+            st.strokes.push(current);
+            paint(context(canvas), current, 0);
+        });
+        canvas.addEventListener('pointermove', (e) => {
+            if (!current) return;
+            current.points.push(at(e));
+            paint(context(canvas), current, current.points.length - 1);
+        });
+        const end = () => { if (current) { current = null; redrawAll(); } };
+        canvas.addEventListener('pointerup', end);
+        canvas.addEventListener('pointercancel', end);
+        canvas.classList.toggle('mlw-overlay-active', st.active);
+        redraw(canvas);
+    }
+    new MutationObserver(() => document.querySelectorAll('canvas.mlw-overlay').forEach(attach))
+        .observe(document.body, {childList: true, subtree: true});
+    document.querySelectorAll('canvas.mlw-overlay').forEach(attach);
+    return {
+        setActive(on) {
+            st.active = !!on;
+            document.querySelectorAll('canvas.mlw-overlay').forEach(c => c.classList.toggle('mlw-overlay-active', st.active));
+        },
+        setColor(color) { st.color = color; st.erase = false; },
+        setWidth(width) { st.width = width; },
+        setErase(on) { st.erase = !!on; },
+        undo() { st.strokes.pop(); redrawAll(); },
+        clear() { st.strokes = []; redrawAll(); },
+        strokeCount() { return st.strokes.length; },
+    };
+})();
+</script>
+''')
     ui.add_body_html('''
 <style>
 /* Dark, high-contrast paint for the current Find/Replace match, independent
@@ -5221,6 +5428,14 @@ window.mlwSelectRange = function(elementId, from, to) {
                     ui.menu_item('Expand Frames', on_click=lambda _: expand_frames()),
                 ]
                 ui.separator()
+                # a check box shows whether the overlay is on (see toggle_overlay())
+                with ui.menu_item(on_click=lambda _: toggle_overlay()) as overlay_item:
+                    with ui.item_section().props('avatar').classes('min-w-0 pr-2'):
+                        sess.overlay_menu_icon = ui.icon('check_box_outline_blank', size='xs')
+                    with ui.item_section():
+                        ui.label('Overlay')
+                sess.xsheet_view_items.append(overlay_item)
+                ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
                 ui.menu_item('Generate Report', on_click=lambda _: export_to_pdf())
             # XML menu with Format and Validation -- only meaningful while the XML tab
@@ -5404,7 +5619,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full').props('dense') \
                     as sess.validation_panel:
                 sess.validation_results_container = ui.column().classes('w-full gap-1')
-        with ui.tab_panel(xsheet_tab).classes('gap-2'):
+        with ui.tab_panel(xsheet_tab).classes('gap-2 relative'):  # relative: the overlay covers this panel
             # "Exposure Sheet" with the frame/layer count beside it, then the
             # document's Production info on the line below.
             with ui.row().classes('items-baseline gap-3'):
@@ -5452,6 +5667,10 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
+            # XSheet > Overlay: the sketching canvas over everything above, and
+            # its tools while it's on (see toggle_overlay() and mlwOverlay)
+            ui.element('canvas').classes('mlw-overlay')
+            _build_overlay_toolbar(sess)
 
     # build initial tree from current editor value
     try:
