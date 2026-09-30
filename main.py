@@ -3670,18 +3670,47 @@ def handle_sketch_changed(e) -> None:
     session().sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
 
 
+def _sketch_comments(document: Path) -> str:
+    """The comments at the top of a saved sketch: the XSheet document it
+    belongs to (its path in the data folder), and that document's
+    <Production> info, as its elements."""
+    from xml.sax.saxutils import escape
+
+    def safe(text: str) -> str:  # '--' can't be in a comment
+        text = escape(text)
+        while '--' in text:
+            text = text.replace('--', '- -')
+        return text
+    try:
+        where = Path(document).resolve().relative_to(Path(BASE_DIR).resolve())
+    except ValueError:
+        where = Path(document).name
+    lines = [f'<!-- Sketchpad sketch for the XSheet document {safe(str(where))}',
+             f'     (saved beside it by the Magic Lantern XSheet Viewer; opening {safe(Path(document).name)} loads it) -->']
+    info = read_production_info(_editor_text())
+    if info:
+        lines.append('<!--')
+        lines.append('  <Production>')
+        lines += [f'    <{name}>{safe(value)}</{name}>' for name, value in info.items()]
+        lines.append('  </Production>')
+        lines.append('-->')
+    return '\n'.join(lines) + '\n'
+
+
 def save_sketch_beside(document: Path) -> Path | None:
     """File > Save / Save As: write the sketch beside `document` (see
-    sketch_path_for()). With no sketch, nothing is written -- unless a
-    sketch was saved there before, which is then emptied, so opening the
-    document doesn't bring back what was cleared. Returns the file written."""
+    sketch_path_for()), after comments naming the document and giving its
+    <Production> info (see _sketch_comments()). With no sketch, nothing is
+    written -- unless a sketch was saved there before, which is then
+    emptied, so opening the document doesn't bring back what was cleared.
+    Returns the file written."""
     sess = session()
     dest = sketch_path_for(document)
     if not sess.sketch['count'] and not dest.exists():
         return None
     svg = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
     try:
-        dest.write_text(svg, encoding='utf-8')
+        dest.write_text(_sketch_comments(document) + svg + '\n', encoding='utf-8')
     except Exception as exc:
         ui.notify(f'Failed to save the sketch to {dest}: {exc}', color='negative')
         return None
