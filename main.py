@@ -4631,6 +4631,23 @@ def _then_with_check(then, question: str):
     confirm_dialog.open()
 
 
+def log_out_with_check():
+    """The user menu's Logout: if the document has unsaved changes (its
+    text or its sketch), ask whether to save them first. Yes saves them
+    (the sketch too) and logs out; No logs out without them -- they're lost,
+    as closing the document would lose them, so the next login reopens the
+    document as it was last saved; Cancel stays logged in."""
+    sess = session()
+
+    def log_out():
+        if document_modified():  # No: the unsaved changes go (see forget_draft())
+            key = sess.current_file['path'] or ''
+            forget_draft(key)
+            user_storage()['last_document'] = key or None
+        auth.log_out(sess.user_storage)
+    _then_with_check(log_out, 'Save changes before logging out?')
+
+
 UNTITLED_NAME = 'untitled.xml'  # a new document's name until it's saved (Save As suggests it)
 
 
@@ -6484,7 +6501,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             ui.tooltip(f'Logged in as {auth.current_username()}') \
                 .props('anchor="center left" self="center right" :offset="[8, 0]"')
             with ui.menu().props('anchor="bottom right" self="top right"'):
-                ui.menu_item('Logout', on_click=lambda _: auth.log_out(sess.user_storage))
+                ui.menu_item('Logout', on_click=lambda _: log_out_with_check())
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):

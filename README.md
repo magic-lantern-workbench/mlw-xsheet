@@ -138,10 +138,16 @@ Change it before exposing the server to anyone else. The password is stored only
 hash, in `NICEGUI_STORAGE_PATH`.
 
 - Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
-  opens a menu with **Logout**, which logs them all out and returns to the login page.
+  opens a menu with **Logout**, which logs them all out and returns to the login page. If the
+  document has unsaved changes (to its text or its Sketchpad sketch), Logout first asks whether
+  to save them: **Yes** saves them (the sketch too) and logs out; **No** logs out without them —
+  they're lost, as closing the document would lose them, and the next login reopens the
+  document as it was last saved (a new, never-saved document isn't reopened); **Cancel** stays
+  logged in.
 - After 30 minutes without keyboard, mouse or touch activity in any of the browser's tabs,
-  you're logged out and the login page says why. The time-out is also set in Preferences. Your
-  unsaved changes are kept as a draft and come back when you log in again.
+  you're logged out and the login page says why. The time-out is also set in Preferences. As
+  there's no one to ask then, your unsaved changes are kept as a draft and come back when you log
+  in again.
 - A wrong password is rejected after a short delay, to slow down guessing.
 
 ### File access
