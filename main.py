@@ -110,7 +110,23 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
-        self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: only enabled on the XSheet tab
+        self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: enabled on the XSheet tab, with the sketchpad off
+        self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
+        self.sketchpad_menu_icon = None
+        self.sketchpad_item = None  # its menu item: enabled on the XSheet tab, with a document open
+        self.document_open = False  # a document is in the editor: opened, new, or a restored draft
+        # the Sketchpad's sketch as the browser last sent it (see handle_sketch_changed()), for
+        # Save and Save As to write beside the document (see save_sketch_beside())
+        self.sketch = {'count': 0, 'svg': ''}
+        self.sketch_modified = False  # changed since loaded or saved (see document_modified())
+        self.svg_editor = None        # the SVG tab's editor: the sketch's .svg (see refresh_svg_editor())
+        self.svg_status = None
+        self.suppress_svg_editor_change = False
+        self.svg_editor_invalid = False  # its text isn't well-formed SVG (yet): kept as typed
+        self.svg_editor_stale = False    # the sketch changed while another tab was showing
+        self.main_tab = 'XSheet'      # the XSheet / XML / SVG tab showing (see on_main_tab_change())
+        self.sketchpad_toolbar = None
+        self.sketchpad_tool_buttons: dict[str, ui.button] = {}
         self.filename_label = None
         self.validation_status_label = None
         self.schema_label = None
@@ -131,7 +147,7 @@ class Session:
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
         self.xsheet_refresh_in_place = False  # the next grid rebuild just replaces the rows (see edit_xsheet_notes())
-        self.main_tabs = None  # the XSheet / XML tabs (see xml_tab_active())
+        self.main_tabs = None  # the XSheet / XML / SVG tabs (see xml_tab_active())
 
         # This user's app.storage.user, captured while index() still has the
         # page request (event handlers and timers don't always carry one).
@@ -174,6 +190,9 @@ def session() -> Session:
 #                     are always included); set in File > Preferences > Report.
 #   'report_include_raw': whether Generate Report adds the whole document's
 #                     raw XML as an appendix (default: yes).
+#   'export_sketch':  whether XSheet > Export XSheet draws the Sketchpad's
+#                     sketch over the grid (default: yes); set in File >
+#                     Preferences > Report.
 #   'popup_log':      whether this user's status pop-ups (ui.notify) are
 #                     recorded in their log file (default: yes); set in File >
 #                     Preferences > Logs. See the "Pop-up log" section below.
@@ -304,8 +323,14 @@ def popup_log_path() -> Path:
 
 def log_popup(message, level: str) -> None:
     """Append one pop-up to the user's log: date and time (with the UTC
-    offset), level, the open document and the message, on one line."""
+    offset), level, the logged-in user's name ('-' when no one is, as on the
+    login page), the open document and the message, on one line."""
     path = popup_log_path()
+    try:
+        user = auth.current_username() if app.storage.user.get('authenticated') else '-'
+    except Exception:
+        user = '-'
+    user = '_'.join(user.split()) or '-'  # one word, so the columns stay apart
     try:
         document = Path(session().current_file.get('path') or '').name or '(no file)'
     except Exception:
@@ -317,7 +342,7 @@ def log_popup(message, level: str) -> None:
     if rotated:
         path.replace(path.with_name(path.name + '.1'))
     with path.open('a', encoding='utf-8') as f:
-        f.write(f'{stamp}  {level:<7}  {document}  {text}\n')
+        f.write(f'{stamp}  {level:<7}  {user}  {document}  {text}\n')
     if rotated or path not in _logs_given_away:
         # the logs folder and its files: the data folder's owner, not root (see dialog_ui.py) --
         # once per file per run, which also fixes logs written as root before
@@ -342,6 +367,19 @@ def notify(message, *args, **kwargs):
 
 
 ui.notify = notify  # one place for every pop-up in the app, including auth.py and the dialogs
+
+
+def record_log_event(text: str) -> None:
+    """An entry in the user's pop-up log that isn't a pop-up: logging in and
+    out (see auth.record_event) -- when the log is on."""
+    try:
+        if popup_log_enabled():
+            log_popup(text, 'INFO')
+    except Exception:
+        pass
+
+
+auth.record_event = record_log_event
 
 
 def read_popup_log(max_lines: int = 1000) -> list[str]:
@@ -416,6 +454,14 @@ def report_sections() -> list[str]:
 
 def report_include_raw() -> bool:
     return bool(user_storage().get('report_include_raw', True))
+
+
+def export_sketch_pref() -> bool:
+    return bool(user_storage().get('export_sketch', True))
+
+
+def set_export_sketch_pref(include: bool) -> None:
+    user_storage()['export_sketch'] = bool(include)
 
 
 def oca_export_options() -> dict:
@@ -513,6 +559,13 @@ def forget_draft(key: str) -> None:
         user_storage()['drafts'] = drafts
 
 
+def document_modified() -> bool:
+    """Whether the document has unsaved changes: to its text, or to its
+    Sketchpad sketch (saved beside it -- see save_sketch_beside())."""
+    sess = session()
+    return bool(sess.current_file.get('modified') or sess.sketch_modified)
+
+
 def remember_document() -> None:
     """Record this session's document in the user's storage: its unsaved
     text as a draft (or no draft, once it matches what's on disk again), and
@@ -521,13 +574,15 @@ def remember_document() -> None:
     sess = session()
     key = sess.current_file['path'] or ''
     drafts = _drafts()
-    if sess.current_file['modified']:
+    if document_modified():
         drafts[key] = {'text': _editor_text(), 'saved_content': sess.current_file['saved_content']}
+        if sess.sketch_modified:  # an unsaved sketch, too (see restore_sketch_draft())
+            drafts[key]['sketch'] = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
     else:
         drafts.pop(key, None)
     store = user_storage()
     store['drafts'] = drafts
-    store['last_document'] = key if (key or sess.current_file['modified']) else None
+    store['last_document'] = key if (key or document_modified()) else None
 
 
 def set_filename_label(name: str | None = None):
@@ -538,7 +593,7 @@ def set_filename_label(name: str | None = None):
             name = Path(sess.current_file['path']).name
         else:  # a new, never-saved document (File > New), or nothing open
             name = UNTITLED_NAME if _editor_text().strip() else 'No file'
-    label_text = name + (' *' if sess.current_file.get('modified') else '')
+    label_text = name + (' *' if document_modified() else '')
     if sess.filename_label is not None:
         sess.filename_label.set_text(label_text)
 
@@ -831,6 +886,10 @@ def show_preferences_dialog():
                     ui.button('Clear all', on_click=lambda: set_all_sections(False)).props('flat dense size=sm no-caps')
                 raw_box = ui.checkbox('Add the raw XML of the whole document as an appendix', value=report_include_raw()) \
                     .props('dense').classes('mt-1')
+                ui.separator().classes('my-2')
+                ui.label('XSheet > Export XSheet').classes('text-sm text-gray-500')
+                sketch_box = ui.checkbox('Include the Sketchpad sketch, drawn over the exposure sheet',
+                                         value=export_sketch_pref()).props('dense')
             with ui.tab_panel(logs_tab).classes('px-0 gap-2'):
                 ui.label('Status pop-ups are always shown; this also keeps a record of them, each with its '
                          'date and time.').classes('text-sm text-gray-500')
@@ -931,6 +990,7 @@ def show_preferences_dialog():
             set_format_prefs(prefs)
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
+            set_export_sketch_pref(sketch_box.value)
             set_popup_log_enabled(log_box.value)
             set_popup_log_time(time_radio.value, zone_select.value if time_radio.value == 'custom' else None)
             try:
@@ -3568,6 +3628,474 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
     return {(r['_range_start'], r['_range_end']) for r in display if r.get('_range_start') is not None}
 
 
+# The sketchpad's shapes, as the Shape chooser lists them: key -> (name, icon).
+SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'polyline': ('Polyline', 'polyline'),
+                    'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked')}
+SKETCHPAD_COLOR = '#e11d48'  # the pen's colour to start with
+
+
+# The colour chooser's palette: 256 colours in 16 rows of 16 -- a row of
+# greys from white to black, then 15 hues round the colour wheel (every
+# 24 degrees, from red), each in 16 shades from light to dark. (Its Spectrum
+# and Tune views offer any other colour.)
+def _sketchpad_palette() -> list[str]:
+    import colorsys
+
+    def hexed(r, g, b):
+        return '#%02x%02x%02x' % tuple(round(v * 255) for v in (r, g, b))
+    greys = [hexed(v, v, v) for v in (1 - i / 15 for i in range(16))]
+    shades = [hexed(*colorsys.hls_to_rgb(hue / 360, 0.92 - 0.8 * i / 15, 0.85))
+              for hue in range(0, 360, 24) for i in range(16)]
+    return greys + shades
+
+
+SKETCHPAD_PALETTE = _sketchpad_palette()
+SKETCHPAD_WIDTH = 4  # the pen's width to start with, in pixels
+SKETCHPAD_WIDTHS = [1, 2, 3, 4, 6, 8, 12, 16]  # the brush chooser's quick sizes (its slider: 1-24)
+SKETCHPAD_MAX_WIDTH = 24
+
+
+def update_xsheet_view_items(on_xsheet_tab: bool | None = None) -> None:
+    """XSheet > Collapse Frames and Expand Frames act on the grid: they can
+    be chosen only on the XSheet tab, and not while the sketchpad is on --
+    the sketch is pinned to the sheet's rows, which they would move."""
+    sess = session()
+    if on_xsheet_tab is None:
+        on_xsheet_tab = sess.main_tab == 'XSheet'
+    for item in sess.xsheet_view_items:
+        item.set_enabled(on_xsheet_tab and not sess.sketchpad_active)
+
+
+def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
+    """XSheet > Sketchpad can be chosen only on the XSheet tab, and only
+    once a document is open (opened, new, or a restored draft)."""
+    sess = session()
+    if on_xsheet_tab is None:
+        on_xsheet_tab = sess.main_tab == 'XSheet'
+    if sess.sketchpad_item is not None:
+        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open)
+
+
+def reset_sketchpad() -> None:
+    """A document was opened or closed: turn the sketchpad off, and start
+    the next sketch afresh (a sketch belongs to the document it was drawn
+    on; opening one saved beside a document loads it -- see
+    load_sketch_beside())."""
+    sess = session()
+    if sess.sketchpad_active:
+        toggle_sketchpad(False)
+    sess.sketch = {'count': 0, 'svg': ''}
+    sess.sketch_modified = False
+    ui.run_javascript('window.mlwSketchpad && mlwSketchpad.reset()')
+    update_sketchpad_item()
+    refresh_svg_editor()
+
+
+# A document's sketch is saved beside it, as SVG: the same name, with .svg
+# in place of its extension (scene.xml -> scene.svg).
+EMPTY_SKETCH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" viewBox="0 0 0 0"/>'
+
+
+def sketch_path_for(document: Path | str) -> Path:
+    return Path(document).with_suffix('.svg')
+
+
+def handle_sketch_changed(e) -> None:
+    """The browser's sketch changed (see mlwSketchpad's changed()): keep
+    its SVG, for the next Save or Save As, and whether it's unsaved -- which
+    marks the document as changed (see document_modified()), and keeps the
+    sketch in its draft."""
+    sess = session()
+    args = e.args if isinstance(e.args, dict) else {}
+    sess.sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
+    sess.sketch_modified = bool(args.get('dirty')) and sess.document_open
+    if args.get('source') != 'editor':  # (the editor's own change: left as it's being typed)
+        if sess.main_tab == 'SVG':
+            refresh_svg_editor()
+        else:  # not showing: brought up to date when its tab is shown (see on_main_tab_change())
+            sess.svg_editor_stale = True
+    set_filename_label()
+    remember_document()
+
+
+def mark_sketch_saved() -> None:
+    """Save / Save As wrote the sketch: it's no longer unsaved."""
+    session().sketch_modified = False
+    ui.run_javascript('window.mlwSketchpad && mlwSketchpad.markSaved()')
+
+
+def restore_sketch_draft(draft: dict | None) -> None:
+    """A draft with an unsaved sketch (see remember_document()): load it,
+    still unsaved, and keep it in the draft (which loading the document's
+    text rewrote without it)."""
+    svg = (draft or {}).get('sketch')
+    if not svg:
+        return
+    sess = session()
+    sess.sketch = {'count': len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg)), 'svg': svg}
+    sess.sketch_modified = True
+    set_filename_label()
+    remember_document()
+    ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)}, true)')
+    refresh_svg_editor()
+
+
+def _sketch_comments(document: Path | None) -> str:
+    """The comments at the top of a saved sketch: the XSheet document it
+    belongs to (its path in the data folder), and that document's
+    <Production> info, as its elements. (document None: a new document,
+    not saved yet.)"""
+    from xml.sax.saxutils import escape
+
+    def safe(text: str) -> str:  # '--' can't be in a comment
+        text = escape(text)
+        while '--' in text:
+            text = text.replace('--', '- -')
+        return text
+    if document is None:
+        lines = [f'<!-- Sketchpad sketch for the XSheet document {UNTITLED_NAME}',
+                 '     (not saved yet: Save As saves it beside the document, as <name>.svg) -->']
+    else:
+        try:
+            where = Path(document).resolve().relative_to(Path(BASE_DIR).resolve())
+        except ValueError:
+            where = Path(document).name
+        lines = [f'<!-- Sketchpad sketch for the XSheet document {safe(str(where))}',
+                 f'     (saved beside it by the Magic Lantern XSheet Viewer; opening {safe(Path(document).name)} loads it) -->']
+    info = read_production_info(_editor_text())
+    if info:
+        lines.append('<!--')
+        lines.append('  <Production>')
+        lines += [f'    <{name}>{safe(value)}</{name}>' for name, value in info.items()]
+        lines.append('  </Production>')
+        lines.append('-->')
+    return '\n'.join(lines) + '\n'
+
+
+def _pretty_svg(svg: str) -> str:
+    """A sketch's SVG (as mlwSketchpad.toSVG() gives it, on one line) an
+    element to a line, indented by depth -- for the SVG tab's editor, and
+    the file (see sketch_file_text())."""
+    lines, depth = [], 0
+    for tag in re.findall(r'<[^>]+>|[^<]+', svg.strip()):
+        if not tag.strip():
+            continue
+        if tag.startswith('</'):
+            depth = max(depth - 1, 0)
+        lines.append('  ' * depth + tag.strip())
+        if tag.startswith('<') and not tag.startswith(('</', '<?', '<!')) and not tag.endswith('/>'):
+            depth += 1
+    return '\n'.join(lines)
+
+
+def sketch_file_text(document: Path | None = None) -> str:
+    """The sketch as its .svg file has it: the comments naming its document
+    and giving its <Production> info (see _sketch_comments()), then the SVG,
+    an element to a line. Shown in the SVG tab's editor; written by Save."""
+    sess = session()
+    if document is None and sess.current_file.get('path'):
+        document = Path(sess.current_file['path'])
+    svg = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
+    body = re.sub(r'^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--.*?-->\s*)*', '', svg, flags=re.S)  # a loaded file's comments
+    return _sketch_comments(document) + _pretty_svg(body or EMPTY_SKETCH_SVG) + '\n'
+
+
+def refresh_svg_editor() -> None:
+    """Show the sketch in the SVG tab's editor (see sketch_file_text()) --
+    empty, and not editable, with no document open."""
+    sess = session()
+    if sess.svg_editor is None:
+        return
+    text = sketch_file_text() if sess.document_open else ''
+    sess.svg_editor_invalid = sess.svg_editor_stale = False
+    if sess.svg_editor.value != text:
+        sess.suppress_svg_editor_change = True
+        sess.svg_editor.value = text
+        sess.suppress_svg_editor_change = False
+    sess.svg_editor.set_enabled(sess.document_open)
+    if sess.svg_status is not None:
+        sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.'
+                                 if sess.document_open else 'Open a document to see its sketch here.')
+        sess.svg_status.classes(remove='text-negative', add='text-gray-500')
+
+
+async def on_svg_editor_change(e) -> None:
+    """The SVG tab's editor changed: its text becomes the Sketchpad sketch
+    (see mlwSketchpad.applySVG()), unless it isn't well-formed yet -- then
+    the sketch stays as it was, and a note says why."""
+    sess = session()
+    if sess.suppress_svg_editor_change or not sess.document_open:
+        return
+    text = e.value if hasattr(e, 'value') else ''
+    try:
+        result = await ui.run_javascript(f'return window.mlwSketchpad ? mlwSketchpad.applySVG({json.dumps(text)}) : "invalid"')
+    except Exception:
+        return
+    if sess.svg_status is None:
+        return
+    sess.svg_editor_invalid = result == 'invalid'
+    if result == 'invalid':
+        sess.svg_status.set_text('Not well-formed SVG (yet): the sketch is unchanged until it is.')
+        sess.svg_status.classes(remove='text-gray-500', add='text-negative')
+    else:
+        sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.')
+        sess.svg_status.classes(remove='text-negative', add='text-gray-500')
+
+
+def save_sketch_beside(document: Path) -> Path | None:
+    """File > Save / Save As: write the sketch beside `document` (see
+    sketch_path_for()), after comments naming the document and giving its
+    <Production> info (see _sketch_comments()). With no sketch, nothing is
+    written -- unless a sketch was saved there before, which is then
+    emptied, so opening the document doesn't bring back what was cleared.
+    Returns the file written."""
+    sess = session()
+    dest = sketch_path_for(document)
+    if not sess.sketch['count'] and not dest.exists():
+        return None
+    try:
+        dest.write_text(sketch_file_text(document), encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to save the sketch to {dest}: {exc}', color='negative')
+        return None
+    give_to_owner_of(dest, BASE_DIR)
+    return dest
+
+
+def load_sketch_beside(document: Path) -> None:
+    """File > Open: if a sketch was saved beside `document` (see
+    sketch_path_for()), load it into the Sketchpad."""
+    source = sketch_path_for(document)
+    if not source.is_file():
+        return
+    try:
+        svg = source.read_text(encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to read the sketch {source}: {exc}', color='warning')
+        return
+    count = len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg))
+    session().sketch = {'count': count, 'svg': svg}
+    ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)})')
+    refresh_svg_editor()
+
+
+def toggle_sketchpad(active: bool | None = None) -> None:
+    """XSheet > Sketchpad: turn sketching on the SVG sketchpad on or off. On,
+    the sketchpad over the XSheet tab takes the pointer (so the grid under it
+    can't be clicked) and its toolbar shows (see _build_sketchpad_toolbar());
+    off, the sketchpad is hidden and
+    ignores the pointer, so nothing can be drawn and the grid works as
+    usual. The sketch is kept, and shows again when it's turned back on."""
+    sess = session()
+    sess.sketchpad_active = (not sess.sketchpad_active) if active is None else bool(active)
+    if sess.sketchpad_active and not sess.document_open:
+        sess.sketchpad_active = False
+        ui.notify('Open a document first to sketch on it', color='info')
+    if sess.sketchpad_menu_icon is not None:
+        sess.sketchpad_menu_icon.name = 'check_box' if sess.sketchpad_active else 'check_box_outline_blank'
+    update_xsheet_view_items()
+    if sess.sketchpad_toolbar is not None:
+        sess.sketchpad_toolbar.set_visibility(sess.sketchpad_active)
+    ui.run_javascript(f'window.mlwSketchpad && window.mlwSketchpad.setActive({json.dumps(sess.sketchpad_active)})')
+    if sess.sketchpad_active:
+        ui.notify('Sketchpad on: draw on the XSheet. XSheet > Sketchpad turns it off.', color='info')
+
+
+def _build_sketchpad_toolbar(sess) -> None:
+    """The sketchpad's tools, shown while it's on: the Shape tool (a button
+    showing the shape it draws -- Spline, Polyline, Rectangle or Circle -- which opens a
+    chooser for it) and the Select tool; the colour and the brush size, each
+    a button showing it which opens a chooser, both setting the pen and
+    restyling the selected shape; Delete (the selected shape), Undo and
+    Clear. XSheet > Sketchpad turns it off.
+
+    The colour and brush choosers apply a choice at once, so its effect
+    shows. Cancel puts back what was there when the chooser opened (the
+    pen's setting, and the selected shape); Done keeps it, as a single undo
+    step."""
+    buttons = sess.sketchpad_tool_buttons
+
+    def mark(group: str, key: str):
+        for name, button in buttons.items():
+            if name.startswith(group + ':'):
+                button.classes(remove='mlw-tool-on')
+        buttons[f'{group}:{key}'].classes(add='mlw-tool-on')
+
+    def tool(name: str):
+        """'draw' (the chosen shape) or 'select'."""
+        mark('tool', name)
+        ui.run_javascript(f'mlwSketchpad.setTool({json.dumps(name)})')
+
+    def shape(key: str):
+        """Draw this shape from now on (see SKETCHPAD_SHAPES), from the Shape chooser."""
+        shape_button.props(f'icon={SKETCHPAD_SHAPES[key][1]}')
+        shape_button.tooltip_element.text = f'Shape: {SKETCHPAD_SHAPES[key][0]} (click to choose another)'
+        mark('tool', 'draw')
+        ui.run_javascript(f'mlwSketchpad.setShape({json.dumps(key)})')
+
+    # a small square, a little smaller than the round button it replaced
+    COLOUR_SWATCH_STYLE = ('border-radius: 2px; min-width: 0; min-height: 0; width: 16px; height: 16px; padding: 0; '
+                           'border: none; box-shadow: none !important; outline: none')
+
+    pen = {'color': SKETCHPAD_COLOR, 'width': SKETCHPAD_WIDTH}  # the pen's settings, as the choosers left them
+    opened = {'color': None, 'width': None, 'mark': 0}  # what they were when a chooser opened
+    quiet = {'on': False}  # the brush slider set by Cancel: show, don't apply
+
+    def show_colour(value: str):
+        color_button.style(f'background: {value} !important; {COLOUR_SWATCH_STYLE}')
+        width_preview.style(f'stroke: {value}') if width_preview is not None else None
+
+    def show_width(value: int):
+        brush_icon.props(f'size={min(6 + value, 24)}px')
+
+    async def chooser_opened(kind: str):
+        opened[kind] = pen[kind]
+        opened['mark'] = await ui.run_javascript('return mlwSketchpad.historyLength()')
+
+    async def colour(value: str):
+        if not value:
+            return
+        pen['color'] = value
+        show_colour(value)
+        if await ui.run_javascript(f'mlwSketchpad.setColor({json.dumps(value)}); return mlwSketchpad.selected()') == -1:
+            tool('draw')  # nothing selected: back to drawing, in that colour
+
+    def width(value) -> None:
+        if quiet['on']:
+            return
+        try:
+            value = min(max(int(value), 1), SKETCHPAD_MAX_WIDTH)
+        except (TypeError, ValueError):
+            return
+        pen['width'] = value
+        show_width(value)
+        if width_slider.value != value:
+            width_slider.value = value
+        width_preview.props(f'stroke-width={value}')
+        width_label.set_text(f'{value} px')
+        ui.run_javascript(f'mlwSketchpad.setWidth({value})')
+
+    def chooser_done(menu):
+        menu.close()
+        ui.run_javascript(f'mlwSketchpad.squashTo({opened["mark"]})')  # every change made in it: one undo step
+
+    def chooser_cancel(menu, kind: str):
+        menu.close()
+        before = opened[kind]
+        if before is None:
+            return
+        pen[kind] = before
+        setter = 'setPenColor' if kind == 'color' else 'setPenWidth'
+        ui.run_javascript(f'mlwSketchpad.revertTo({opened["mark"]}); mlwSketchpad.{setter}({json.dumps(before)})')
+        if kind == 'color':
+            show_colour(before)
+            picker.set_color(before)
+        else:
+            show_width(before)
+            quiet['on'] = True
+            try:
+                width_slider.value = before
+            finally:
+                quiet['on'] = False
+            width_preview.props(f'stroke-width={before}')
+            width_label.set_text(f'{before} px')
+
+    async def delete_selected():
+        if not await ui.run_javascript('return mlwSketchpad.deleteSelected()'):
+            ui.notify('Select a shape to delete first (the arrow tool)', color='info')
+
+    async def undo():
+        if not await ui.run_javascript('return mlwSketchpad.undo()'):
+            ui.notify('Nothing to undo on the sketchpad', color='info')
+
+    def confirm_clear():
+        with ui.dialog() as dlg, titled_card('Clear Sketchpad'):
+            ui.label('Delete every shape on the sketchpad? (Undo brings them back.)')
+            with ui.row().classes('mt-4 justify-end gap-2'):
+                ui.button('No', on_click=dlg.close).props('outline size=sm')
+
+                def do_clear():
+                    dlg.close()
+                    ui.run_javascript('mlwSketchpad.clear()')
+                ui.button('Yes', on_click=do_clear).props('size=sm')
+        dlg.open()
+
+    with ui.card().classes('mlw-sketchpad-toolbar p-1 gap-1').props('flat bordered') as toolbar:
+        with ui.row().classes('items-center gap-1 no-wrap'):
+            ui.label('Sketchpad').classes('text-xs text-gray-600 px-1')
+            # the Shape tool: a button showing the shape it draws, which opens the shape chooser
+            with ui.button(icon=SKETCHPAD_SHAPES['spline'][1]).props('flat dense size=sm') as shape_button:
+                shape_button.tooltip_element = ui.tooltip('Shape: Spline (click to choose another)')
+                with ui.menu().props('anchor="bottom left" self="top left" auto-close'):
+                    ui.label('Shape').classes('text-xs text-gray-500 px-3 pt-2')
+                    for key, (label, icon) in SKETCHPAD_SHAPES.items():
+                        with ui.menu_item(on_click=lambda _, k=key: shape(k)):
+                            with ui.item_section().props('avatar').classes('min-w-0 pr-3'):
+                                ui.icon(icon, size='xs')
+                            with ui.item_section():
+                                ui.label(label)
+            buttons['tool:draw'] = shape_button
+            buttons['tool:select'] = ui.button(icon='north_west', on_click=lambda: tool('select')) \
+                .props('flat dense size=sm') \
+                .tooltip('Select a shape: drag its handles to reshape it, or the shape to move it')
+            ui.separator().props('vertical')
+            # one button in the current colour; it opens a colour chooser: a
+            # palette, or any colour in its Spectrum and Tune views
+            with ui.button().props('dense size=sm unelevated') \
+                    .style(f'background: {SKETCHPAD_COLOR} !important; {COLOUR_SWATCH_STYLE}') \
+                    .tooltip('Colour: the pen, and the selected shape') as color_button:
+                picker = ui.color_picker(on_pick=lambda e: colour(e.color))
+                picker.on('before-show', lambda: chooser_opened('color'))
+                picker.q_color.props(f'default-view=palette no-header format-model=hex '
+                                     f':palette="{json.dumps(SKETCHPAD_PALETTE).replace(chr(34), chr(39))}"')
+                picker.q_color.classes('mlw-palette-16').style('width: 256px')  # the palette: 16 x 16, 16 px swatches
+                picker.set_color(SKETCHPAD_COLOR)
+                with picker, ui.row().classes('w-full justify-end gap-2 p-1'):  # picking leaves it open
+                    ui.button('Cancel', on_click=lambda: chooser_cancel(picker, 'color')).props('dense flat size=sm')
+                    ui.button('Done', on_click=lambda: chooser_done(picker)).props('dense size=sm unelevated')
+            buttons['color:current'] = color_button
+            ui.separator().props('vertical')
+            # one button showing the brush size (its dot grows with it); it opens the brush chooser
+            width_preview = None
+            with ui.button().props('flat dense').classes('px-1') \
+                    .tooltip('Brush size: the pen, and the selected shape'):
+                brush_icon = ui.icon('circle', color='grey-8')
+                with ui.menu().props('anchor="bottom middle" self="top middle"') as brush_menu:
+                    brush_menu.on('before-show', lambda: chooser_opened('width'))
+                    with ui.column().classes('p-3 gap-2 w-[240px]'):
+                        with ui.row().classes('w-full items-center justify-between'):
+                            ui.label('Brush').classes('text-sm font-medium')
+                            width_label = ui.label(f'{SKETCHPAD_WIDTH} px').classes('text-sm text-gray-600')
+                        # a line in the brush's size and the pen's colour
+                        with ui.element('svg').props('viewBox="0 0 200 32" width="100%" height="32"'):
+                            width_preview = ui.element('line').props(
+                                f'x1=14 y1=16 x2=186 y2=16 stroke-linecap=round stroke-width={SKETCHPAD_WIDTH}') \
+                                .style(f'stroke: {SKETCHPAD_COLOR}')
+                        width_slider = ui.slider(min=1, max=SKETCHPAD_MAX_WIDTH, step=1, value=SKETCHPAD_WIDTH,
+                                                 on_change=lambda e: width(e.value)).props('label dense')
+                        with ui.row().classes('w-full gap-1 justify-between'):
+                            for size in SKETCHPAD_WIDTHS:
+                                ui.button(str(size), on_click=lambda _, v=size: width(v)) \
+                                    .props('dense flat size=sm no-caps').classes('min-w-0 px-1') \
+                                    .tooltip(f'{size} px')
+                        with ui.row().classes('w-full justify-end gap-2'):
+                            ui.button('Cancel', on_click=lambda: chooser_cancel(brush_menu, 'width')) \
+                                .props('dense flat size=sm')
+                            ui.button('Done', on_click=lambda: chooser_done(brush_menu)) \
+                                .props('dense size=sm unelevated')
+            show_width(SKETCHPAD_WIDTH)
+            ui.separator().props('vertical')
+            ui.button(icon='delete', on_click=delete_selected).props('flat dense size=sm') \
+                .tooltip('Delete the selected shape (or press Delete)')
+            ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
+            ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the sketchpad')
+    buttons['tool:draw'].classes(add='mlw-tool-on')
+    ui.run_javascript(f'window.mlwSketchpad && (mlwSketchpad.setShape("spline"), mlwSketchpad.setColor({json.dumps(SKETCHPAD_COLOR)}), '
+                      f'mlwSketchpad.setWidth({SKETCHPAD_WIDTH}))')
+    toolbar.set_visibility(sess.sketchpad_active)
+    sess.sketchpad_toolbar = toolbar
+
+
 def collapse_frames() -> None:
     """XSheet > Collapse Frames: collapse every run of identical rows in the
     view. Updates the grid in place, without scrolling."""
@@ -3979,6 +4507,8 @@ def _load_document(path: str | None, text: str, saved_content: str):
     sess.current_file['saved_content'] = saved_content
     set_filename_label()
     sess.xsheet_collapsed_ranges.clear()
+    sess.document_open = True
+    reset_sketchpad()  # a sketch belongs to the document it was drawn on
     # initialize undo/redo stacks
     sess.undo_stack.clear()
     sess.redo_stack.clear()
@@ -4029,13 +4559,16 @@ def open_file(path: Path, restore_draft: bool | None = None):
     key = str(path)
     draft = _drafts().get(key)
     _load_document(key, text, text)  # also drops the draft; restoring re-saves it
+    load_sketch_beside(path)
     add_recent_file(key)
     ui.notify(f'Opened {path.name}', color='positive')
-    if not draft or draft['text'] == text:
+    if not draft or (draft['text'] == text and not draft.get('sketch')):
         return
 
     def restore(_=None):
         _load_document(key, draft['text'], draft['saved_content'])
+        load_sketch_beside(path)
+        restore_sketch_draft(draft)
         ui.notify(f'Restored unsaved changes to {path.name}', color='positive')
 
     if restore_draft:
@@ -4060,6 +4593,7 @@ def restore_last_document():
         open_file(Path(key), restore_draft=True)
     elif draft:  # never-saved document, or its file has since been removed
         _load_document(key or None, draft['text'], draft['saved_content'])
+        restore_sketch_draft(draft)
         ui.notify('Restored unsaved changes', color='positive')
 
 
@@ -4075,6 +4609,8 @@ def close_file():
     set_validation_status('')
     clear_validation_panel()
     sess.xsheet_collapsed_ranges.clear()
+    sess.document_open = False
+    reset_sketchpad()
     # suppress change handler when clearing editor
     sess.suppress_editor_change = True
     sess.editor.value = ''
@@ -4097,8 +4633,7 @@ def _then_with_check(then, question: str):
     first, if it has unsaved changes (Cancel / No / Yes, where Yes saves,
     through Save As for a never-saved document, and only goes on once the
     save went through)."""
-    sess = session()
-    if not sess.current_file.get('modified'):
+    if not document_modified():
         then()
         return
     with ui.dialog() as confirm_dialog, titled_card('Unsaved Changes'):
@@ -4117,6 +4652,23 @@ def _then_with_check(then, question: str):
             ui.button('No', on_click=do_no).props('outline size=sm').classes('ml-2')
             ui.button('Yes', on_click=do_yes).props('size=sm').classes('ml-2')
     confirm_dialog.open()
+
+
+def log_out_with_check():
+    """The user menu's Logout: if the document has unsaved changes (its
+    text or its sketch), ask whether to save them first. Yes saves them
+    (the sketch too) and logs out; No logs out without them -- they're lost,
+    as closing the document would lose them, so the next login reopens the
+    document as it was last saved; Cancel stays logged in."""
+    sess = session()
+
+    def log_out():
+        if document_modified():  # No: the unsaved changes go (see forget_draft())
+            key = sess.current_file['path'] or ''
+            forget_draft(key)
+            user_storage()['last_document'] = key or None
+        auth.log_out(sess.user_storage)
+    _then_with_check(log_out, 'Save changes before logging out?')
 
 
 UNTITLED_NAME = 'untitled.xml'  # a new document's name until it's saved (Save As suggests it)
@@ -4357,11 +4909,13 @@ def save_file(on_saved=None):
             ui.notify(f'Failed to save {path}: {exc}', color='negative')
             return
         give_to_owner_of(path, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+        sketch = save_sketch_beside(path)
+        mark_sketch_saved()
         sess.current_file['modified'] = False
         sess.current_file['saved_content'] = sess.editor.value
         set_filename_label()
         remember_document()
-        ui.notify(f'Saved {path}', color='positive')
+        ui.notify(f'Saved {path}' + (f' and its sketch, {sketch.name}' if sketch else ''), color='positive')
         if on_saved is not None:
             on_saved()
 
@@ -4425,6 +4979,8 @@ def save_as(on_saved=None):
                 ui.notify(f'Failed to save {dest}: {exc}', color='negative')
                 return
             give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+            sketch = save_sketch_beside(dest)
+            mark_sketch_saved()
             forget_draft(sess.current_file['path'] or '')
             sess.current_file['path'] = str(dest)
             sess.current_file['modified'] = False
@@ -4432,7 +4988,7 @@ def save_as(on_saved=None):
             set_filename_label(dest.name)
             remember_document()
             add_recent_file(str(dest))
-            ui.notify(f'Saved {dest}', color='positive')
+            ui.notify(f'Saved {dest}' + (f' and its sketch, {sketch.name}' if sketch else ''), color='positive')
             # keep the Hierarchy tree (and its editor-sync state) consistent
             # with the file's new name/location, even though the content is
             # unchanged
@@ -4738,10 +5294,13 @@ def export_to_pdf():
         do_generate([])
 
 
-def export_xsheet():
+async def export_xsheet():
     """Render the XSheet tab's Exposure Sheet grid (not the raw XML -- see
     export_to_pdf() for that) as a paginated landscape PDF, in the XSheet
-    style being viewed, and save it via a Save As-style dialog."""
+    style being viewed, and save it via a Save As-style dialog. Unless
+    Preferences > Report says not to, the Sketchpad's sketch (as it is now)
+    is drawn over the grid, each mark on the frames and columns it was
+    made on (see mlwSketchpad.sheetShapes() and export_pdf._draw_sketch())."""
     sess = session()
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
@@ -4753,6 +5312,12 @@ def export_xsheet():
     source_name = Path(sess.current_file['path']).stem if sess.current_file.get('path') else 'untitled'
 
     style = sess.xsheet_style  # export what's on screen
+    sketch = None
+    if export_sketch_pref():
+        try:
+            sketch = await ui.run_javascript('return window.mlwSketchpad ? mlwSketchpad.sheetShapes() : null')
+        except Exception as exc:  # no answer from the browser: export without it
+            print('DEBUG: sketchpad sheetShapes failed:', exc)
 
     def file_selected_callback(files):
         if not files:
@@ -4760,7 +5325,7 @@ def export_xsheet():
         dest = Path(files[0])
         try:
             pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text,
-                                                       style=style)
+                                                       style=style, sketch=sketch)
         except Exception as exc:
             ui.notify(f'XSheet PDF export failed: {exc}', color='negative')
             return
@@ -4772,7 +5337,8 @@ def export_xsheet():
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
             give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
-            ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]})', color='positive')
+            with_sketch = ', with the sketch' if sketch else ''
+            ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]}{with_sketch})', color='positive')
 
         _confirm_overwrite(dest, do_export)
 
@@ -4837,6 +5403,727 @@ def index():
     #   "querySelectorAll('.cm-line')[lineNumber]" silently picks whichever
     #   line happens to occupy that DOM position, not the requested document
     #   line. Falls back to a real <textarea> when CodeMirror isn't present.
+    # XSheet > Sketchpad: a transparent SVG drawing over the XSheet tab to sketch
+    # on, in four shapes. A Spline stroke is thinned to a few anchors
+    # (Ramer-Douglas-Peucker) and drawn as a smooth cubic Bezier <path> through
+    # them (Catmull-Rom); a Polyline is clicked point by point (a double-click
+    # or Enter ends it); a Rectangle is dragged corner to corner, and a Circle
+    # from its centre out. The Select tool picks a shape: drag its handles to
+    # reshape it (a spline's anchors, a polyline's points, a rectangle's corners, a circle's edge),
+    # drag the shape to move it, and Delete removes it; the colour and brush
+    # apply to the selected one. Click one of a selected spline's anchors to
+    # show its direction handles (tangents): drag one to set the curve's slope there
+    # and, by its length (magnitude), how far the curve holds it; the handle
+    # opposite turns to keep the curve smooth, unless Alt is held (a corner).
+    # Every change can be undone. The sketch is pinned to the sheet: it
+    # scrolls with the grid and spans all of it (see scrollOf()), and the
+    # wheel over the sketchpad still scrolls the grid. It is kept here,
+    # per browser tab, as its shapes, and the SVG is rebuilt from them
+    # whenever the sketchpad is re-created -- Quasar removes the XSheet tab's
+    # panel while another tab is showing. It is not saved with the document
+    # yet; mlwSketchpad.toSVG() gives it as a stand-alone SVG document for when
+    # it is. Off, the sketchpad is hidden and ignores the pointer, so the grid
+    # under it works as usual and nothing can be drawn; the splines are kept.
+    ui.add_body_html('''
+<style>
+.mlw-sketchpad {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    overflow: hidden;
+    pointer-events: none;   /* off: the XSheet under it gets every click */
+    visibility: hidden;     /* ... and the sketch isn't shown (it's kept for next time) */
+}
+.mlw-sketchpad > svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.mlw-sketchpad.mlw-sketchpad-active {
+    visibility: visible;
+    pointer-events: auto;
+    cursor: crosshair;
+    touch-action: none;
+    outline: 2px dashed rgba(88, 152, 212, 0.7);
+    outline-offset: -2px;
+}
+.mlw-sketchpad.mlw-sketchpad-select { cursor: default; }
+.mlw-sketchpad .mlw-hit { cursor: pointer; }
+.mlw-sketchpad .mlw-selected-hit { cursor: move; }
+.mlw-sketchpad .mlw-handle { cursor: grab; }
+.mlw-sketchpad .mlw-tangent { cursor: crosshair; }
+.mlw-sketchpad-toolbar {
+    position: absolute;
+    top: 4px;
+    right: 12px;
+    z-index: 6;
+}
+.mlw-sketchpad-toolbar .mlw-tool-on {
+    box-shadow: 0 0 0 2px #2b5d8a;
+}
+/* the sketchpad's colour chooser: its 256 colours in 16 rows of 16, small
+   squares (in the overrides layer: Quasar's width is !important, in a later
+   layer) */
+@layer overrides {
+    .q-color-picker.mlw-palette-16 .q-color-picker__cube {
+        width: 6.25% !important;
+        padding-bottom: 6.25% !important;
+    }
+}
+/* the colour chooser's swatches: a faint edge, so white shows too */
+.q-color-picker__cube {
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+</style>
+<script>
+window.mlwSketchpad = window.mlwSketchpad || (() => {
+    const NS = 'http://www.w3.org/2000/svg';
+    // shapes: [{type: 'spline' | 'rect' | 'circle', color, width, points: [[x, y], ...]}], in CSS pixels.
+    // spline: its anchors, and tangents: per anchor [inX, inY, outX, outY], its two direction handles
+    // relative to it (their direction sets the curve's slope there, their length -- the magnitude --
+    // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
+    const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4,  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
+                selected: -1, node: null, history: [], label: null,  // node: [shape, anchor] whose arms show
+                poly: null};  // the polyline being drawn: its last point follows the pointer
+    const hosts = new Set();
+    const round = (v) => Math.round(v * 10) / 10;
+    const copy = (shapes) => shapes.map(s => ({...s, points: s.points.map(p => [...p]),
+                                               ...(s.tangents ? {tangents: s.tangents.map(t => [...t])} : {})}));
+    const remember = () => { st.history.push(copy(st.shapes)); if (st.history.length > 200) st.history.shift(); };
+
+    // Ramer-Douglas-Peucker: the few points that keep the drawn line's shape
+    function simplify(points, tolerance) {
+        if (points.length < 3) return points;
+        const [ax, ay] = points[0], [bx, by] = points[points.length - 1];
+        let far = 0, at = 0;
+        for (let i = 1; i < points.length - 1; i++) {
+            const [px, py] = points[i];
+            const len = Math.hypot(bx - ax, by - ay);
+            const d = len ? Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len : Math.hypot(px - ax, py - ay);
+            if (d > far) { far = d; at = i; }
+        }
+        if (far <= tolerance) return [points[0], points[points.length - 1]];
+        return [...simplify(points.slice(0, at + 1), tolerance).slice(0, -1), ...simplify(points.slice(at), tolerance)];
+    }
+    // Each anchor's direction handles for a smooth curve through the anchors
+    // (Catmull-Rom): along the line from the previous anchor to the next, a
+    // sixth of it each way. A new spline starts with these; then they're its own.
+    function autoTangents(p) {
+        const n = p.length;
+        return p.map((pt, i) => {
+            const a = p[Math.max(i - 1, 0)], b = p[Math.min(i + 1, n - 1)];
+            const dx = (b[0] - a[0]) / 6, dy = (b[1] - a[1]) / 6;
+            return [-dx, -dy, dx, dy];
+        });
+    }
+    const tangentsOf = (s) => (s.tangents && s.tangents.length === s.points.length) ? s.tangents : (s.tangents = autoTangents(s.points));
+    // the spline: a cubic Bezier from each anchor to the next, pulled by the
+    // first one's out-handle and the second one's in-handle
+    function splinePath(s) {
+        const p = s.points, n = p.length;
+        if (n === 1) return `M${round(p[0][0])} ${round(p[0][1])}h0.01`;  // a dot: round caps draw it
+        const t = tangentsOf(s);
+        let d = `M${round(p[0][0])} ${round(p[0][1])}`;
+        for (let i = 0; i < n - 1; i++) {
+            const c1 = [p[i][0] + t[i][2], p[i][1] + t[i][3]], c2 = [p[i + 1][0] + t[i + 1][0], p[i + 1][1] + t[i + 1][1]];
+            d += `C${round(c1[0])} ${round(c1[1])} ${round(c2[0])} ${round(c2[1])} ${round(p[i + 1][0])} ${round(p[i + 1][1])}`;
+        }
+        return d;
+    }
+    function el(tag, attrs) {
+        const e = document.createElementNS(NS, tag);
+        for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+        return e;
+    }
+    const radius = (s) => Math.hypot(s.points[1][0] - s.points[0][0], s.points[1][1] - s.points[0][1]);
+    // the shape's SVG element, with the given presentation attributes
+    function shapeEl(s, attrs) {
+        const [[x1, y1], [x2, y2] = [x1, y1]] = s.points;
+        if (s.type === 'polyline')
+            return el('polyline', {points: s.points.map(([x, y]) => `${round(x)},${round(y)}`).join(' '), ...attrs});
+        if (s.type === 'rect')
+            return el('rect', {x: round(Math.min(x1, x2)), y: round(Math.min(y1, y2)), width: round(Math.abs(x2 - x1)),
+                               height: round(Math.abs(y2 - y1)), ...attrs});
+        if (s.type === 'circle') return el('circle', {cx: round(x1), cy: round(y1), r: round(radius(s)), ...attrs});
+        return el('path', {d: splinePath(s), ...attrs});
+    }
+    function strokeAttrs(s) {
+        return {fill: 'none', stroke: s.color, 'stroke-width': s.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
+    }
+    // where a selected shape's handles go: a spline's anchors, a polyline's
+    // points, a rectangle's corners, and four points round a circle's edge
+    function handlesOf(s) {
+        const [[x1, y1], [x2, y2]] = s.points.length > 1 ? s.points : [s.points[0], s.points[0]];
+        if (s.type === 'rect') return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+        if (s.type === 'circle') { const r = radius(s); return [[x1 + r, y1], [x1, y1 + r], [x1 - r, y1], [x1, y1 - r]]; }
+        return s.points;
+    }
+    function dragHandle(s, k, x, y) {
+        if (s.type === 'rect') {
+            const p = s.points;
+            if (k === 0) p[0] = [x, y];
+            else if (k === 1) { p[1][0] = x; p[0][1] = y; }
+            else if (k === 2) p[1] = [x, y];
+            else { p[0][0] = x; p[1][1] = y; }
+        } else if (s.type === 'circle') {
+            s.points[1] = [x, y];  // the radius follows the handle
+        } else {
+            s.points[k] = [x, y];
+        }
+    }
+    // The sketch is pinned to the sheet, not the screen: its coordinates are
+    // the sketchpad's plus how far the grid is scrolled, so a mark made on a
+    // frame stays on it as the grid scrolls, and the sketch spans every frame
+    // and column, not just those showing.
+    function gridOf(host) {
+        const panel = host.parentElement;
+        return panel && {body: panel.querySelector('.mlw-xsheet-grid .ag-body-viewport'),  // scrolls down
+                         cols: panel.querySelector('.mlw-xsheet-grid .ag-center-cols-viewport'),  // shows across
+                         across: panel.querySelector('.mlw-xsheet-grid .ag-body-horizontal-scroll-viewport')};  // scrolls across
+    }
+    function scrollOf(host) {
+        const g = gridOf(host);
+        return [g && g.cols ? g.cols.scrollLeft : 0, g && g.body ? g.body.scrollTop : 0];
+    }
+    // The drawing: one element per shape; with the sketchpad on, also a wide
+    // invisible copy to pick it by, and the selected one's highlight and handles.
+    // They go in one <g>, shifted by the grid's scroll (see scrollOf()).
+    function build(svg, plain, [sx, sy] = [0, 0]) {
+        svg.replaceChildren();
+        const g = el('g', plain ? {} : {transform: `translate(${-sx} ${-sy})`, class: 'mlw-sheet'});
+        svg.appendChild(g);
+        svg = g;
+        st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {...strokeAttrs(s), 'data-shape': i})));
+        if (plain || !st.active || st.tool !== 'select') return;
+        st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {
+            fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14), 'stroke-linecap': 'round',
+            'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+        const s = st.shapes[st.selected];
+        if (!s) return;
+        svg.insertBefore(shapeEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': s.width + 8,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none'}), svg.firstChild);
+        if (s.type === 'spline' && s.points.length > 1) {
+            // the selected anchor's direction handles: an arm to a knob each side
+            // (none before the first anchor, or after the last)
+            const t = tangentsOf(s), last = s.points.length - 1;
+            const node = st.node && st.node[0] === st.selected ? st.node[1] : -1;
+            s.points.forEach(([x, y], k) => k === node && [['in', 0], ['out', 2]].forEach(([side, o]) => {
+                if ((side === 'in' && k === 0) || (side === 'out' && k === last)) return;
+                const hx = x + t[k][o], hy = y + t[k][o + 1];
+                svg.appendChild(el('line', {x1: x, y1: y, x2: hx, y2: hy, stroke: '#2b5d8a', 'stroke-width': 1,
+                                            'pointer-events': 'none', class: 'mlw-arm'}));
+                svg.appendChild(el('circle', {cx: hx, cy: hy, r: 4, fill: '#2b5d8a', stroke: 'white', 'stroke-width': 1,
+                    class: 'mlw-tangent', 'data-shape': st.selected, 'data-point': k, 'data-side': side}));
+            }));
+        }
+        const node = s.type === 'spline' && st.node && st.node[0] === st.selected ? st.node[1] : -1;
+        handlesOf(s).forEach(([x, y], k) => svg.appendChild(el('circle', {cx: x, cy: y, r: 5, fill: k === node ? '#2b5d8a' : 'white',
+            stroke: '#2b5d8a', 'stroke-width': 1.5, class: 'mlw-handle', 'data-shape': st.selected, 'data-point': k})));
+        if (st.label) {  // while a direction handle is dragged: its angle and magnitude
+            const [lx, ly, text] = st.label;
+            const tx = el('text', {x: lx + 10, y: ly - 10, 'font-size': 11, 'font-family': 'sans-serif', fill: '#1c3f60',
+                                   stroke: 'white', 'stroke-width': 3, 'paint-order': 'stroke', 'pointer-events': 'none'});
+            tx.textContent = text;
+            svg.appendChild(tx);
+        }
+    }
+    function svgOf(host) {
+        let svg = host.querySelector(':scope > svg');
+        if (!svg) { svg = document.createElementNS(NS, 'svg'); host.appendChild(svg); }
+        return svg;
+    }
+    // For XSheet > Export XSheet (see sheetShapes()): where the sheet's
+    // columns and rows are, in the sketch's coordinates -- the grid's left
+    // edge and width, each column's left and width, and each row's top,
+    // height and frames (a collapsed run's row stands for several). Kept
+    // from the last time the grid was showing, as the XML tab doesn't have it.
+    let geometry = null;
+    function sheetGeometry(host) {
+        const panel = host.parentElement, grid = panel && panel.querySelector('.mlw-xsheet-grid');
+        const g = gridOf(host);
+        if (!grid || !g || !g.body || !grid.offsetParent) return geometry;  // not showing: as it was
+        let api = null;
+        try { api = getElement(grid.id.slice(1)).api; } catch (e) {}
+        try { api = api || mounted_app.$refs['r' + grid.id.slice(1)].api; } catch (e) {}
+        if (!api) return geometry;
+        const hr = host.getBoundingClientRect(), [sx] = scrollOf(host);
+        const pinnedLeft = panel.querySelector('.mlw-xsheet-grid .ag-pinned-left-cols-container');
+        const columns = api.getAllDisplayedColumns().map(c => {
+            const pinned = c.getPinned() === 'left' && pinnedLeft;
+            const left = pinned ? pinnedLeft.getBoundingClientRect().left - hr.left + sx : g.cols.getBoundingClientRect().left - hr.left;
+            return [left + c.getLeft(), c.getActualWidth()];
+        }).sort((a, b) => a[0] - b[0]);
+        const top = g.body.getBoundingClientRect().top - hr.top;
+        const rows = [];
+        api.forEachNode(n => {
+            const d = n.data || {};
+            const start = +(d._range_start ?? d.Frame), end = typeof d.Frame === 'number' ? d.Frame : +(d._range_end ?? d.Frame);
+            if (n.rowTop != null && Number.isFinite(start)) rows.push([top + n.rowTop, n.rowHeight, start, Number.isFinite(end) ? end : start]);
+        });
+        rows.sort((a, b) => a[0] - b[0]);
+        const gr = grid.getBoundingClientRect();
+        if (columns.length && rows.length) geometry = {left: gr.left - hr.left, width: gr.width, columns, rows};
+        return geometry;
+    }
+    // A point on the sheet, as [x, frame]: pixels from the grid's left edge,
+    // and the frame's number plus how far down it (a frame runs from n to
+    // n + 1; above the first or below the last, it carries on at their size).
+    function toSheet([x, y], {left, rows}) {
+        let j = rows.findIndex(([t, h]) => y < t + h);
+        if (j === -1) j = rows.length - 1;
+        const [t, h, a, b] = rows[j];
+        return [round3(x - left), round3(a + (y - t) / h * (b - a + 1))];
+    }
+    const round3 = (v) => Math.round(v * 1000) / 1000;
+    // a shape as the points of a line through it: a spline's curves and a
+    // circle sampled finely enough to look smooth; closed for a rectangle or circle
+    function outline(s) {
+        const p = s.points;
+        if (s.type === 'rect') {
+            const [[x1, y1], [x2, y2] = [x1, y1]] = p;
+            return {closed: true, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]};
+        }
+        if (s.type === 'circle') {
+            const r = radius(s), [cx, cy] = p[0];
+            return {closed: true, points: Array.from({length: 48}, (_, k) => [cx + r * Math.cos(k * Math.PI / 24), cy + r * Math.sin(k * Math.PI / 24)])};
+        }
+        if (s.type !== 'spline' || p.length < 2) return {closed: false, points: p.length === 1 ? [p[0], p[0]] : p};
+        const t = tangentsOf(s), out = [p[0]];
+        for (let i = 0; i < p.length - 1; i++) {
+            const a = p[i], d = p[i + 1];
+            const b = [a[0] + t[i][2], a[1] + t[i][3]], c = [d[0] + t[i + 1][0], d[1] + t[i + 1][1]];
+            for (let k = 1; k <= 12; k++) {
+                const u = k / 12, v = 1 - u;
+                out.push([v * v * v * a[0] + 3 * v * v * u * b[0] + 3 * v * u * u * c[0] + u * u * u * d[0],
+                          v * v * v * a[1] + 3 * v * v * u * b[1] + 3 * v * u * u * c[1] + u * u * u * d[1]]);
+            }
+        }
+        return {closed: false, points: out};
+    }
+    // the grid scrolled: move the sketch with it
+    function follow(host) {
+        const g = host.querySelector(':scope > svg > g.mlw-sheet');
+        const [sx, sy] = scrollOf(host);
+        if (g) g.setAttribute('transform', `translate(${-sx} ${-sy})`);
+    }
+    // The polyline being drawn is done (a double-click, Enter, or anything
+    // else -- another tool, shape or document): its last point, the one
+    // following the pointer, goes. One point or none isn't a line: it's dropped.
+    function finishPoly(keep = true) {
+        const s = st.poly;
+        if (!s) return;
+        st.poly = null;
+        s.points.pop();
+        const same = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1;
+        s.points = s.points.filter((pt, i) => i === 0 || !same(pt, s.points[i - 1]));  // a double-click's extra point
+        if (!keep || s.points.length < 2) {
+            st.shapes.splice(st.shapes.indexOf(s), 1);
+            st.history.pop();
+        }
+        rebuildAll();
+    }
+    function rebuildAll() {
+        for (const h of [...hosts]) {
+            if (!h.isConnected) { hosts.delete(h); continue; }
+            h.classList.toggle('mlw-sketchpad-active', st.active);
+            h.classList.toggle('mlw-sketchpad-select', st.tool === 'select');
+            build(svgOf(h), false, scrollOf(h));
+        }
+        changed();
+    }
+    // The server keeps a copy of the sketch, as SVG, for File > Save and
+    // Save As to write beside the document (see handle_sketch_changed()):
+    // sent a moment after it changes -- not on every pointer move -- with
+    // whether it differs from the sketch last loaded or saved ('dirty'), so
+    // the document shows as changed and Close asks to save it.
+    // 'source': 'editor' for a change made in the SVG tab's editor (see
+    // applySVG()), which the server then leaves as it is typed.
+    let sent = '[]', saved = '[]', sendTimer = null, origin = null;
+    function changed(force = false) {
+        clearTimeout(sendTimer);
+        sendTimer = setTimeout(() => {
+            const now = JSON.stringify(st.shapes);
+            if (now === sent && !force) return;
+            sent = now;
+            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved, source: origin});
+            origin = null;
+        }, force ? 0 : 300);
+    }
+    let editorEdit = 0;  // when the SVG tab's editor last changed the sketch
+    // A sketch saved as SVG (by toSVG()) back as shapes: each <path> a spline
+    // (its anchors and, from its curves' control points, their tangents),
+    // <polyline> a polyline, <rect> a rectangle and <circle> a circle, with
+    // their stroke colour and width. Anything else is left out.
+    function fromSVG(text) {
+        const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+        if (doc.querySelector('parsererror')) return null;
+        const num = (e, a) => parseFloat(e.getAttribute(a)) || 0;
+        const shapes = [];
+        doc.querySelectorAll('path, polyline, rect, circle').forEach(e => {
+            const style = {color: e.getAttribute('stroke') || '#000000', width: num(e, 'stroke-width') || 1};
+            const tag = e.tagName.toLowerCase();
+            if (tag === 'rect') {
+                const x = num(e, 'x'), y = num(e, 'y');
+                shapes.push({type: 'rect', ...style, points: [[x, y], [x + num(e, 'width'), y + num(e, 'height')]]});
+            } else if (tag === 'circle') {
+                const cx = num(e, 'cx'), cy = num(e, 'cy');
+                shapes.push({type: 'circle', ...style, points: [[cx, cy], [cx + num(e, 'r'), cy]]});
+            } else if (tag === 'polyline') {
+                const v = (e.getAttribute('points') || '').trim().split(/[\s,]+/).map(Number);
+                const points = [];
+                for (let i = 0; i + 1 < v.length; i += 2) points.push([v[i], v[i + 1]]);
+                if (points.length > 1) shapes.push({type: 'polyline', ...style, points});
+            } else {
+                const tokens = (e.getAttribute('d') || '').match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || [];
+                const points = [], tangents = [];
+                let cmd = null, i = 0;
+                const next = () => parseFloat(tokens[i++]);
+                while (i < tokens.length) {
+                    if (/[A-Za-z]/.test(tokens[i])) { cmd = tokens[i++]; continue; }
+                    if (cmd === 'M' && !points.length) {
+                        points.push([next(), next()]); tangents.push([0, 0, 0, 0]);
+                    } else if (cmd === 'C' && points.length) {
+                        const a = points[points.length - 1], c1 = [next(), next()], c2 = [next(), next()], b = [next(), next()];
+                        tangents[tangents.length - 1][2] = c1[0] - a[0]; tangents[tangents.length - 1][3] = c1[1] - a[1];
+                        points.push(b); tangents.push([c2[0] - b[0], c2[1] - b[1], 0, 0]);
+                    } else if (cmd === 'L' && points.length) {
+                        const a = points[points.length - 1], b = [next(), next()], dx = (b[0] - a[0]) / 3, dy = (b[1] - a[1]) / 3;
+                        tangents[tangents.length - 1][2] = dx; tangents[tangents.length - 1][3] = dy;
+                        points.push(b); tangents.push([-dx, -dy, 0, 0]);
+                    } else i++;  // anything else (a dot's "h0.01"): skipped
+                }
+                if (!points.length) return;
+                const n = points.length;  // the ends' unused handles: opposite the used one
+                tangents[0][0] = -tangents[0][2]; tangents[0][1] = -tangents[0][3];
+                tangents[n - 1][2] = -tangents[n - 1][0]; tangents[n - 1][3] = -tangents[n - 1][1];
+                shapes.push({type: 'spline', ...style, points, tangents});
+            }
+        });
+        return shapes;
+    }
+    function attach(host) {
+        if (host._mlwSketchpad) {  // back on the page (its tab shown again): drawn afresh
+            if (!hosts.has(host)) { hosts.add(host); rebuildAll(); }
+            return;
+        }
+        host._mlwSketchpad = true;
+        hosts.add(host);
+        let drag = null;  // {kind: 'draw' | 'point' | 'move', ...}
+        let lastClick = {time: 0, at: [0, 0]};  // drawing a polyline: to tell a double-click
+        // where the pointer is on the sheet (see scrollOf())
+        const at = (e) => {
+            const r = host.getBoundingClientRect(), [sx, sy] = scrollOf(host);
+            return [e.clientX - r.left + sx, e.clientY - r.top + sy];
+        };
+        // Scrolling (it doesn't bubble, but it can be caught on its way down)
+        // moves the sketch with the grid; and with the sketchpad on, the
+        // wheel over it still scrolls the grid.
+        host.parentElement.addEventListener('scroll', () => follow(host), true);
+        host.addEventListener('wheel', (e) => {
+            const g = gridOf(host);
+            if (!st.active || !g || !g.body) return;
+            e.preventDefault();
+            if (!e.shiftKey) g.body.scrollTop += e.deltaY;
+            const dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+            if (dx && g.across) g.across.scrollLeft += dx;
+        }, {passive: false});
+        host.addEventListener('pointerdown', (e) => {
+            if (!st.active || e.button > 0) return;
+            e.preventDefault();
+            host.setPointerCapture(e.pointerId);
+            const [x, y] = at(e);
+            if (st.tool === 'draw' && st.shape === 'polyline') {
+                // Polyline: each click adds a point, a double-click (or Enter) ends it. (A
+                // double-click is told here, from the time and distance since the last click:
+                // redrawing replaces what was clicked on, so no 'dblclick' event comes.)
+                const now = e.timeStamp, last = lastClick;
+                lastClick = {time: now, at: [x, y]};
+                if (st.poly && now - last.time < 400 && Math.hypot(x - last.at[0], y - last.at[1]) < 6) {
+                    finishPoly();  // its extra points go
+                    lastClick = {time: 0, at: [0, 0]};
+                } else if (!st.poly) {
+                    remember();
+                    st.poly = {type: 'polyline', color: st.color, width: st.width, points: [[x, y], [x, y]]};
+                    st.shapes.push(st.poly);
+                    rebuildAll();
+                } else {
+                    st.poly.points[st.poly.points.length - 1] = [x, y];
+                    st.poly.points.push([x, y]);
+                    rebuildAll();
+                }
+                return;
+            }
+            if (st.tool === 'draw') {
+                remember();
+                const s = {type: st.shape, color: st.color, width: st.width, points: st.shape === 'spline' ? [[x, y]] : [[x, y], [x, y]]};
+                st.shapes.push(s);
+                const live = shapeEl(s, strokeAttrs(s));
+                svgOf(host).querySelector(':scope > g.mlw-sheet').appendChild(live);
+                drag = {kind: 'draw', shape: s, raw: [[x, y]], live};
+                return;
+            }
+            const t = e.target, i = t.dataset ? +t.dataset.shape : NaN;
+            if (t.classList.contains('mlw-tangent')) {
+                remember();
+                drag = {kind: 'tangent', shape: i, point: +t.dataset.point, side: t.dataset.side};
+            } else if (t.classList.contains('mlw-handle')) {
+                remember();
+                drag = {kind: 'point', shape: i, point: +t.dataset.point};
+                st.node = [i, +t.dataset.point];  // a spline's anchor: show its arms
+                rebuildAll();
+            } else if (t.classList.contains('mlw-hit')) {
+                if (st.selected !== i || st.node) { st.selected = i; st.node = null; rebuildAll(); }
+                remember();
+                drag = {kind: 'move', shape: i, from: [x, y], moved: false};
+            } else if (st.selected !== -1) {
+                st.selected = -1;
+                st.node = null;
+                rebuildAll();
+            }
+        });
+        host.addEventListener('pointermove', (e) => {
+            if (st.poly && !drag) {  // the polyline's next segment follows the pointer
+                st.poly.points[st.poly.points.length - 1] = at(e);
+                rebuildAll();
+                return;
+            }
+            if (!drag) return;
+            const [x, y] = at(e);
+            if (drag.kind === 'draw') {
+                const s = drag.shape;
+                if (s.type === 'spline') {
+                    drag.raw.push([x, y]);
+                    drag.live.setAttribute('d', 'M' + drag.raw.map(([a, b]) => `${round(a)} ${round(b)}`).join('L'));  // the raw stroke, until it's done
+                } else {
+                    s.points[1] = [x, y];
+                    const next = shapeEl(s, strokeAttrs(s));
+                    drag.live.replaceWith(next);
+                    drag.live = next;
+                }
+            } else if (drag.kind === 'tangent') {
+                // this handle follows the pointer: its direction and its length (magnitude). The one
+                // opposite keeps its own length but turns to stay in line, so the curve stays smooth
+                // through the anchor -- unless Alt is held, which moves this one alone (a corner).
+                drag.moved = true;
+                const s = st.shapes[drag.shape], k = drag.point, t = tangentsOf(s)[k];
+                const [ax, ay] = s.points[k], dx = x - ax, dy = y - ay, len = Math.hypot(dx, dy);
+                const [o, other] = drag.side === 'in' ? [0, 2] : [2, 0];
+                t[o] = dx; t[o + 1] = dy;
+                const hasOther = !((drag.side === 'in' && k === s.points.length - 1) || (drag.side === 'out' && k === 0));
+                if (!e.altKey && hasOther && len > 0) {
+                    const keep = Math.hypot(t[other], t[other + 1]) || len;
+                    t[other] = -dx / len * keep; t[other + 1] = -dy / len * keep;
+                }
+                const angle = Math.round(Math.atan2(-dy, dx) * 180 / Math.PI);
+                st.label = [x, y, `∠ ${angle}° · ${Math.round(len)} px`];
+                rebuildAll();
+            } else if (drag.kind === 'point') {
+                drag.moved = true;
+                dragHandle(st.shapes[drag.shape], drag.point, x, y);
+                rebuildAll();
+            } else {
+                const dx = x - drag.from[0], dy = y - drag.from[1];
+                if (!dx && !dy) return;
+                st.shapes[drag.shape].points.forEach(p => { p[0] += dx; p[1] += dy; });
+                drag.from = [x, y];
+                drag.moved = true;
+                rebuildAll();
+            }
+        });
+        const end = () => {
+            if (!drag) return;
+            if (drag.kind === 'draw') {
+                const s = drag.shape;
+                if (s.type === 'spline') { s.points = simplify(drag.raw, Math.max(1.5, s.width / 2)); s.tangents = autoTangents(s.points); }
+                else {
+                    const [[x1, y1], [x2, y2]] = s.points;
+                    const tiny = s.type === 'rect' ? Math.abs(x2 - x1) < 2 && Math.abs(y2 - y1) < 2 : radius(s) < 2;
+                    if (tiny) { st.shapes.pop(); st.history.pop(); }  // a click, not a drag: nothing drawn
+                }
+            } else if (!drag.moved) st.history.pop();  // a click to select (a shape, or an anchor): nothing to undo
+            drag = null;
+            st.label = null;
+            rebuildAll();
+            sheetGeometry(host);  // for an export from the XML tab (see sheetShapes())
+        };
+        host.addEventListener('pointerup', end);
+        host.addEventListener('pointercancel', end);
+        rebuildAll();
+    }
+    // Drawing a polyline: Enter ends it, Escape drops it, Backspace takes back
+    // its last point -- caught on the way down, before a focused toolbar
+    // button (the Shape button, say) could take Enter as a click.
+    window.addEventListener('keydown', (e) => {
+        if (!st.active || !st.poly || !['Enter', 'Escape', 'Backspace'].includes(e.key)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Backspace' && st.poly.points.length > 2) {
+            st.poly.points.splice(st.poly.points.length - 2, 1);
+            rebuildAll();
+        } else finishPoly(e.key === 'Enter');
+    }, true);
+    document.addEventListener('keydown', (e) => {
+        if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
+        if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
+        e.preventDefault();
+        if (!api.deleteNode()) api.deleteSelected();  // a spline's selected anchor, or else the shape
+    });
+    new MutationObserver(() => document.querySelectorAll('div.mlw-sketchpad').forEach(attach))
+        .observe(document.body, {childList: true, subtree: true});
+    document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
+    const api = {
+        setActive(on) { finishPoly(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
+        setTool(tool) { finishPoly(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setShape(shape) { st.shape = ['polyline', 'rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
+        // the pen's colour / width, and the selected shape's
+        setColor(color) {
+            st.color = color;
+            const s = st.shapes[st.selected];
+            if (s && s.color !== color) { remember(); s.color = color; rebuildAll(); }
+        },
+        setWidth(width) {
+            st.width = width;
+            const s = st.shapes[st.selected];
+            if (s && s.width !== width) { remember(); s.width = width; rebuildAll(); }
+        },
+        deleteSelected() {
+            if (!st.shapes[st.selected]) return false;
+            remember();
+            st.shapes.splice(st.selected, 1);
+            st.selected = -1;
+            st.node = null;
+            rebuildAll();
+            return true;
+        },
+        // The selected spline's selected anchor (see st.node): it goes, and the
+        // curve joins its neighbours, keeping their tangents; the next anchor
+        // (or, at the end, the one before) is selected, so Delete again takes
+        // that. A spline of two anchors isn't left as a dot: it goes whole.
+        // false if no anchor is selected.
+        deleteNode() {
+            const s = st.shapes[st.selected];
+            if (!s || s.type !== 'spline' || !st.node || st.node[0] !== st.selected) return false;
+            const k = st.node[1];
+            if (k < 0 || k >= s.points.length) return false;
+            if (s.points.length <= 2) return api.deleteSelected();
+            remember();
+            tangentsOf(s);
+            s.points.splice(k, 1);
+            s.tangents.splice(k, 1);
+            st.node = [st.selected, Math.min(k, s.points.length - 1)];
+            rebuildAll();
+            return true;
+        },
+        undo() {
+            if (st.poly) { finishPoly(false); return true; }  // drawing a polyline: Undo drops it
+            if (!st.history.length) return false;
+            st.shapes = st.history.pop();
+            if (!st.shapes[st.selected]) st.selected = -1;
+            rebuildAll();
+            return true;
+        },
+        // a document opened with a sketch saved beside it (see fromSVG()): that
+        // sketch, and nothing to undo
+        // (unsaved: a sketch from a draft, not yet saved beside the document)
+        loadSVG(text, unsaved = false) {
+            const shapes = fromSVG(text);
+            if (!shapes) return false;
+            finishPoly(false);
+            st.shapes = shapes; st.history = []; st.selected = -1; st.node = null; st.label = null;
+            saved = unsaved ? null : JSON.stringify(shapes);
+            rebuildAll();
+            return true;
+        },
+        // File > Save / Save As wrote the sketch the server has (the last one
+        // sent): that's the saved sketch now; anything since is still unsaved
+        markSaved() { saved = sent; changed(true); },
+        // The SVG tab's editor changed: its text as the sketch (see fromSVG()) --
+        // 'ok', 'same' (no change to the shapes) or 'invalid' (not well-formed:
+        // the sketch is left as it is). A burst of typing is one Undo step.
+        applySVG(text) {
+            const shapes = fromSVG(text);
+            if (!shapes) return 'invalid';
+            if (JSON.stringify(shapes) === JSON.stringify(st.shapes)) return 'same';
+            finishPoly(false);
+            if (Date.now() - editorEdit > 1500) remember();
+            editorEdit = Date.now();
+            st.shapes = shapes; st.selected = -1; st.node = null; st.label = null;
+            origin = 'editor';
+            rebuildAll();
+            return 'ok';
+        },
+        // a document opened or closed: no sketch, nothing to undo
+        reset() { saved = '[]'; st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
+        clear() { finishPoly(); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        // the pen alone, leaving the selected shape as it is
+        setPenColor(color) { st.color = color; },
+        setPenWidth(width) { st.width = width; },
+        // For the colour and brush choosers: where the undo history stood when
+        // one opened; Cancel goes back there, and Done makes everything since
+        // then a single undo step.
+        historyLength() { return st.history.length; },
+        revertTo(n) {
+            if (st.history.length <= n) return;
+            st.shapes = st.history[n];
+            st.history.length = n;
+            if (!st.shapes[st.selected]) st.selected = -1;
+            rebuildAll();
+        },
+        squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; },
+        tool() { return st.tool; },
+        shape() { return st.shape; },
+        selected() { return st.selected; },
+        shapes() { return copy(st.shapes); },
+        shapeCount() { return st.shapes.length; },
+        splines() { return copy(st.shapes); },        // earlier names, kept
+        splineCount() { return st.shapes.length; },
+        strokeCount() { return st.shapes.length; },
+        // For XSheet > Export XSheet (see export_pdf._draw_sketch()): the grid
+        // as it's laid out -- its width, and its columns' [left, width] (from
+        // its left edge) and rows' [first frame, last frame, height], in
+        // pixels -- and each shape as a line through it: {color, width,
+        // closed, points: [[x, frame], ...]} (see toSheet()), so the PDF can
+        // lay the sheet out the same way and draw the sketch on it, at one
+        // scale. null with no sketch, or none of the grid to place it by.
+        sheetShapes() {
+            const host = [...hosts].find(h => h.isConnected);
+            const geo = host ? sheetGeometry(host) : geometry;
+            if (!geo || !st.shapes.length) return null;
+            return {
+                width: round3(geo.width),
+                columns: geo.columns.map(([l, w]) => [round3(l - geo.left), round3(w)]),
+                rows: geo.rows.map(([, h, a, b]) => [a, b, round3(h)]),
+                shapes: st.shapes.map(s => {
+                    const {closed, points} = outline(s);
+                    return {color: s.color, width: s.width, closed, points: points.map(pt => toSheet(pt, geo))};
+                }),
+            };
+        },
+        // The sketch as a stand-alone SVG document, in CSS pixels: the whole
+        // sheet (the sketchpad's size, plus however far the grid scrolls).
+        // (Its size is as the sheet was last shown, when another tab is showing.)
+        toSVG() {
+            const host = [...hosts].find(h => h.isConnected);
+            const svg = document.createElementNS(NS, 'svg');
+            build(svg, true);
+            const g = host && gridOf(host);
+            if (host && host.clientWidth) st.size = [
+                host.clientWidth + (g && g.cols ? g.cols.scrollWidth - g.cols.clientWidth : 0),
+                host.clientHeight + (g && g.body ? g.body.scrollHeight - g.body.clientHeight : 0)];
+            const [w, h] = st.size || [0, 0];
+            svg.setAttribute('xmlns', NS);
+            svg.setAttribute('width', w);
+            svg.setAttribute('height', h);
+            svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+            svg.querySelectorAll('[data-shape]').forEach(p => p.removeAttribute('data-shape'));
+            return new XMLSerializer().serializeToString(svg);
+        },
+    };
+    return api;
+})();
+</script>
+''')
     ui.add_body_html('''
 <style>
 /* Dark, high-contrast paint for the current Find/Replace match, independent
@@ -5214,12 +6501,21 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
-                # these act on the grid, so they're disabled on the XML tab
-                # (see on_main_tab_change() below)
+                # these act on the grid, so they are disabled on the XML tab and
+                # while the sketchpad is on (see update_xsheet_view_items())
                 sess.xsheet_view_items = [
                     ui.menu_item('Collapse Frames', on_click=lambda _: collapse_frames()),
                     ui.menu_item('Expand Frames', on_click=lambda _: expand_frames()),
                 ]
+                ui.separator()
+                # a check box shows whether the sketchpad is on (see toggle_sketchpad())
+                with ui.menu_item(on_click=lambda _: toggle_sketchpad()) as sketchpad_item:
+                    with ui.item_section():
+                        ui.label('Sketchpad')
+                    with ui.item_section().props('side'):  # the check box, at the right
+                        sess.sketchpad_menu_icon = ui.icon('check_box_outline_blank', size='xs')
+                sess.sketchpad_item = sketchpad_item
+                update_sketchpad_item(True)  # the page opens on the XSheet tab (see update_sketchpad_item())
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
                 ui.menu_item('Generate Report', on_click=lambda _: export_to_pdf())
@@ -5247,7 +6543,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             ui.tooltip(f'Logged in as {auth.current_username()}') \
                 .props('anchor="center left" self="center right" :offset="[8, 0]"')
             with ui.menu().props('anchor="bottom right" self="top right"'):
-                ui.menu_item('Logout', on_click=lambda _: auth.log_out(sess.user_storage))
+                ui.menu_item('Logout', on_click=lambda _: log_out_with_check())
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
@@ -5279,28 +6575,36 @@ window.mlwSelectRange = function(elementId, from, to) {
         # the Tab element itself, even though ui.tab_panels(value=xml_tab)
         # elsewhere in this file is given the element -- nicegui reports
         # client-originated tab changes by name.
-        switching_to_xsheet = (new_value == 'XSheet')
-        if sess.xml_menu_button is not None:
-            sess.xml_menu_button.disable() if switching_to_xsheet else sess.xml_menu_button.enable()
-        for item in sess.xsheet_view_items:
-            item.set_enabled(switching_to_xsheet)
+        # the tab being left, and the one shown now (XSheet, XML or SVG)
+        leaving, showing = sess.main_tab, str(new_value)
+        sess.main_tab = showing
+        if sess.xml_menu_button is not None:  # the XML menu acts on the XML editor
+            sess.xml_menu_button.enable() if showing == 'XML' else sess.xml_menu_button.disable()
+        update_xsheet_view_items(showing == 'XSheet')
+        update_sketchpad_item(showing == 'XSheet')
         try:
-            if switching_to_xsheet:
+            if leaving == 'XML':
                 offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
                 if offset is not None:
                     sess.tab_view_state['xml_cursor_offset'] = int(offset)
+            elif leaving == 'XSheet' and sess.xsheet_grid is not None:
+                top_row = await sess.xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
+                if top_row is not None:
+                    sess.tab_view_state['xsheet_top_row'] = int(top_row)
+            if showing == 'XSheet':
                 if sess.xsheet_grid is not None and sess.tab_view_state['xsheet_top_row'] is not None:
                     import asyncio
                     rebuild_xsheet_from_current()
                     await asyncio.sleep(0.15)
                     sess.xsheet_grid.run_grid_method('ensureIndexVisible', sess.tab_view_state['xsheet_top_row'], 'top')
-            else:
-                if sess.xsheet_grid is not None:
-                    top_row = await sess.xsheet_grid.run_grid_method('getFirstDisplayedRowIndex')
-                    if top_row is not None:
-                        sess.tab_view_state['xsheet_top_row'] = int(top_row)
+            elif showing == 'XML':
                 if sess.tab_view_state['xml_cursor_offset'] is not None:
                     ui.run_javascript(f"window.mlwHighlightLine({sess.editor.id}, {sess.tab_view_state['xml_cursor_offset']});")
+            elif showing == 'SVG' and (sess.svg_editor_stale or not sess.svg_editor_invalid):
+                # the Sketchpad's edits made meanwhile, and the document's Production
+                # info as its comments have it (half-typed text is kept, unless the
+                # sketch was changed elsewhere since)
+                refresh_svg_editor()
         except Exception:
             pass
 
@@ -5309,6 +6613,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         # XSheet first; the shortcuts follow the tabs' positions
         xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
         xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
+        svg_tab = ui.tab('SVG').tooltip('Ctrl+Alt+3')  # the Sketchpad sketch's .svg
 
     # The XSheet tab is showing when the page opens; the XML menu acts on the
     # editor, so it starts disabled until the XML tab is chosen.
@@ -5404,7 +6709,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.expansion('Validation Results', icon='fact_check', value=False).classes('w-full').props('dense') \
                     as sess.validation_panel:
                 sess.validation_results_container = ui.column().classes('w-full gap-1')
-        with ui.tab_panel(xsheet_tab).classes('gap-2'):
+        with ui.tab_panel(xsheet_tab).classes('gap-2 relative'):  # relative: the sketchpad covers this panel
             # "Exposure Sheet" with the frame/layer count beside it, then the
             # document's Production info on the line below.
             with ui.row().classes('items-baseline gap-3'):
@@ -5452,6 +6757,21 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
+            ui.on('mlw_sketch_changed', handle_sketch_changed)  # the sketch, for Save (see save_sketch_beside())
+            # XSheet > Sketchpad: the sketchpad over everything above, and
+            # its tools while it's on (see toggle_sketchpad() and mlwSketchpad)
+            ui.element('div').classes('mlw-sketchpad')  # the SVG drawing goes in here (see mlwSketchpad)
+            _build_sketchpad_toolbar(sess)
+        with ui.tab_panel(svg_tab).classes('gap-1'):
+            # The Sketchpad sketch as its .svg file has it (see sketch_file_text()),
+            # kept in step both ways: editing it here changes the sketch (see
+            # on_svg_editor_change()), and the Sketchpad's edits show here (see
+            # refresh_svg_editor()). Save and Save As write it beside the document.
+            ui.label('Sketchpad SVG').classes('text-sm font-medium')
+            sess.svg_status = ui.label('').classes('text-xs text-gray-500')
+            sess.svg_editor = ui.codemirror(value='', language='xml', on_change=on_svg_editor_change) \
+                .classes('w-full').style('min-height: 80vh')
+            refresh_svg_editor()
 
     # build initial tree from current editor value
     try:
@@ -5479,14 +6799,16 @@ window.mlwSelectRange = function(elementId, from, to) {
         # it fired on both keydown and keyup -- both fixed below.
         if not e.action.keydown:
             return
-        if e.key == 'z' and e.modifiers.ctrl:
+        if e.key == 'z' and e.modifiers.ctrl and sess.main_tab != 'SVG':  # (the SVG editor undoes its own)
             do_undo()
-        elif e.key == 'y' and e.modifiers.ctrl:
+        elif e.key == 'y' and e.modifiers.ctrl and sess.main_tab != 'SVG':
             do_redo()
         elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'XSheet'
         elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'XML'
+        elif e.key.number == 3 and e.modifiers.ctrl and e.modifiers.alt:
+            main_tabs.value = 'SVG'
     ui.keyboard(on_key=handle_keyboard)
 
 

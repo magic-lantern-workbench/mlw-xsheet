@@ -123,18 +123,38 @@ def record_activity(store, at: float | None = None) -> None:
         store['last_activity'] = at
 
 
+# Called with a line for the user's log whenever they log in or out (main.py
+# sets it: the pop-up log -- see its record_log_event()); nothing by default.
+record_event = None
+
+
+def _record(text: str) -> None:
+    try:
+        if record_event is not None:
+            record_event(text)
+    except Exception:  # the log never gets in the way of logging in or out
+        pass
+
+
+def _timed_out_text() -> str:
+    return f'Logged out after {session_timeout_minutes()} minute(s) of inactivity'
+
+
 def session_is_active(store) -> bool:
     """Whether this browser is logged in and hasn't been idle past the
     time-out. An expired login is switched off here."""
     if not store.get('authenticated'):
         return False
     if time.time() - store.get('last_activity', 0) > session_timeout_minutes() * 60:
+        _record(_timed_out_text())  # (while still logged in, so the entry has their name)
         store['authenticated'] = False
         return False
     return True
 
 
 def log_out(store, *, timed_out: bool = False) -> None:
+    if store.get('authenticated'):
+        _record(_timed_out_text() if timed_out else 'Logged out')
     store['authenticated'] = False
     ui.navigate.to('/login?reason=timeout' if timed_out else '/login')
 
@@ -171,6 +191,7 @@ def login_page(redirect_to: str = '/', reason: str = ''):
         if check_credentials(username.value or '', password.value or ''):
             store['authenticated'] = True
             store['last_activity'] = time.time()
+            _record('Logged in')
             ui.navigate.to(_safe_redirect(redirect_to))
             return
         await asyncio.sleep(1)  # slow down password guessing

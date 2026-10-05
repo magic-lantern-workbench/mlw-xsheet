@@ -138,10 +138,16 @@ Change it before exposing the server to anyone else. The password is stored only
 hash, in `NICEGUI_STORAGE_PATH`.
 
 - Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
-  opens a menu with **Logout**, which logs them all out and returns to the login page.
+  opens a menu with **Logout**, which logs them all out and returns to the login page. If the
+  document has unsaved changes (to its text or its Sketchpad sketch), Logout first asks whether
+  to save them: **Yes** saves them (the sketch too) and logs out; **No** logs out without them —
+  they're lost, as closing the document would lose them, and the next login reopens the
+  document as it was last saved (a new, never-saved document isn't reopened); **Cancel** stays
+  logged in.
 - After 30 minutes without keyboard, mouse or touch activity in any of the browser's tabs,
-  you're logged out and the login page says why. The time-out is also set in Preferences. Your
-  unsaved changes are kept as a draft and come back when you log in again.
+  you're logged out and the login page says why. The time-out is also set in Preferences. As
+  there's no one to ask then, your unsaved changes are kept as a draft and come back when you log
+  in again.
 - A wrong password is rejected after a short delay, to slow down guessing.
 
 ### File access
@@ -196,9 +202,10 @@ switching browsers starts fresh settings.
 - **Header** — `File`, `Edit`, `XSheet`, `XML` and `About` dropdown menus (About has the app info, with the license in a scrollable tab, and the document's Reviews) on the
   left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
   The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
-  Select Schema, …) act on the editor, so they're disabled while looking at the XSheet tab.
-- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, and `XML`
-  (Editor + Hierarchy tree). `Ctrl+Alt+1`/`Ctrl+Alt+2` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
+  Select Schema, …) act on the editor, so they're disabled while looking at the XSheet or SVG tab.
+- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, `XML`
+  (Editor + Hierarchy tree) and `SVG` (the Sketchpad sketch's `.svg`, in an editor; see [SVG tab](#svg-tab)).
+  `Ctrl+Alt+1`/`Ctrl+Alt+2`/`Ctrl+Alt+3` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
 - **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
   collapsible tree mirroring the document's element structure.
 - **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
@@ -210,10 +217,10 @@ switching browsers starts fresh settings.
 | Item | What it does |
 |---|---|
 | New | Start a new ExposureSheet document that is well-formed and valid against the XML Schema, with placeholder values to replace: the four required sections (Production with `UNKNOWN` IDs, the Title "Untitled", 24 fps and frames 1–24; Assets with one `Unknown` asset; a Timeline whose frame 1 exposes a "New Layer" at cel `A001`; and VersionControl with a first revision by you, dated today), laid out with your Format preferences. If the open document has unsaved changes, you're asked first (Cancel / No / Yes, as when closing). Nothing is written to disk until you choose **Save** or **Save As** (both open the Save As dialog, suggesting `untitled.xml`); until then the footer shows `untitled.xml *`, and the document is kept as a draft like any unsaved work. |
-| Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. |
+| Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. If a `.svg` of the same name is beside it (saved with its sketch), the Sketchpad's sketch is loaded from it. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
-| Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. |
-| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. |
+| Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. Also saves the Sketchpad's sketch beside the file, as `.svg` (see [Sketchpad](#xsheet-menu)). |
+| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. The Sketchpad's sketch is saved beside the new file, as `.svg`. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export > Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Export > Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder in the data folder where your real cel images are. Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
@@ -240,8 +247,9 @@ you can keep working in the editor while it's open.
 | Item | What it does |
 |---|---|
 | Collapse Frames | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once. Like the individual arrows, it updates the grid in place without scrolling. |
-| Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. Both items act on the grid, so they're disabled while the XML tab is showing. |
-| Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). Both styles have a heavier rule after each second, like the view; the traditional layout also matches the view's wrapped Action/Description and Tech. Notes, and alternating shading. Every frame is printed (collapsed runs are expanded). |
+| Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. Both items act on the grid, so they're disabled while the XML tab is showing, and while the Sketchpad is on (the sketch is pinned to the sheet's rows, which they would move). |
+| Sketchpad | A check-box item that turns sketching on the **sketchpad** on and off: a transparent SVG drawing over the whole XSheet view (the heading, production line and grid), through which the sheet shows. It's available once a document is open (opened, new, or restored), and not on the XML tab. The sketch is pinned to the sheet, not the screen: it spans every frame and column, and scrolls with the grid, so a mark made on a frame stays on it. On, the sketchpad takes the mouse or pen, so the grid under it can't be clicked, but the mouse wheel over it still scrolls the grid (Shift+wheel scrolls across), and a toolbar appears at its top right. The **Shape** button shows the shape it draws; click it to choose from the shape chooser: **Spline** (✏️) — each stroke becomes an editable spline, the points drawn thinned to a few anchors and joined by a smooth curve (cubic Béziers) — **Polyline** (straight segments: click to place each point, with the next segment following the pointer; double-click or press Enter to end it, Backspace takes back the last point, and Escape drops it), **Rectangle** (▢, dragged from corner to corner) or **Circle** (◯, dragged from its centre out). With **Select** (↖), click a shape to select it: it's highlighted, with round handles — at a spline's anchors, a polyline's points, a rectangle's corners, or round a circle's edge — to drag to reshape it (a circle's change its radius); drag the shape itself to move it, and click elsewhere to deselect. Click one of a selected spline's anchors to select it (it fills in) and show its **tangents** (direction handles): an arm out to a small dot on each side, whose direction sets the curve's slope and angle through the anchor, and whose length — its **magnitude** — sets how far the curve holds that direction before turning (short for a tight bend, long for a wide sweep). Drag a dot to change both; a label shows its angle and length as you drag. The arm opposite turns to stay in line, keeping its own length, so the curve stays smooth; hold **Alt** to move one arm alone, for a sharp corner. A spline's first anchor has only an outgoing arm and its last only an incoming one, and moving an anchor carries its arms with it. The **colour** button (a small square in the current colour) opens a colour chooser — a palette of 256 colours in small squares, 16 rows of 16 (a row of greys from white to black, then 15 hues round the colour wheel, a row each, in 16 shades from light to dark), and Spectrum and Tune views for any other — and the **brush** button (a dot that grows with the size) opens a brush chooser — a 1–24 px slider with a preview line, and quick sizes from 1 to 16 px (the pen starts at 4 px, in red). Both set the pen and restyle the selected shape, and apply a choice at once so you can see it; **Cancel** puts back what was there when the chooser opened (the pen's setting and the shape's), and **Done** keeps it, as a single Undo step. **Delete** (🗑, or the Delete key) removes the selected shape — but with one of a spline's anchors selected, the Delete (or Backspace) key removes just that anchor, the curve joining its neighbours, and selects the next one, so pressing it again removes that too (a spline of two anchors goes whole; click the curve, not an anchor, to delete the whole spline) — **Undo** takes back the last change (a new shape, reshape, tangent, move, restyle, delete or clear), and **Clear** removes every shape (after asking). Turn XSheet > Sketchpad off again to put it away. While it's on, Collapse Frames and Expand Frames are disabled. Off, the sketchpad and its sketch are hidden and it ignores the pointer, so nothing can be drawn and the grid works as usual; the sketch is kept, and shows again when the sketchpad is turned back on. The sketch belongs to the document: it survives switching to the XML tab and back and resizing the window, and **Save** and **Save As** save it beside the document, as SVG, in a file of the same name with `.svg` in place of `.xml` (`scene.xml` → `scene.svg`). The file starts with XML comments naming the document it belongs to (its path in the data folder) and giving that document's `<Production>` info (Project ID, Sequence ID, Scene ID, Shot ID, Title, Frame Rate, Start and End Frame, as its elements). **Open** loads that sketch back — every shape, with its colour, width and a spline's tangents — if the `.svg` is there; opening or closing a document turns the sketchpad off first. A document without a sketch gets no `.svg`; if its sketch is cleared, saving empties the `.svg` rather than leaving the old sketch to come back. Changing the sketch marks the document as changed, like editing its text: its name gets a `*`, and Close, New and Open ask whether to save it first (Yes saves the sketch too; No leaves the saved one as it was). Undoing back to the sketch as it was saved clears the mark. An unsaved sketch is kept in the document's draft, so a page reload brings it back, still unsaved. |
+| Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). Both styles have a heavier rule after each second, like the view; the traditional layout also matches the view's wrapped Action/Description and Tech. Notes, and alternating shading. Every frame is printed (collapsed runs are expanded). The Sketchpad's sketch, if there is one, is drawn over the grid (unless Preferences > Report says not to). The grid is then laid out as the XSheet tab shows it — its columns' widths and its rows' heights, all at one scale — so the sketch isn't distorted (a circle stays round) and each mark lands on the frames and cells it was drawn on; a mark crossing a page break carries on from one page to the next. Marks in the space beside the columns (the Classic view has room to the right) are kept: the page takes in as much of it as the sketch reaches. At that scale, text that doesn't fit a cell is cut short, as on screen, and the type is smaller when the grid is wide. The sketch is clipped to the grid's rows, so anything drawn over the heading or column titles isn't printed. Without a sketch the PDF is laid out as before. |
 | Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
 Both PDFs show the export date and a UTC creation timestamp under the title on page 1.
@@ -305,15 +313,21 @@ Report and Logs are saved per user; Login applies to everyone using the server:
   default, with Select all / Clear all), and whether to add the whole document's raw XML as an
   appendix. Production and VersionControl are always included. A left-out section doesn't appear
   as a section or in the table of contents (the appendix, if added, is still the complete
-  document).
+  document). Also whether **XSheet > Export XSheet** includes the Sketchpad sketch, drawn over the
+  exposure sheet (on by default).
 - **Logs** — **Record pop-up messages in a log file** (on by default) keeps a record of every
   status pop-up the app shows you — confirmations, warnings and errors, from any menu or dialog,
   including the login page — one line each, with the date, time and UTC offset, the level
-  (SUCCESS, ERROR, WARNING or INFO), the open document and the message:
+  (SUCCESS, ERROR, WARNING or INFO), the logged-in user's name (`-` when no one is logged in, as
+  on the login page), the open document and the message:
 
   ```
-  2026-09-29 20:35:01 +0000  SUCCESS  xsheet-exposure.xml  Opened xsheet-exposure.xml
+  2026-09-29 20:35:01 +0000  SUCCESS  admin  xsheet-exposure.xml  Opened xsheet-exposure.xml
+  2026-09-29 20:34:52 +0000  ERROR    -  -  Incorrect user name or password
   ```
+
+  It also records each login and logout (not pop-ups, but in the log with them): `Logged in`,
+  `Logged out`, and `Logged out after N minute(s) of inactivity` for the idle time-out.
 
   The pop-ups are always shown; turning the option off only stops recording them. Each user
   (browser) has their own log in the state folder, at `logs/popups-ID.log` under
@@ -456,12 +470,30 @@ layer already uses, and names containing `"` `'` `<` `>` or `&` are refused. The
 
 **XSheet > Export XSheet** prints this layout when it's the style you're viewing.
 
+### SVG tab
+
+**Sketchpad SVG**, an editor showing the Sketchpad sketch as its `.svg` file has it (see the Sketchpad row of the
+[XSheet menu](#xsheet-menu)) — the comments naming the document and giving its `<Production>`
+info, then the SVG, an element to a line — kept in step both ways. Edit it and the sketch
+follows: change a shape's `stroke` colour, `stroke-width`, position or size, delete a line, or
+type a new `<rect>`, `<circle>`, `<polyline>` or `<path>` (a spline: `M` then `C` curves, whose
+control points become its tangents), and the Sketchpad draws it that way — a burst of typing is a
+single Sketchpad Undo step. While the text isn't well-formed (half-way through a tag, say), a
+note says so and the sketch stays as it was. The other way, whatever you draw or change on the
+Sketchpad shows here when you come back to this tab. Only those four elements are sketch
+shapes: anything else, and edits to the comments, are dropped when the file is next written.
+Editing here marks the document as changed; **Save** writes exactly what the editor shows. With
+no document open, the editor is empty and can't be edited.
+
 ### Keyboard shortcuts
 
 - `Ctrl+Z` — Undo
 - `Ctrl+Y` — Redo
 - `Ctrl+Alt+1` — Switch to the XSheet tab
 - `Ctrl+Alt+2` — Switch to the XML tab
+- `Ctrl+Alt+3` — Switch to the SVG tab
+
+(On the SVG tab, `Ctrl+Z` and `Ctrl+Y` undo and redo in the SVG editor itself.)
 
 (`Ctrl+O` and `Ctrl+S` are intentionally not bound — browsers reserve those shortcuts for
 their own Open/Save dialogs and won't let a web page override them. Use the File menu instead.

@@ -381,18 +381,35 @@ _SHEET_LOOKS = {
 }
 
 
-def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: str = 'traditional') -> None:
+def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: str = 'traditional',
+                      screen: dict | None = None) -> dict:
     """Draw an XSheet table by hand, in the look of `style` (see
     _SHEET_LOOKS): centred bold headings (repeated on each page), rows that
     grow to fit wrapped text, and -- in both styles, like the view -- a
     heavier rule after the last frame of each second (rows with _second).
-    Each column: key, header, weight (relative width), align, wrap, frame."""
+    Each column: key, header, weight (relative width), align, wrap, frame.
+
+    `screen` (see _screen_layout()), to draw a sketch over it: the table laid
+    out as the XSheet tab shows it, at one scale -- its columns' 'lefts' and
+    'widths' and each frame's row height ('heights'); its rows don't grow,
+    so text that doesn't fit is cut short, as on screen, and the type is made
+    smaller if the rows are too short for it.
+
+    Returns where it all went, for _draw_sketch(): the columns' 'lefts' and
+    'widths', and 'rows' -- each row's (page, top, height, frame)."""
     look = _SHEET_LOOKS[style]
     font, font_size, line_h = look['font'], look['font_size'], look['line_h']
     pad_x, pad_y = look['pad_x'], look['pad_y']
     usable = pdf.w - pdf.l_margin - pdf.r_margin
-    total = sum(c['weight'] for c in columns)
-    widths = [usable * c['weight'] / total for c in columns]
+    if screen:
+        widths, lefts = list(screen['widths']), list(screen['lefts'])
+        fit = min(1.0, min(screen['heights'].values(), default=screen['row_h']) / (line_h + 2 * pad_y))
+        font_size, line_h, pad_x, pad_y = font_size * fit, line_h * fit, pad_x * fit, pad_y * fit
+    else:
+        total = sum(c['weight'] for c in columns)
+        widths = [usable * c['weight'] / total for c in columns]
+        lefts = [pdf.l_margin + sum(widths[:i]) for i in range(len(widths))]
+    table_right = lefts[-1] + widths[-1]
     bottom = pdf.h - pdf.b_margin
     grid, rule = look['grid'], (85, 85, 85)
     white = (255, 255, 255)
@@ -404,18 +421,26 @@ def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: s
             return ['']
         return pdf.multi_cell(width - 2 * pad_x, line_h, _sanitize(text), dry_run=True, output='LINES')
 
+    def cut(text: str, width: float) -> str:  # what fits in a width, as the screen shows it
+        text = _sanitize(text)
+        if pdf.get_string_width(text) <= width:
+            return text
+        while text and pdf.get_string_width(text + '...') > width:
+            text = text[:-1]
+        return text + '...' if text else ''
+
     def draw_header():
         pdf.set_font(font, 'B', font_size)
-        y, x = pdf.get_y(), pdf.l_margin
+        y = pdf.get_y()
         height = line_h + 2 * pad_y
-        for col, width in zip(columns, widths):
+        for col, x, width in zip(columns, lefts, widths):
             pdf.set_fill_color(*(look['header_fill'] or white))
             pdf.set_draw_color(*grid)
             pdf.set_line_width(look['grid_w'])
             pdf.rect(x, y, width, height, style='DF')
             pdf.set_xy(x, y + pad_y)
-            pdf.cell(width, line_h, _sanitize(col['header']), align='C')
-            x += width
+            header = cut(col['header'], width - 2 * pad_x) if screen else _sanitize(col['header'])
+            pdf.cell(width, line_h, header, align='C')
         pdf.set_y(y + height)
         pdf.set_font(font, '', font_size)
 
@@ -428,46 +453,156 @@ def _draw_sheet_table(pdf: FPDF, columns: list[dict], rows: list[dict], style: s
         pdf.set_draw_color(*rule)
         pdf.set_line_width(1.4)
         for y in rules:
-            pdf.line(pdf.l_margin, y, pdf.l_margin + usable, y)
+            pdf.line(lefts[0], y, table_right, y)
         pdf.set_line_width(look['grid_w'])
         rules.clear()
 
+    placed: list[tuple[int, float, float, object]] = []
     pdf.set_auto_page_break(False)
     draw_header()
     for index, row in enumerate(rows):
         cells = []
+        if screen:
+            height = screen['heights'].get(row.get('Frame'), screen['row_h'])
+            fits = max(int((height - 2 * pad_y) / line_h + 1e-6), 1)  # lines a row has room for
         for col, width in zip(columns, widths):
             value = str(row.get(col['key'], '') or '')
-            lines = text_lines(value, width) if col.get('wrap') else [value]
+            if screen:
+                lines = text_lines(value, width)[:fits] if col.get('wrap') and fits > 1 else [value]
+                lines = [cut(line, width - 2 * pad_x) for line in lines]
+            else:
+                lines = text_lines(value, width) if col.get('wrap') else [value]
             cells.append(lines)
-        height = max(len(lines) for lines in cells) * line_h + 2 * pad_y
+        if not screen:
+            height = max(len(lines) for lines in cells) * line_h + 2 * pad_y
         if pdf.get_y() + height > bottom:
             draw_rules()
             pdf.add_page()
             draw_header()
-        y, x = pdf.get_y(), pdf.l_margin
-        for col, width, lines in zip(columns, widths, cells):
+        y = pdf.get_y()
+        for col, x, width, lines in zip(columns, lefts, widths, cells):
             fill = frame_fill if col.get('frame') and frame_fill else (shade if index % 2 else white)
             pdf.set_fill_color(*fill)
             pdf.set_draw_color(*grid)
             pdf.set_line_width(look['grid_w'])
             pdf.rect(x, y, width, height, style='DF')
+            # on screen a line sits in the middle of its row
+            text_top = y + (height - len(lines) * line_h) / 2 if screen else y + pad_y
             for n, line in enumerate(lines):
-                pdf.set_xy(x + pad_x, y + pad_y + n * line_h)
+                pdf.set_xy(x + pad_x, text_top + n * line_h)
                 pdf.cell(width - 2 * pad_x, line_h, _sanitize(line), align='C' if col.get('align') == 'C' else 'L')
-            x += width
         if row.get('_second'):
             rules.append(y + height)
+        placed.append((pdf.page, y, height, row.get('Frame')))
         pdf.set_y(y + height)
     draw_rules()
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.567)  # fpdf2's default (0.2 mm)
     pdf.set_auto_page_break(True, margin=MARGIN)
+    return {'lefts': lefts, 'widths': widths, 'rows': placed}
+
+
+def _screen_layout(pdf: FPDF, columns: list[dict], sketch: dict | None) -> dict | None:
+    """The table laid out as the XSheet tab shows it, for a sketch to be
+    drawn over it undistorted (see _draw_sheet_table() and _draw_sketch()):
+    the grid's columns and row heights from the browser (see
+    mlwSketchpad.sheetShapes()), all at one scale -- the page's width over
+    the columns, or as far to the right as the sketch goes if that's
+    further (up to the grid's own width), so a sketch in the space beside
+    the columns is kept too. None without a sketch, or if the browser's
+    columns aren't these."""
+    if not sketch or not sketch.get('shapes') or len(sketch.get('columns') or []) != len(columns):
+        return None
+    cols = sketch['columns']
+    right = max(l + w for l, w in cols)
+    reach = max((x + shape.get('width', 0) / 2 for shape in sketch['shapes'] for x, _ in shape.get('points') or []),
+                default=0)
+    extent = max(right, min(reach, sketch.get('width') or reach))
+    scale = (pdf.w - pdf.l_margin - pdf.r_margin) / extent
+    heights: dict[int, float] = {}
+    standard = min(h for _, _, h in sketch['rows'])
+    for first, last, h in sketch['rows']:
+        for frame in range(int(first), int(last) + 1):  # a collapsed run's frames: a row each, as printed
+            heights[frame] = (h if first == last else standard) * scale
+    return {'scale': scale, 'row_h': standard * scale, 'heights': heights,
+            'lefts': [pdf.l_margin + l * scale for l, _ in cols], 'widths': [w * scale for _, w in cols]}
+
+
+def _draw_sketch(pdf: FPDF, layout: dict, sketch: dict | None, screen: dict | None) -> None:
+    """Draw the XSheet tab's Sketchpad sketch over the table
+    _draw_sheet_table() drew (its `layout`), on each page it crosses and
+    clipped to that page's rows. The sketch is as the browser gives it (see
+    mlwSketchpad.sheetShapes()): each shape's colour, width, whether it's
+    closed, and its points as [x, frame] -- pixels from the grid's left, and
+    a frame's number plus how far down it. With the table laid out as on
+    screen (`screen`, see _screen_layout()), a point's place is its pixels at
+    that one scale, so the sketch isn't distorted, and a mark in the space
+    beside the columns is kept; a mark made on a frame lands on its row,
+    whichever page that's on, and a mark crossing a page break carries on
+    from one page to the next."""
+    from bisect import bisect_right
+    from fpdf.enums import StrokeCapStyle, StrokeJoinStyle
+    placed = [(page, top, h, frame) for page, top, h, frame in layout['rows'] if isinstance(frame, int)]
+    if not placed or not sketch or not sketch.get('shapes'):
+        return
+    lefts, widths = layout['lefts'], layout['widths']
+    if screen:
+        scale, clip_w = screen['scale'], pdf.w - pdf.l_margin - pdf.r_margin
+    else:  # not laid out as on screen: stretched over the table as it is
+        right = max((l + w for l, w in sketch.get('columns') or []), default=1)
+        scale, clip_w = (lefts[-1] + widths[-1] - pdf.l_margin) / right, lefts[-1] + widths[-1] - pdf.l_margin
+    frames = [frame for *_, frame in placed]
+    # every row one after the other, as if on one long page
+    starts, run = [], 0.0
+    for _, _, h, _ in placed:
+        starts.append(run)
+        run += h
+    total = run
+
+    def down(f: float) -> float:  # a frame position -> how far down the long page
+        if f < frames[0]:
+            return (f - frames[0]) * placed[0][2]
+        if f >= frames[-1] + 1:
+            return total + (f - frames[-1] - 1) * placed[-1][2]
+        k = bisect_right(frames, f) - 1
+        after = frames[k + 1] if k + 1 < len(frames) else frames[k] + 1
+        return starts[k] + (f - frames[k]) / max(after - frames[k], 1) * placed[k][2]
+
+    # each page's stretch of the long page, and where it's drawn
+    pages: dict[int, list[float]] = {}
+    for (page, top, h, _), start in zip(placed, starts):
+        if page not in pages:
+            pages[page] = [start, start + h, top]
+        pages[page][1] = start + h
+    shapes = []
+    for shape in sketch['shapes']:
+        points = [(pdf.l_margin + x * scale, down(f)) for x, f in shape.get('points') or []]
+        if not points:
+            continue
+        colour = str(shape.get('color') or '#000000').lstrip('#')
+        try:
+            rgb = tuple(int(colour[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            rgb = (0, 0, 0)
+        width = max(float(shape.get('width') or 0) * scale, 0.2)
+        shapes.append((points, rgb, width, bool(shape.get('closed'))))
+    last_page = pdf.page
+    for page, (v0, v1, top) in pages.items():
+        pdf.page = page
+        with pdf.rect_clip(pdf.l_margin, top, clip_w, v1 - v0):
+            for points, rgb, width, closed in shapes:
+                ys = [v for _, v in points]
+                if max(ys) < v0 - width or min(ys) > v1 + width:
+                    continue  # not on this page
+                with pdf.local_context(draw_color=rgb, line_width=width, stroke_cap_style=StrokeCapStyle.ROUND,
+                                       stroke_join_style=StrokeJoinStyle.ROUND):
+                    pdf.polyline([(x, top + v - v0) for x, v in points], polygon=closed, style='D')
+    pdf.page = last_page
 
 
 def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
                         title: str = 'Untitled', source_text: str | None = None,
-                        style: str = 'classic') -> bytes:
+                        style: str = 'classic', sketch: dict | None = None) -> bytes:
     """Render the Exposure Sheet grid (as already computed by main.py's
     parse_exposure_sheet()) as a paginated, landscape PDF, in either XSheet
     style -- the same shape as the XSheet tab's on-screen grid, including
@@ -484,7 +619,12 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
     layer_ids/rows) is used, best-effort, to show the document's
     <Production> and <VersionControl> fields on page 1, and the view's
     header (counts and Production info) above the grid, which always starts
-    on page 2."""
+    on page 2.
+
+    `sketch`: the XSheet tab's Sketchpad sketch and the grid's layout on
+    screen, from the browser (see mlwSketchpad.sheetShapes()); with one, the
+    grid is laid out as on screen, at one scale, and the sketch drawn over it
+    undistorted (see _screen_layout() and _draw_sketch()). None for none."""
     pdf = _new_pdf(orientation='L')
     _write_title_block(pdf, f'{title} - Exposure Sheet')
 
@@ -515,7 +655,9 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
             {'key': 'Frame', 'header': 'Fr', 'weight': 0.45, 'align': 'C', 'frame': True},
             {'key': 'Camera', 'header': 'Camera Moves', 'weight': 1.1, 'align': 'C'},
         ]
-        _draw_sheet_table(pdf, columns, rows, 'traditional')
+        screen = _screen_layout(pdf, columns, sketch)
+        layout = _draw_sheet_table(pdf, columns, rows, 'traditional', screen)
+        _draw_sketch(pdf, layout, sketch, screen)
         return bytes(pdf.output())
 
     columns = [
@@ -526,5 +668,7 @@ def generate_xsheet_pdf(layer_ids: list[str], rows: list[dict], *,
         {'key': 'Audio', 'header': 'Audio', 'weight': 0.9, 'align': 'C', 'wrap': True},
         {'key': 'Notes', 'header': 'Notes', 'weight': 1.6, 'wrap': True},
     ]
-    _draw_sheet_table(pdf, columns, rows, 'classic')
+    screen = _screen_layout(pdf, columns, sketch)
+    layout = _draw_sheet_table(pdf, columns, rows, 'classic', screen)
+    _draw_sketch(pdf, layout, sketch, screen)
     return bytes(pdf.output())
