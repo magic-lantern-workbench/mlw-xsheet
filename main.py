@@ -3933,12 +3933,16 @@ def _build_sketchpad_toolbar(sess) -> None:
         mark('tool', 'draw')
         ui.run_javascript(f'mlwSketchpad.setShape({json.dumps(key)})')
 
+    # a small square, a little smaller than the round button it replaced
+    COLOUR_SWATCH_STYLE = ('border-radius: 2px; min-width: 0; min-height: 0; width: 16px; height: 16px; padding: 0; '
+                           'border: none; box-shadow: none !important; outline: none')
+
     pen = {'color': SKETCHPAD_COLOR, 'width': SKETCHPAD_WIDTH}  # the pen's settings, as the choosers left them
     opened = {'color': None, 'width': None, 'mark': 0}  # what they were when a chooser opened
     quiet = {'on': False}  # the brush slider set by Cancel: show, don't apply
 
     def show_colour(value: str):
-        color_button.style(f'background: {value} !important; border: 2px solid white; box-shadow: 0 0 0 1px #9ca3af')
+        color_button.style(f'background: {value} !important; {COLOUR_SWATCH_STYLE}')
         width_preview.style(f'stroke: {value}') if width_preview is not None else None
 
     def show_width(value: int):
@@ -4037,8 +4041,8 @@ def _build_sketchpad_toolbar(sess) -> None:
             ui.separator().props('vertical')
             # one button in the current colour; it opens a colour chooser: a
             # palette, or any colour in its Spectrum and Tune views
-            with ui.button().props('round dense size=sm unelevated') \
-                    .style(f'background: {SKETCHPAD_COLOR} !important; border: 2px solid white; box-shadow: 0 0 0 1px #9ca3af') \
+            with ui.button().props('dense size=sm unelevated') \
+                    .style(f'background: {SKETCHPAD_COLOR} !important; {COLOUR_SWATCH_STYLE}') \
                     .tooltip('Colour: the pen, and the selected shape') as color_button:
                 picker = ui.color_picker(on_pick=lambda e: colour(e.color))
                 picker.on('before-show', lambda: chooser_opened('color'))
