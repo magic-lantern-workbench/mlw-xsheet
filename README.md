@@ -183,7 +183,7 @@ session: the open document, undo/redo history, validation results, and XSheet vi
 are saved per user (per browser, via a cookie), so they survive reloads and server restarts
 and carry over to that user's other tabs. The server keeps them in `NICEGUI_STORAGE_PATH`:
 
-- **Preferences** and the chosen schema.
+- **Preferences** (including the Sketchpad's text type and size) and the chosen schema, and whether the XML tab is shown (XML > XML Editor).
 - **Recent files** (File > Open Recent) and the folder File > Open starts in.
 - **Unsaved changes.** Edits are saved as a draft as you type. Reloading the page (or opening
   a new tab) reopens the document you were last working on, with your unsaved changes and the
@@ -228,7 +228,7 @@ switching browsers starts fresh settings.
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export > Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Export > Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder in the data folder where your real cel images are. Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
-| Preferences… | Open the Preferences dialog (indent size / tabs vs. spaces used by Format). |
+| Preferences… | Open the Preferences dialog, in tabs: XSheet style, Sketchpad text type and size, Format, Recent Files, Report, Logs and Login (see [Preferences dialog](#preferences-dialog)). |
 
 ### Edit menu
 
@@ -295,6 +295,10 @@ Schema resolution order for **Validate against Schema**:
 Opened from **File > Preferences…**. The dialog has seven tabs: XSheet, Sketchpad, Format, Recent Files,
 Report, Logs and Login. All but Login are saved per user; Login applies to everyone using the server:
 
+The XML tab can also be turned off, from the **XML > XML Editor** check box rather than this
+dialog (see [XML menu](#xml-menu)); that setting is saved per user too, and is on until you
+change it.
+
 - **XSheet** — the style of the XSheet tab: **Traditional exposure sheet** (the default; see
   [Traditional style](#traditional-style)) or **Classic (v1.0.0)**. The style is applied when a
   document is opened. If you save a new style while a document is open, you're asked whether to
@@ -302,6 +306,8 @@ Report, Logs and Login. All but Login are saved per user; Login applies to every
 - **Sketchpad** — the **Type** (Sans-serif, Serif or Monospace) and **Size** (6–200 pixels, default
   24) of the Sketchpad's text strings, with a sample. They apply to strings typed from now on; a
   string keeps the ones it was typed with. Export XSheet prints them to match.
+  Like the other tabs, it is applied with **Save** and remembered per user; until it is saved, the
+  type is Sans-serif and the size 24.
 - **Format** — controls the **XML > Format** command:
   - **Use tabs for indentation** — tabs instead of spaces.
   - **Indent size (spaces)** — spaces per indent level (1–8), used when tabs are off.
