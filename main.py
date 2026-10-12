@@ -4591,6 +4591,9 @@ def _build_sketchpad_toolbar(sess) -> None:
                     .tooltip('Colour: the pen, and the selected shape') as color_button:
                 picker = ui.color_picker(on_pick=lambda e: colour(e.color))
                 picker.on('before-show', lambda: chooser_opened('color'))
+                # ring the pen's colour in the palette once it is showing (see mlwMarkSwatch())
+                picker.on('show', lambda: ui.run_javascript(
+                    f'setTimeout(() => mlwMarkSwatch({json.dumps(pen["color"])}), 50)'))
                 picker.q_color.props(f'default-view=palette no-header format-model=hex '
                                      f':palette="{json.dumps(SKETCHPAD_PALETTE).replace(chr(34), chr(39))}"')
                 picker.q_color.classes('mlw-palette-16').style('width: 256px')  # the palette: 16 x 16, 16 px swatches
@@ -6244,12 +6247,40 @@ def index():
         padding-bottom: 6.25% !important;
     }
 }
+/* the colour chooser's chosen swatch (see mlwMarkSwatch()): ringed, until the chooser closes */
+.q-color-picker.mlw-palette-16 .q-color-picker__cube.mlw-swatch-chosen {
+    position: relative;
+    z-index: 1;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1976d2;
+}
 /* the colour chooser's swatches: a faint edge, so white shows too */
 .q-color-picker__cube {
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 </style>
 <script>
+// The colour chooser's palette: the swatch picked is ringed (so is the pen's colour, when the chooser
+// opens). The ring is on the swatch's element only, so it is gone when the chooser closes.
+window.mlwMarkSwatch = function(hex) {
+    const rgb = (h) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(h || ''); return m ? `rgb(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)})` : null; };
+    const want = rgb(hex);
+    document.querySelectorAll('.q-color-picker.mlw-palette-16').forEach(palette => {
+        palette.querySelectorAll('.q-color-picker__cube').forEach(cube => {
+            cube.classList.toggle('mlw-swatch-chosen', !!want && cube.style.backgroundColor === want);
+        });
+    });
+};
+document.addEventListener('click', (e) => {
+    const cube = e.target.closest && e.target.closest('.q-color-picker.mlw-palette-16 .q-color-picker__cube');
+    if (!cube) return;
+    const palette = cube.closest('.q-color-picker');
+    palette.querySelectorAll('.mlw-swatch-chosen').forEach(c => c.classList.remove('mlw-swatch-chosen'));
+    cube.classList.add('mlw-swatch-chosen');
+    // the palette redraws as the colour is set: keep the ring on the same swatch
+    const colour = cube.style.backgroundColor;
+    requestAnimationFrame(() => palette.querySelectorAll('.q-color-picker__cube').forEach(c =>
+        c.classList.toggle('mlw-swatch-chosen', c.style.backgroundColor === colour)));
+}, true);
 window.mlwSketchpad = window.mlwSketchpad || (() => {
     const NS = 'http://www.w3.org/2000/svg';
     // shapes: [{type: 'spline' | 'rect' | 'circle', color, width, points: [[x, y], ...]}], in CSS pixels.
