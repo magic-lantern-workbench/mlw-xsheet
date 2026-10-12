@@ -120,6 +120,7 @@ class Session:
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
         self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
+        self.delete_layer_item = None  # Edit > Delete Layer: likewise
         self.delete_frame_item = None  # Edit > Delete Frame: enabled on the XSheet tab
         self.svg_tab = None        # the SVG tab, shown only while the sketchpad is on (see toggle_sketchpad())
         self.xml_tab = None        # the XML tab, hidden when the XML editor is turned off
@@ -159,6 +160,7 @@ class Session:
         # Frame highlighted in the traditional sheet's Fr columns; kept here
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
+        self.xsheet_current_column = None  # the column last clicked (colId), for Edit > Delete Layer
         self.xsheet_refresh_in_place = False  # the next grid rebuild just replaces the rows (see edit_xsheet_notes())
         self.main_tabs = None  # the XSheet / XML / SVG tabs (see xml_tab_active())
 
@@ -2571,6 +2573,137 @@ def delete_frames_in_text(text: str, at: int, count: int,
     return text
 
 
+def _element_spans(text: str, name: str) -> list[tuple[int, int, str, str]]:
+    """Every <name> element in `text` outside comments, as (start, end, its
+    open tag, its namespace prefix): a self-closing one, or one through its
+    closing tag (these elements don't nest)."""
+    import re
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    spans = []
+    for m in re.finditer(r'<((?:[\w.-]+:)?)' + name + r'(?=[\s/>])[^>]*>', masked):
+        end = m.end()
+        if not m.group(0).endswith('/>'):
+            close = re.compile(r'</' + re.escape(m.group(1)) + name + r'\s*>').search(masked, m.end())
+            if not close:
+                continue
+            end = close.end()
+        spans.append((m.start(), end, m.group(0), m.group(1)))
+    return spans
+
+
+def _cut_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Remove each (start, end) from `text`, whole lines at a time when the
+    element has its line to itself, without leaving two blank lines where
+    there was one."""
+    import re
+    for start, end in sorted(spans, reverse=True):
+        line_start = text.rfind('\n', 0, start) + 1
+        if not text[line_start:start].strip():
+            start = line_start
+            rest = re.match(r'[ \t]*\r?\n', text[end:])
+            if rest:
+                end += rest.end()
+        before, after = text[:start], text[end:]
+        if before.endswith('\n\n') and re.match(r'[ \t]*\r?\n', after):
+            after = after[re.match(r'[ \t]*\r?\n', after).end():]
+        text = before + after
+    return text
+
+
+def delete_column_in_text(text: str, kind: str, key: str = '') -> tuple[str, int] | None:
+    """Delete an XSheet column's data from ExposureSheet XML text. `kind`:
+      'layer'     -- layer `key`: its <Layer> in every frame, and its OTIO
+                     <TrackMap>; a frame left with no layer takes on another
+                     layer's held drawing, as the schema wants one
+      'notes'     -- every frame's <Notes> text (the element stays: it is required)
+      'dialogue'  -- every <Dialogue>
+      'audio'     -- every <AudioRef>; 'soundfx' only those of Effects tracks,
+                     'music' only those of the other tracks (the traditional
+                     sheet's Audio column)
+      'camera'    -- every <CameraMove> (the keyframes stay)
+      'technotes' -- the camera keyframes' notes (review comments are edited
+                     in About > Reviews)
+    Works on the text, so formatting and comments are kept. Returns the new
+    text and how many elements or attributes went, or None if there's no
+    <Timeline>."""
+    import re
+    import xml.etree.ElementTree as ET
+    timeline = next(iter(_element_spans(text, 'Timeline')), None)
+    if timeline is None:
+        return None
+    inside = lambda span: timeline[0] < span[0] < timeline[1]
+    track_types: dict[str, str] = {}
+    try:
+        for el in ET.fromstring(text).iter():
+            if el.tag.split('}')[-1] == 'AudioTrack' and el.get('id'):
+                track_types[el.get('id')] = el.get('type') or ''
+    except ET.ParseError:
+        return None
+    count = 0
+    if kind == 'layer':
+        wanted = re.compile(r'\bid\s*=\s*(["\'])' + re.escape(key) + r'\1')
+        cuts = [(a, b) for a, b, tag, _p in _element_spans(text, 'Layer') if inside((a, b)) and wanted.search(tag)]
+        maps = re.compile(r'\bxsheetLayer\s*=\s*(["\'])' + re.escape(key) + r'\1')
+        cuts += [(a, b) for a, b, tag, _p in _element_spans(text, 'TrackMap') if maps.search(tag)]
+        count = len(cuts)
+        remaining_before = ET.fromstring(text)
+        text = _cut_spans(text, cuts)
+        # a frame left with no layer would be invalid: let it hold another layer's drawing
+        root = ET.fromstring(text)
+        others = [lid for lid in dict.fromkeys(el.get('id') for el in remaining_before.iter()
+                                               if el.tag.split('}')[-1] == 'Layer') if lid != key and lid]
+        for frame in [el for el in root.iter() if el.tag.split('}')[-1] == 'Frame' and (el.get('number') or '').isdigit()]:
+            layers = next((c for c in frame if c.tag.split('}')[-1] == 'Layers'), None)
+            if layers is None or any(c.tag.split('}')[-1] == 'Layer' for c in layers):
+                continue
+            number = int(frame.get('number'))
+            state = _frame_layer_state(root, others, number)
+            attrs = next((state[lid] for lid in others if lid in state), None)
+            if attrs is None:  # nothing earlier: the first drawing of the first remaining layer
+                first_def = next((dict(el.attrib) for el in remaining_before.iter()
+                                  if el.tag.split('}')[-1] == 'Layer' and el.get('id') in others), None)
+                attrs = first_def
+            if attrs is not None:
+                result = add_layer_in_text(text, number, attrs)
+                if result is not None:
+                    text = result[0]
+        return text, count
+    if kind == 'notes':
+        cuts = []
+        for a, b, tag, prefix in _element_spans(text, 'Notes'):
+            if inside((a, b)) and not tag.endswith('/>') and text[a:b].strip() and \
+                    re.sub(r'<[^>]*>', '', text[a:b]).strip():
+                cuts.append((a, b, prefix))
+        for a, b, prefix in sorted(cuts, reverse=True):
+            text = text[:a] + f'<{prefix}Notes/>' + text[b:]
+        return text, len(cuts)
+    if kind == 'dialogue':
+        cuts = [(a, b) for a, b, _t, _p in _element_spans(text, 'Dialogue') if inside((a, b))]
+        return _cut_spans(text, cuts), len(cuts)
+    if kind in ('audio', 'soundfx', 'music'):
+        cuts = []
+        for a, b, tag, _p in _element_spans(text, 'AudioRef'):
+            if not inside((a, b)):
+                continue
+            track = re.search(r'\btrack\s*=\s*(["\'])(.*?)\1', tag)
+            effects = track_types.get(track.group(2) if track else '', '') == 'Effects'
+            if kind == 'audio' or (kind == 'soundfx') == effects:
+                cuts.append((a, b))
+        return _cut_spans(text, cuts), len(cuts)
+    if kind == 'camera':
+        cuts = [(a, b) for a, b, _t, _p in _element_spans(text, 'CameraMove')]
+        return _cut_spans(text, cuts), len(cuts)
+    if kind == 'technotes':
+        total = 0
+        for a, b, tag, _p in sorted(_element_spans(text, 'Keyframe'), reverse=True):
+            new_tag, n = re.subn(r'\s+note\s*=\s*(["\']).*?\1', '', tag, count=1, flags=re.S)
+            if n:
+                total += 1
+                text = text[:a] + new_tag + text[a + len(tag):]
+        return text, total
+    return None
+
+
 def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
     """Rename animation layer `old` to `new` in ExposureSheet XML text: the
     `id` attribute of every <Layer> element, and `xsheetLayer` on OTIO
@@ -3949,10 +4082,11 @@ def update_xsheet_view_items(on_xsheet_tab: bool | None = None) -> None:
 
 
 def update_delete_frame_item(on_xsheet_tab: bool | None = None) -> None:
-    """Edit > Delete Frame can be chosen only on the XSheet tab."""
+    """Edit > Delete Frame and Delete Layer can be chosen only on the XSheet tab."""
     sess = session()
-    if sess.delete_frame_item is not None:
-        sess.delete_frame_item.set_enabled(sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab)
+    for item in (sess.delete_frame_item, sess.delete_layer_item):
+        if item is not None:
+            item.set_enabled(sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab)
 
 
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
@@ -4536,6 +4670,8 @@ def handle_xsheet_row_clicked(e):
     data = (e.args or {}).get('data') or {}
     if 'Frame' in data:
         session().xsheet_current_frame = data['Frame']
+    if (e.args or {}).get('colId'):
+        session().xsheet_current_column = e.args['colId']  # for Edit > Delete Layer
 
 
 def handle_xsheet_header_clicked(e):
@@ -4981,6 +5117,75 @@ def show_delete_frame_dialog() -> None:
                 sess.xsheet_grid.run_grid_method('ensureIndexVisible', index, 'middle')
 
         count_input.on('keydown.enter', delete)
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Delete', on_click=delete).props('color=negative size=sm')
+    dlg.open()
+
+
+def _xsheet_deletable_columns(style: str, layer_ids: list[str]) -> list[tuple[str, str, str, str, str]]:
+    """The XSheet columns Edit > Delete Layer can delete, in the style shown:
+    (colId, heading, kind and key for delete_column_in_text(), what deleting it does)."""
+    layers = [(f'layer:{lid}', f'Layer {lid}', 'layer', lid,
+               f'Removes layer {lid} from every frame (and its OTIO track map). A frame left with no layer holds '
+               f'another layer\'s drawing.') for lid in layer_ids]
+    notes = ('Notes', 'Clears every frame\'s notes.', 'notes')
+    dialogue = ('Dialogue', 'Deletes every frame\'s dialogue.', 'dialogue')
+    camera = ('Camera moves', 'Deletes every camera move (the camera keyframes stay).', 'camera')
+    if style == 'traditional':
+        others = [('action', 'Action/Description') + notes[1:], ('audio', 'Audio', 'Deletes the audio cues of '
+                  'every track but sound effects.', 'music'), ('dialogue',) + dialogue,
+                  ('soundfx', 'Sound FX', 'Deletes the audio cues of the Effects tracks.', 'soundfx'),
+                  ('technotes', 'Tech. Notes', 'Clears the camera keyframes\' notes (review comments are edited in '
+                   'About > Reviews).', 'technotes'), ('camera', 'Camera Moves') + camera[1:]]
+    else:
+        others = [('Camera', 'Camera') + camera[1:], ('Dialogue',) + dialogue, ('Audio', 'Audio',
+                  'Deletes every audio cue.', 'audio'), ('Notes', 'Notes') + notes[1:]]
+    return layers + [(col, label, kind, '', what) for col, label, what, kind in others]
+
+
+def show_delete_layer_dialog() -> None:
+    """Edit > Delete Layer (the XSheet tab): delete the selected XSheet column
+    -- a layer, or one of the other data columns (notes, dialogue, audio,
+    camera moves, ...) -- from the document (see delete_column_in_text()).
+    The column last clicked is offered; the dialog can choose any other."""
+    sess = session()
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if not rows:
+        ui.notify('Open an ExposureSheet document first' if not text.strip()
+                  else f'Delete Layer needs an ExposureSheet document. {message}', color='warning')
+        return
+    columns = _xsheet_deletable_columns(sess.xsheet_style, layer_ids or [])
+    by_id = {col: (label, kind, key, what) for col, label, kind, key, what in columns}
+    default = sess.xsheet_current_column if sess.xsheet_current_column in by_id else columns[0][0]
+
+    with ui.dialog() as dlg, titled_card('Delete Layer', classes='w-[460px] max-w-full', body_classes='gap-2'):
+        ui.label('Deletes a whole column of the sheet from the document: a layer, or one of the other columns '
+                 '(its data in every frame). Undo with Ctrl+Z.').classes('text-caption text-grey')
+        chooser = ui.select({col: label for col, (label, *_rest) in by_id.items()}, value=default,
+                            label='Column to delete').classes('w-full')
+        what = ui.label(by_id[default][3]).classes('text-sm')
+        chooser.on_value_change(lambda e: what.set_text(by_id[e.value][3]))
+
+        def delete(_=None):
+            label, kind, key, _what = by_id[chooser.value]
+            if kind == 'layer' and len(layer_ids or []) <= 1:
+                ui.notify('A sheet needs at least one layer: the last one cannot be deleted', color='warning')
+                return
+            result = delete_column_in_text(_editor_text(), kind, key)
+            if result is None:
+                ui.notify('Could not delete the column (the document has no <Timeline>)', color='negative')
+                return
+            new_text, count = result
+            dlg.close()
+            if new_text == _editor_text():
+                ui.notify(f'{label} has nothing to delete', color='info')
+                return
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            sess.xsheet_current_column = None
+            ui.notify(f'Deleted {label}' + (f' ({count} item(s))' if count else ''), color='positive')
+
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
             ui.button('Delete', on_click=delete).props('color=negative size=sm')
@@ -7180,6 +7385,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 # deletes rows of the sheet: available on the XSheet tab only (see update_delete_frame_item())
                 sess.delete_frame_item = ui.menu_item('Delete Frame', on_click=lambda _: show_delete_frame_dialog())
                 ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
+                sess.delete_layer_item = ui.menu_item('Delete Layer', on_click=lambda _: show_delete_layer_dialog())
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
