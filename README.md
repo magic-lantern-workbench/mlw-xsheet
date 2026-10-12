@@ -249,8 +249,8 @@ of the window, over the Hierarchy panel, so it doesn't cover the matches it high
 you can keep working in the editor while it's open.
 
 It searches and replaces in the editor of the tab showing — the XML editor, or on the SVG tab the SVG
-editor (a replacement there changes the sketch, as typing in that editor does). Switching tabs while
-it's open starts the search afresh in the other editor.
+editor (a replacement there changes the sketch, as typing in that editor does). Switching between the XML and SVG tabs while
+it's open starts the search afresh in the other editor; going to the XSheet tab closes it.
 
 **Find Frame dialog** (Find on the XSheet tab): type a **Frame number** and press Enter or **Go** (the button to the right of the box)
 to scroll the grid to that frame and select it (a frame inside a collapsed run selects the run's
@@ -258,7 +258,8 @@ row; a number outside the sheet says so and shows the sheet's first and last fra
 **Next Group** and **Previous Group** (in that order) step to the first frame of the previous or next group of
 frames — the document's Frame Rate in frames, counted from the first frame, the same as
 `Ctrl+Alt+Page Up` / `Page Down` — and show it in the box. Like Find & Replace, it sits at the
-right edge of the window and leaves the grid usable while it's open.
+right edge of the window and leaves the grid usable while it's open; it closes when you go to the
+XML or SVG tab.
 
 ### XSheet menu
 

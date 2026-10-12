@@ -120,6 +120,8 @@ class Session:
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
         self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
+        self.find_close = None        # closes the Find & Replace dialog, if open (see close_find_dialogs())
+        self.find_frame_dialog = None  # the Find Frame dialog, if open
         self.delete_layer_item = None  # Edit > Delete Layer: likewise
         self.delete_frame_item = None  # Edit > Delete Frame: enabled on the XSheet tab
         self.svg_tab = None        # the SVG tab, shown only while the sketchpad is on (see toggle_sketchpad())
@@ -1698,6 +1700,10 @@ def show_find_frame_dialog() -> None:
             ui.button('Previous Group', on_click=lambda: step(-1)).props('outline size=sm')
         with ui.row().classes('w-full justify-end'):
             ui.button('Close', on_click=dlg.close).props('size=sm')
+    if sess.find_frame_dialog is not None:
+        sess.find_frame_dialog.close()  # one at a time
+    sess.find_frame_dialog = dlg
+    dlg.on('hide', lambda _: setattr(sess, 'find_frame_dialog', None) if sess.find_frame_dialog is dlg else None)
     dlg.open()
 
 
@@ -4709,6 +4715,18 @@ def update_xml_menu_items() -> None:
         item.set_enabled(sess.main_tab == 'XML')
 
 
+def close_find_dialogs(showing: str) -> None:
+    """The tab changed to `showing`: Find & Replace works on the XML and SVG
+    editors, so it closes on the XSheet tab; Find Frame works on the XSheet
+    grid, so it closes on the other tabs."""
+    sess = session()
+    if showing == 'XSheet' and sess.find_close is not None:
+        sess.find_close()
+    if showing != 'XSheet' and sess.find_frame_dialog is not None:
+        sess.find_frame_dialog.close()
+        sess.find_frame_dialog = None
+
+
 def shown_tabs() -> list[str]:
     """The main tabs showing, left to right: XSheet, then SVG (while the
     sketchpad is on), then XML (unless the XML editor is turned off)."""
@@ -5643,6 +5661,7 @@ def show_find_dialog():
     def do_close():
         clear_highlight()
         dlg.close()
+        session().find_close = None
 
     # Seamless (no backdrop) and docked to the right edge, over the Hierarchy
     # panel: matches are scrolled to the middle of the editor, so a centered,
@@ -5664,6 +5683,10 @@ def show_find_dialog():
         with ui.row().classes('w-full justify-end'):
             ui.button('Close', on_click=lambda _: do_close()).props('size=sm')
     sync_tab()
+    if session().find_close is not None:
+        session().find_close()  # one at a time
+    session().find_close = do_close
+    dlg.on('hide', lambda _: session().find_close is do_close and setattr(session(), 'find_close', None))
     dlg.open()
 
 
@@ -7535,6 +7558,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         leaving, showing = sess.main_tab, str(new_value)
         sess.main_tab = showing
         update_xml_menu_items()  # most of the XML menu acts on the XML editor
+        close_find_dialogs(showing)
         update_xsheet_view_items(showing == 'XSheet')
         update_delete_frame_item(showing == 'XSheet')
         update_sketchpad_item(showing == 'XSheet')
