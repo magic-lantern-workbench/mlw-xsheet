@@ -91,6 +91,13 @@ class Session:
         # Suppress editor change handler during programmatic updates
         self.suppress_editor_change = False
         # Undo/redo stacks and last value
+        # Undo/redo is global, across the XSheet, XML and SVG tabs (see global_undo()): the
+        # journal lists the changes made, oldest first -- each {'domain': 'doc' (the document's text,
+        # one step of undo_stack) or 'sketch' (one step of the Sketchpad's history), 'tab', 'what'}
+        self.journal = []
+        self.journal_future = []   # undone, to redo: the next one last
+        self.sketch_depth = 0      # the Sketchpad's steps to undo and to redo, as last reported
+        self.sketch_redo = 0
         self.undo_stack = []
         self.redo_stack = []
         self.last_editor_value = ''
@@ -110,6 +117,15 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
+        self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
+        self.xml_menu_icon = None  # the check box of XML > XML Editor
+        self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
+        self.find_close = None        # closes the Find & Replace dialog, if open (see close_find_dialogs())
+        self.find_frame_dialog = None  # the Find Frame dialog, if open
+        self.delete_layer_item = None  # Edit > Delete Layer: likewise
+        self.delete_frame_item = None  # Edit > Delete Frame: enabled on the XSheet tab
+        self.svg_tab = None        # the SVG tab, shown only while the sketchpad is on (see toggle_sketchpad())
+        self.xml_tab = None        # the XML tab, hidden when the XML editor is turned off
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: enabled on the XSheet tab, with the sketchpad off
         self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
         self.sketchpad_menu_icon = None
@@ -146,6 +162,7 @@ class Session:
         # Frame highlighted in the traditional sheet's Fr columns; kept here
         # so it survives the grid being rebuilt as the document changes.
         self.xsheet_current_frame = None
+        self.xsheet_current_column = None  # the column last clicked (colId), for Edit > Delete Layer
         self.xsheet_refresh_in_place = False  # the next grid rebuild just replaces the rows (see edit_xsheet_notes())
         self.main_tabs = None  # the XSheet / XML / SVG tabs (see xml_tab_active())
 
@@ -193,6 +210,13 @@ def session() -> Session:
 #   'export_sketch':  whether XSheet > Export XSheet draws the Sketchpad's
 #                     sketch over the grid (default: yes); set in File >
 #                     Preferences > Report.
+#   'sketch_font':    the typeface of new Sketchpad text strings (one of
+#                     SKETCHPAD_FONTS; default sans-serif); set in File >
+#                     Preferences > Sketchpad.
+#   'sketch_font_size': their size, in pixels (default 24; 6-200); same place.
+#   'xml_editor':     whether the XML tab is shown (default: yes); set by the
+#                     XML > XML Editor check box. Hiding the tab changes only the
+#                     view: the document is still edited, and saved, as before.
 #   'popup_log':      whether this user's status pop-ups (ui.notify) are
 #                     recorded in their log file (default: yes); set in File >
 #                     Preferences > Logs. See the "Pop-up log" section below.
@@ -462,6 +486,39 @@ def export_sketch_pref() -> bool:
 
 def set_export_sketch_pref(include: bool) -> None:
     user_storage()['export_sketch'] = bool(include)
+
+
+def xml_editor_pref() -> bool:
+    return bool(user_storage().get('xml_editor', True))
+
+
+def sketch_font_pref() -> str:
+    font = user_storage().get('sketch_font', DEFAULT_SKETCH_FONT)
+    return font if font in SKETCHPAD_FONTS else DEFAULT_SKETCH_FONT
+
+
+def sketch_font_size_pref() -> int:
+    try:
+        return min(max(int(user_storage().get('sketch_font_size', DEFAULT_SKETCH_FONT_SIZE)), MIN_SKETCH_FONT_SIZE),
+                   MAX_SKETCH_FONT_SIZE)
+    except (TypeError, ValueError):
+        return DEFAULT_SKETCH_FONT_SIZE
+
+
+def set_sketch_text_prefs(font: str, size) -> None:
+    """Save the Sketchpad text preferences, and give them to the sketchpad (for the strings typed from now on)."""
+    storage = user_storage()
+    storage['sketch_font'] = font if font in SKETCHPAD_FONTS else DEFAULT_SKETCH_FONT
+    try:
+        storage['sketch_font_size'] = min(max(int(size), MIN_SKETCH_FONT_SIZE), MAX_SKETCH_FONT_SIZE)
+    except (TypeError, ValueError):
+        storage['sketch_font_size'] = DEFAULT_SKETCH_FONT_SIZE
+    apply_sketch_text_prefs()
+
+
+def apply_sketch_text_prefs() -> None:
+    ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.setTextStyle({json.dumps(sketch_font_pref())}, '
+                      f'{sketch_font_size_pref()})')
 
 
 def oca_export_options() -> dict:
@@ -828,20 +885,21 @@ def format_xml():
 
 
 def show_preferences_dialog():
-    """Preferences dialog: a Format tab for the XML/XSD pretty-printer
-    (XML > Format), a Recent Files tab for File > Open Recent, an XSheet tab
-    for the Exposure Sheet style, a Report tab for what XSheet > Generate
-    Report includes, a Logs tab for recording the status pop-ups, and a Login tab for the server's password and
-    inactivity time-out (see auth.py)."""
+    """Preferences dialog, in tabs: XSheet (the Exposure Sheet style), Sketchpad
+    (the typeface and size of text strings), Format (the XML/XSD pretty-printer,
+    XML > Format), Recent Files (File > Open Recent), Report (what XSheet >
+    Generate Report includes), Logs (recording the status pop-ups), and Login
+    (the server's password and inactivity time-out; see auth.py)."""
     with ui.dialog() as dlg, titled_card('Preferences', classes='w-[540px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
+            xsheet_tab = ui.tab('XSheet')
+            sketchpad_tab = ui.tab('Sketchpad')
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
-            xsheet_tab = ui.tab('XSheet')
             report_tab = ui.tab('Report')
             logs_tab = ui.tab('Logs')
             login_tab = ui.tab('Login')
-        with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
+        with ui.tab_panels(tabs, value=xsheet_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
                 ui.label('Used by XML > Format').classes('text-sm text-gray-500')
                 prefs = format_prefs()
@@ -890,6 +948,23 @@ def show_preferences_dialog():
                 ui.label('XSheet > Export XSheet').classes('text-sm text-gray-500')
                 sketch_box = ui.checkbox('Include the Sketchpad sketch, drawn over the exposure sheet',
                                          value=export_sketch_pref()).props('dense')
+            with ui.tab_panel(sketchpad_tab).classes('px-0 gap-2'):
+                ui.label('Text strings typed on the Sketchpad from now on (strings already placed keep theirs). '
+                         'Export XSheet prints them the same way.').classes('text-sm text-gray-500')
+                font_select = ui.select(SKETCHPAD_FONTS, value=sketch_font_pref(), label='Type').classes('w-64')
+                font_size_input = ui.number('Size (pixels)', value=sketch_font_size_pref(), min=MIN_SKETCH_FONT_SIZE,
+                                            max=MAX_SKETCH_FONT_SIZE, step=1, precision=0).classes('w-40')
+                sample = ui.label('The quick brown fox').classes('mt-1') \
+                    .style(f'font-family: {sketch_font_pref()}; font-size: {min(sketch_font_size_pref(), 48)}px')
+
+                def show_sample():
+                    try:
+                        size = min(max(int(font_size_input.value), MIN_SKETCH_FONT_SIZE), 48)
+                    except (TypeError, ValueError):
+                        size = DEFAULT_SKETCH_FONT_SIZE
+                    sample.style(f'font-family: {font_select.value}; font-size: {size}px')
+                font_select.on_value_change(show_sample)
+                font_size_input.on_value_change(show_sample)
             with ui.tab_panel(logs_tab).classes('px-0 gap-2'):
                 ui.label('Status pop-ups are always shown; this also keeps a record of them, each with its '
                          'date and time.').classes('text-sm text-gray-500')
@@ -991,6 +1066,7 @@ def show_preferences_dialog():
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
             set_export_sketch_pref(sketch_box.value)
+            set_sketch_text_prefs(font_select.value, font_size_input.value)
             set_popup_log_enabled(log_box.value)
             set_popup_log_time(time_radio.value, zone_select.value if time_radio.value == 'custom' else None)
             try:
@@ -1521,6 +1597,116 @@ async def go_to_review(review_id: str, frame) -> None:
     grid.run_row_method(str(display[index]['Frame']), 'setSelected', True)
 
 
+def _frame_rate() -> int:
+    """The open document's frame rate, or 0 if it has none."""
+    rate = str((read_production_info(_editor_text()) or {}).get('FrameRate', '')).strip()
+    return int(rate) if rate.isdigit() else 0
+
+
+def _select_frame(target: int) -> bool:
+    """Select frame `target` in the XSheet grid (its run's row, if it's in a
+    collapsed run) and scroll it into view. False if the sheet has no such frame."""
+    sess = session()
+    grid = sess.xsheet_grid
+    layer_ids, rows, _message = parse_exposure_sheet(_editor_text())
+    if grid is None or not rows:
+        return False
+    display = _xsheet_display_rows(sess.xsheet_style, layer_ids or [], rows)
+    index = next((i for i, row in enumerate(display)
+                  if row['Frame'] == target or (row.get('_range_start') is not None and '–' in str(row['Frame'])
+                                                and row['_range_start'] <= target <= row['_range_end'])), None)
+    if index is None:
+        return False
+    sess.xsheet_current_frame = display[index]['Frame']
+    grid.run_grid_method('ensureIndexVisible', index, 'middle')
+    grid.run_row_method(str(display[index]['Frame']), 'setSelected', True)
+    return True
+
+
+def move_frame_group(direction: int) -> int | None:
+    """Ctrl+Alt+Page Up / Page Down on the XSheet tab, and Find's Previous /
+    Next Group: select the first frame of the group before (-1) or after (+1)
+    the current one, and scroll it into view. Groups are the document's frame
+    rate in frames, from the first frame (at 24 fps: 1-24, 25-48, ...; from
+    frame 30, Page Down goes to 49 and Page Up to 1). It stops at the first
+    group, and the last one. (A collapsed run counts from its first frame.)
+    Returns that frame, or None if nothing moved."""
+    import re
+    sess = session()
+    if sess.xsheet_grid is None or sess.main_tab != 'XSheet' or not sess.document_open:
+        return None
+    _layer_ids, rows, _message = parse_exposure_sheet(_editor_text())
+    if not rows:
+        return None
+    rate = _frame_rate()
+    if rate < 1:
+        ui.notify('Set a Frame Rate in the document to move by frame groups', color='info')
+        return None
+    current = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+    here = int(current.group()) if current else first
+    start = first + (here - first) // rate * rate  # the start of the group the current frame is in
+    target = min(max(start + direction * rate, first), first + (last - first) // rate * rate)
+    return target if _select_frame(target) else None
+
+
+def show_find_frame_dialog() -> None:
+    """Edit > Find on the XSheet tab: type a frame number to scroll the grid
+    to it and select it, or step to the previous / next group of frames (the
+    document's frame rate in frames; see move_frame_group())."""
+    import re
+    sess = session()
+    _layer_ids, rows, _message = parse_exposure_sheet(_editor_text()) if sess.document_open else (None, None, '')
+    if not rows:
+        ui.notify('Open an ExposureSheet document to find frames in it', color='info')
+        return
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+
+    def say(text: str, ok: bool = True) -> None:
+        status.set_text(text)
+        status.style(f'color: {"inherit" if ok else "red"}')
+
+    def go(_=None) -> None:
+        try:
+            number = int(float(frame_input.value))  # (a number input's value is a float)
+        except (TypeError, ValueError):
+            say('Type a frame number', ok=False)
+            return
+        if _select_frame(number):
+            say(f'Frame {number}')
+        else:
+            say(f'Frame {number} is not in the sheet ({first}–{last})', ok=False)
+
+    def step(direction: int) -> None:
+        frame = move_frame_group(direction)
+        if frame is None:
+            say('No frame rate to make groups of' if _frame_rate() < 1 else 'No group there', ok=False)
+            return
+        frame_input.value = frame
+        rate = _frame_rate()
+        say(f'Group {(frame - first) // rate + 1}: frames {frame}–{min(frame + rate - 1, last)}')
+
+    with ui.dialog().props('seamless position=right') as dlg, \
+            titled_card('Find Frame', classes='w-[420px] max-w-full', body_classes='gap-2'):
+        current = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+        with ui.row().classes('w-full items-center gap-2 no-wrap'):
+            frame_input = ui.number('Frame number', value=int(current.group()) if current else first,
+                                    min=first, max=last, step=1, precision=0).classes('grow')
+            ui.button('Go', on_click=go).props('outline size=sm')
+        status = ui.label(f'Frames {first}–{last}' + (f', {_frame_rate()} per group' if _frame_rate() else ''))
+        frame_input.on('keydown.enter', go)
+        with ui.row().classes('w-full gap-2 mt-2'):
+            ui.button('Next Group', on_click=lambda: step(1)).props('outline size=sm')
+            ui.button('Previous Group', on_click=lambda: step(-1)).props('outline size=sm')
+        with ui.row().classes('w-full justify-end'):
+            ui.button('Close', on_click=dlg.close).props('size=sm')
+    if sess.find_frame_dialog is not None:
+        sess.find_frame_dialog.close()  # one at a time
+    sess.find_frame_dialog = dlg
+    dlg.on('hide', lambda _: setattr(sess, 'find_frame_dialog', None) if sess.find_frame_dialog is dlg else None)
+    dlg.open()
+
+
 def show_reviews_dialog() -> None:
     """About > Reviews: list the open document's <Review> entries; click
     one to go to it, ✏️ to edit it, or Add Review for a new one."""
@@ -1689,7 +1875,7 @@ def show_about_dialog():
         with ui.tab_panels(tabs, value=about_tab).classes('w-full'):
             with ui.tab_panel(about_tab).classes('px-0 gap-4'):
                 ui.label('Author: Wizzer Works')
-                ui.label('Version: 1.0.0')
+                ui.label('Version: 1.4.0')
                 with ui.row().classes('items-center gap-1'):
                     ui.label('Please visit')
                     ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
@@ -2294,6 +2480,234 @@ def add_frames_in_text(text: str, at: int, count: int, layers: list[dict[str, st
     if new_text is not None and restate_layers:
         new_text = _insert_frame_in_text(new_text, at + count, frame_children(restate_layers, False))
     return new_text
+
+
+def delete_frames_in_text(text: str, at: int, count: int,
+                          restate: list[dict[str, str]] | None = None) -> str:
+    """Delete `count` frames starting at frame `at`, rows and all: their
+    <Frame> elements (with a "Frame N" comment banner before each) go, and
+    every later frame moves `count` frames earlier -- <Frame number>, "Frame N"
+    banners and EndFrame, and the startFrame / endFrame / frame attributes of
+    <AudioRef>, <CameraMove>, camera <Keyframe> and <Review>. A move or cue that
+    spanned deleted frames is cut short (one wholly inside them shrinks to a
+    single frame), and a keyframe or review on a deleted frame moves to the
+    frame that takes its place. `restate` (layer attributes) is written into the
+    frame now at `at`, so later frames that were holding a drawing set in the
+    deleted ones still hold it. Works on the text, so formatting and comments
+    are kept; the inverse of shift_frames_in_text()."""
+    import re
+    first_gone, last_gone = at, at + count - 1
+
+    # 1. the deleted <Frame> elements, last first so positions stay valid
+    frame_re = re.compile(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\'](\d+)["\'][^>]*>')
+    for m in reversed([m for m in frame_re.finditer(text) if first_gone <= int(m.group(2)) <= last_gone]):
+        end = m.end()
+        if not m.group(0).endswith('/>'):
+            close = re.compile(r'</' + re.escape(m.group(1)) + r'Frame\s*>').search(text, m.end())
+            if not close:
+                continue
+            end = close.end()
+        start = m.start()
+        line_start = text.rfind('\n', 0, start) + 1
+        if not text[line_start:start].strip():
+            start = line_start
+        # the banner before it: the comments just above, if one says "Frame N"
+        comments, pos = [], start
+        while True:
+            q = len(text[:pos].rstrip())
+            if not text[:q].endswith('-->'):
+                break
+            c = text.rfind('<!--', 0, q)
+            if c == -1:
+                break
+            comments.append(text[c:q])
+            pos = c
+        if comments and any(re.search(r'\bFrame\s+' + m.group(2) + r'\b', c) for c in comments):
+            start = text.rfind('\n', 0, pos) + 1 if not text[text.rfind('\n', 0, pos) + 1:pos].strip() else pos
+        # and the blank lines after it, so the gap before it stays the only one
+        rest = len(text) - len(text[end:].lstrip(' \t\r\n'))
+        end = text.rfind('\n', 0, rest) + 1 if rest > end else end
+        text = text[:start] + text[end:]
+
+    # 2. later frames move up; ranges and points are cut or moved
+    def point(n: int) -> int:  # a keyframe or review: a deleted frame's goes to the one that replaces it
+        return n - count if n > last_gone else (first_gone if n >= first_gone else n)
+
+    def fix_tag(m: re.Match) -> str:
+        tag = m.group(0)
+        if re.match(r'<(?:[\w.-]+:)?Frame[\s/>]', tag):
+            return re.sub(r'(\bnumber\s*=\s*["\'])(\d+)',
+                          lambda a: a.group(1) + str(int(a.group(2)) - count if int(a.group(2)) > last_gone else int(a.group(2))), tag)
+        values = {}
+
+        def sub(kind):
+            def f(a):
+                n = int(a.group(2))
+                if kind == 'endFrame':
+                    new = n - count if n > last_gone else (first_gone - 1 if n >= first_gone else n)
+                else:
+                    new = point(n)
+                values[kind] = new
+                return a.group(1) + str(new)
+            return f
+        for kind in ('startFrame', 'endFrame', 'frame'):
+            tag = re.sub(r'(\b' + kind + r'\s*=\s*["\'])(\d+)', sub(kind), tag)
+        if 'startFrame' in values and 'endFrame' in values and values['endFrame'] < values['startFrame']:
+            tag = re.sub(r'(\bendFrame\s*=\s*["\'])\d+', lambda a: a.group(1) + str(values['startFrame']), tag)
+        return tag
+
+    def fix_banner(m: re.Match) -> str:
+        number, space = m.group(2), m.group(3)
+        new = str(int(number) - count) if int(number) > last_gone else number
+        return m.group(1) + new + ' ' * max(1, len(number) + len(space) - len(new)) + m.group(4)
+
+    text = re.sub(r'<[A-Za-z][^<>]*>', fix_tag, text)
+    text = re.sub(r'(<!--\s*Frame\s+)(\d+)(\s*)(-->)', fix_banner, text)
+    info = read_production_info(text) or {}
+    end = info.get('EndFrame', '')
+    if end.isdigit():
+        new_end = int(end) - count if int(end) > last_gone else (first_gone - 1 if int(end) >= first_gone else int(end))
+        start_frame = info.get('StartFrame', '')
+        if start_frame.isdigit():
+            new_end = max(new_end, int(start_frame))
+        if new_end != int(end):
+            text, _missing = update_production_in_text(text, {'EndFrame': str(new_end)})
+    for attrs in restate or []:
+        result = add_layer_in_text(text, at, attrs)
+        if result is not None:
+            text = result[0]
+    return text
+
+
+def _element_spans(text: str, name: str) -> list[tuple[int, int, str, str]]:
+    """Every <name> element in `text` outside comments, as (start, end, its
+    open tag, its namespace prefix): a self-closing one, or one through its
+    closing tag (these elements don't nest)."""
+    import re
+    masked = re.sub(r'<!--.*?-->', lambda m: ' ' * len(m.group()), text, flags=re.S)
+    spans = []
+    for m in re.finditer(r'<((?:[\w.-]+:)?)' + name + r'(?=[\s/>])[^>]*>', masked):
+        end = m.end()
+        if not m.group(0).endswith('/>'):
+            close = re.compile(r'</' + re.escape(m.group(1)) + name + r'\s*>').search(masked, m.end())
+            if not close:
+                continue
+            end = close.end()
+        spans.append((m.start(), end, m.group(0), m.group(1)))
+    return spans
+
+
+def _cut_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Remove each (start, end) from `text`, whole lines at a time when the
+    element has its line to itself, without leaving two blank lines where
+    there was one."""
+    import re
+    for start, end in sorted(spans, reverse=True):
+        line_start = text.rfind('\n', 0, start) + 1
+        if not text[line_start:start].strip():
+            start = line_start
+            rest = re.match(r'[ \t]*\r?\n', text[end:])
+            if rest:
+                end += rest.end()
+        before, after = text[:start], text[end:]
+        if before.endswith('\n\n') and re.match(r'[ \t]*\r?\n', after):
+            after = after[re.match(r'[ \t]*\r?\n', after).end():]
+        text = before + after
+    return text
+
+
+def delete_column_in_text(text: str, kind: str, key: str = '') -> tuple[str, int] | None:
+    """Delete an XSheet column's data from ExposureSheet XML text. `kind`:
+      'layer'     -- layer `key`: its <Layer> in every frame, and its OTIO
+                     <TrackMap>; a frame left with no layer takes on another
+                     layer's held drawing, as the schema wants one
+      'notes'     -- every frame's <Notes> text (the element stays: it is required)
+      'dialogue'  -- every <Dialogue>
+      'audio'     -- every <AudioRef>; 'soundfx' only those of Effects tracks,
+                     'music' only those of the other tracks (the traditional
+                     sheet's Audio column)
+      'camera'    -- every <CameraMove> (the keyframes stay)
+      'technotes' -- the camera keyframes' notes (review comments are edited
+                     in About > Reviews)
+    Works on the text, so formatting and comments are kept. Returns the new
+    text and how many elements or attributes went, or None if there's no
+    <Timeline>."""
+    import re
+    import xml.etree.ElementTree as ET
+    timeline = next(iter(_element_spans(text, 'Timeline')), None)
+    if timeline is None:
+        return None
+    inside = lambda span: timeline[0] < span[0] < timeline[1]
+    track_types: dict[str, str] = {}
+    try:
+        for el in ET.fromstring(text).iter():
+            if el.tag.split('}')[-1] == 'AudioTrack' and el.get('id'):
+                track_types[el.get('id')] = el.get('type') or ''
+    except ET.ParseError:
+        return None
+    count = 0
+    if kind == 'layer':
+        wanted = re.compile(r'\bid\s*=\s*(["\'])' + re.escape(key) + r'\1')
+        cuts = [(a, b) for a, b, tag, _p in _element_spans(text, 'Layer') if inside((a, b)) and wanted.search(tag)]
+        maps = re.compile(r'\bxsheetLayer\s*=\s*(["\'])' + re.escape(key) + r'\1')
+        cuts += [(a, b) for a, b, tag, _p in _element_spans(text, 'TrackMap') if maps.search(tag)]
+        count = len(cuts)
+        remaining_before = ET.fromstring(text)
+        text = _cut_spans(text, cuts)
+        # a frame left with no layer would be invalid: let it hold another layer's drawing
+        root = ET.fromstring(text)
+        others = [lid for lid in dict.fromkeys(el.get('id') for el in remaining_before.iter()
+                                               if el.tag.split('}')[-1] == 'Layer') if lid != key and lid]
+        for frame in [el for el in root.iter() if el.tag.split('}')[-1] == 'Frame' and (el.get('number') or '').isdigit()]:
+            layers = next((c for c in frame if c.tag.split('}')[-1] == 'Layers'), None)
+            if layers is None or any(c.tag.split('}')[-1] == 'Layer' for c in layers):
+                continue
+            number = int(frame.get('number'))
+            state = _frame_layer_state(root, others, number)
+            attrs = next((state[lid] for lid in others if lid in state), None)
+            if attrs is None:  # nothing earlier: the first drawing of the first remaining layer
+                first_def = next((dict(el.attrib) for el in remaining_before.iter()
+                                  if el.tag.split('}')[-1] == 'Layer' and el.get('id') in others), None)
+                attrs = first_def
+            if attrs is not None:
+                result = add_layer_in_text(text, number, attrs)
+                if result is not None:
+                    text = result[0]
+        return text, count
+    if kind == 'notes':
+        cuts = []
+        for a, b, tag, prefix in _element_spans(text, 'Notes'):
+            if inside((a, b)) and not tag.endswith('/>') and text[a:b].strip() and \
+                    re.sub(r'<[^>]*>', '', text[a:b]).strip():
+                cuts.append((a, b, prefix))
+        for a, b, prefix in sorted(cuts, reverse=True):
+            text = text[:a] + f'<{prefix}Notes/>' + text[b:]
+        return text, len(cuts)
+    if kind == 'dialogue':
+        cuts = [(a, b) for a, b, _t, _p in _element_spans(text, 'Dialogue') if inside((a, b))]
+        return _cut_spans(text, cuts), len(cuts)
+    if kind in ('audio', 'soundfx', 'music'):
+        cuts = []
+        for a, b, tag, _p in _element_spans(text, 'AudioRef'):
+            if not inside((a, b)):
+                continue
+            track = re.search(r'\btrack\s*=\s*(["\'])(.*?)\1', tag)
+            effects = track_types.get(track.group(2) if track else '', '') == 'Effects'
+            if kind == 'audio' or (kind == 'soundfx') == effects:
+                cuts.append((a, b))
+        return _cut_spans(text, cuts), len(cuts)
+    if kind == 'camera':
+        cuts = [(a, b) for a, b, _t, _p in _element_spans(text, 'CameraMove')]
+        return _cut_spans(text, cuts), len(cuts)
+    if kind == 'technotes':
+        total = 0
+        for a, b, tag, _p in sorted(_element_spans(text, 'Keyframe'), reverse=True):
+            new_tag, n = re.subn(r'\s+note\s*=\s*(["\']).*?\1', '', tag, count=1, flags=re.S)
+            if n:
+                total += 1
+                text = text[:a] + new_tag + text[a + len(tag):]
+        return text, total
+    return None
 
 
 def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
@@ -3630,7 +4044,14 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
 
 # The sketchpad's shapes, as the Shape chooser lists them: key -> (name, icon).
 SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'polyline': ('Polyline', 'polyline'),
-                    'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked')}
+                    'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked'),
+                    'text': ('Text', 'title')}
+# the typefaces of Sketchpad text (Preferences > Sketchpad): generic SVG families -> names; the PDF
+# uses its Helvetica, Times and Courier for them (see export_pdf._draw_sketch())
+SKETCHPAD_FONTS = {'sans-serif': 'Sans-serif (Helvetica)', 'serif': 'Serif (Times)', 'monospace': 'Monospace (Courier)'}
+DEFAULT_SKETCH_FONT = 'sans-serif'
+DEFAULT_SKETCH_FONT_SIZE = 24  # pixels
+MIN_SKETCH_FONT_SIZE, MAX_SKETCH_FONT_SIZE = 6, 200
 SKETCHPAD_COLOR = '#e11d48'  # the pen's colour to start with
 
 
@@ -3664,6 +4085,14 @@ def update_xsheet_view_items(on_xsheet_tab: bool | None = None) -> None:
         on_xsheet_tab = sess.main_tab == 'XSheet'
     for item in sess.xsheet_view_items:
         item.set_enabled(on_xsheet_tab and not sess.sketchpad_active)
+
+
+def update_delete_frame_item(on_xsheet_tab: bool | None = None) -> None:
+    """Edit > Delete Frame and Delete Layer can be chosen only on the XSheet tab."""
+    sess = session()
+    for item in (sess.delete_frame_item, sess.delete_layer_item):
+        if item is not None:
+            item.set_enabled(sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab)
 
 
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
@@ -3700,6 +4129,121 @@ def sketch_path_for(document: Path | str) -> Path:
     return Path(document).with_suffix('.svg')
 
 
+# ---- Undo / Redo, global across the XSheet, XML and SVG tabs ----
+#
+# The document's text (edited on the XML tab, or from the XSheet tab) and the
+# Sketchpad's sketch (drawn on the XSheet tab, or edited as SVG on the SVG tab)
+# each keep their own steps of undo: sess.undo_stack, and the sketchpad's history.
+# The journal puts those steps in the order they were made, so Undo takes back
+# whichever change was made last, whichever tab that was, and Redo puts back
+# whichever was undone last. If that change was made on a tab other than the one
+# showing, a warning says what was done (it's not an error).
+
+def clear_journal() -> None:
+    """A document was opened or started: nothing to undo or redo."""
+    sess = session()
+    sess.journal.clear()
+    sess.journal_future.clear()
+    sess.sketch_depth = sess.sketch_redo = 0
+
+
+def record_doc_edit() -> None:
+    """The document's text changed (a step was added to undo_stack): journal
+    it, as made on the tab showing -- XML, or XSheet -- and forget what could be redone."""
+    sess = session()
+    on_xsheet = sess.main_tab == 'XSheet'
+    sess.journal.append({'domain': 'doc', 'tab': 'XSheet' if on_xsheet else 'XML',
+                         'what': 'an XSheet edit' if on_xsheet else 'an XML edit'})
+    sess.journal_future.clear()
+    if sess.sketch_redo:
+        sess.sketch_redo = 0
+        ui.run_javascript('window.mlwSketchpad && mlwSketchpad.clearRedo()')
+
+
+def reconcile_sketch_history(depth: int, redo: int, source: str | None) -> None:
+    """The Sketchpad reported how many steps it can undo (`depth`) and redo
+    (`redo`): journal the new steps, or -- if it undid some itself, from its
+    Undo button, or dropped some -- take them off the journal (the undone ones
+    can be redone from the journal's future). `source` is 'editor' for a change
+    made in the SVG tab's editor."""
+    sess = session()
+    change = depth - sess.sketch_depth
+    if change > 0:
+        sess.journal.extend({'domain': 'sketch', 'tab': 'SVG' if source == 'editor' else 'XSheet',
+                             'what': 'an SVG edit' if source == 'editor' else 'a Sketchpad change'}
+                            for _ in range(change))
+        sess.journal_future.clear()
+        sess.redo_stack.clear()
+    elif change < 0:
+        taken = []
+        for i in range(len(sess.journal) - 1, -1, -1):
+            if len(taken) == -change:
+                break
+            if sess.journal[i]['domain'] == 'sketch':
+                taken.append(sess.journal.pop(i))
+        undone = max(redo - sess.sketch_redo, 0)  # (it keeps what it undid to redo; not what it dropped)
+        sess.journal_future.extend(taken[:undone][::-1])
+    if redo < sum(1 for entry in sess.journal_future if entry['domain'] == 'sketch'):
+        sess.journal_future[:] = [entry for entry in sess.journal_future if entry['domain'] != 'sketch']
+    sess.sketch_depth, sess.sketch_redo = depth, redo
+
+
+def _apply_doc_step(undo: bool) -> bool:
+    """Take back (or put back) the document's last text change."""
+    sess = session()
+    stack, other = (sess.undo_stack, sess.redo_stack) if undo else (sess.redo_stack, sess.undo_stack)
+    if not stack:
+        return False
+    value = stack.pop()
+    other.append(sess.last_editor_value)
+    sess.suppress_editor_change = True
+    sess.editor.value = value
+    sess.suppress_editor_change = False
+    sess.last_editor_value = value
+    sess.current_file['modified'] = (value != sess.current_file.get('saved_content', ''))
+    set_filename_label()
+    remember_document()
+    return True
+
+
+async def _step_history(undo: bool) -> None:
+    sess = session()
+    word = 'undo' if undo else 'redo'
+    try:  # the sketch reports a moment after a change: ask it now, so the journal is up to date
+        depth, redo = await ui.run_javascript('return window.mlwSketchpad ? mlwSketchpad.depths() : [0, 0]')
+        reconcile_sketch_history(int(depth), int(redo), None)
+    except Exception:
+        pass
+    source, target = (sess.journal, sess.journal_future) if undo else (sess.journal_future, sess.journal)
+    if not source:
+        ui.notify(f'Nothing to {word}', color='info')
+        return
+    entry = source.pop()
+    if entry['domain'] == 'doc':
+        done = _apply_doc_step(undo)
+    else:
+        sess.sketch_depth += -1 if undo else 1  # as the sketchpad will report it: nothing new to journal
+        sess.sketch_redo += 1 if undo else -1
+        done = bool(await ui.run_javascript(f'return mlwSketchpad.{word}()'))
+    if not done:
+        ui.notify(f'Nothing to {word}', color='info')
+        return
+    target.append(entry)
+    if entry['tab'] != sess.main_tab:
+        ui.notify(f"{'Undid' if undo else 'Redid'} {entry['what']}, made on the {entry['tab']} tab "
+                  f"(you're on the {sess.main_tab} tab)", color='warning')
+
+
+async def global_undo() -> None:
+    """Edit > Undo, Ctrl+Z: take back the last change made, on any of the tabs."""
+    await _step_history(True)
+
+
+async def global_redo() -> None:
+    """Edit > Redo, Ctrl+Y: put back the last change undone."""
+    await _step_history(False)
+
+
 def handle_sketch_changed(e) -> None:
     """The browser's sketch changed (see mlwSketchpad's changed()): keep
     its SVG, for the next Save or Save As, and whether it's unsaved -- which
@@ -3709,6 +4253,8 @@ def handle_sketch_changed(e) -> None:
     args = e.args if isinstance(e.args, dict) else {}
     sess.sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
     sess.sketch_modified = bool(args.get('dirty')) and sess.document_open
+    if 'depth' in args:
+        reconcile_sketch_history(int(args['depth']), int(args.get('redo') or 0), args.get('source'))
     if args.get('source') != 'editor':  # (the editor's own change: left as it's being typed)
         if sess.main_tab == 'SVG':
             refresh_svg_editor()
@@ -3732,7 +4278,7 @@ def restore_sketch_draft(draft: dict | None) -> None:
     if not svg:
         return
     sess = session()
-    sess.sketch = {'count': len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg)), 'svg': svg}
+    sess.sketch = {'count': len(re.findall(r'<(?:path|polyline|rect|circle|text)\b', svg)), 'svg': svg}
     sess.sketch_modified = True
     set_filename_label()
     remember_document()
@@ -3873,7 +4419,7 @@ def load_sketch_beside(document: Path) -> None:
     except Exception as exc:
         ui.notify(f'Failed to read the sketch {source}: {exc}', color='warning')
         return
-    count = len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg))
+    count = len(re.findall(r'<(?:path|polyline|rect|circle|text)\b', svg))
     session().sketch = {'count': count, 'svg': svg}
     ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)})')
     refresh_svg_editor()
@@ -3894,6 +4440,11 @@ def toggle_sketchpad(active: bool | None = None) -> None:
     if sess.sketchpad_menu_icon is not None:
         sess.sketchpad_menu_icon.name = 'check_box' if sess.sketchpad_active else 'check_box_outline_blank'
     update_xsheet_view_items()
+    if sess.svg_tab is not None:  # the SVG tab is there only while the sketchpad is on
+        sess.svg_tab.set_visibility(sess.sketchpad_active)
+        if not sess.sketchpad_active and sess.main_tabs is not None and sess.main_tab == 'SVG':
+            sess.main_tabs.value = 'XSheet'
+        update_tab_shortcuts()
     if sess.sketchpad_toolbar is not None:
         sess.sketchpad_toolbar.set_visibility(sess.sketchpad_active)
     ui.run_javascript(f'window.mlwSketchpad && window.mlwSketchpad.setActive({json.dumps(sess.sketchpad_active)})')
@@ -4046,6 +4597,9 @@ def _build_sketchpad_toolbar(sess) -> None:
                     .tooltip('Colour: the pen, and the selected shape') as color_button:
                 picker = ui.color_picker(on_pick=lambda e: colour(e.color))
                 picker.on('before-show', lambda: chooser_opened('color'))
+                # ring the pen's colour in the palette once it is showing (see mlwMarkSwatch())
+                picker.on('show', lambda: ui.run_javascript(
+                    f'setTimeout(() => mlwMarkSwatch({json.dumps(pen["color"])}), 50)'))
                 picker.q_color.props(f'default-view=palette no-header format-model=hex '
                                      f':palette="{json.dumps(SKETCHPAD_PALETTE).replace(chr(34), chr(39))}"')
                 picker.q_color.classes('mlw-palette-16').style('width: 256px')  # the palette: 16 x 16, 16 px swatches
@@ -4090,6 +4644,7 @@ def _build_sketchpad_toolbar(sess) -> None:
             ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
             ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the sketchpad')
     buttons['tool:draw'].classes(add='mlw-tool-on')
+    apply_sketch_text_prefs()
     ui.run_javascript(f'window.mlwSketchpad && (mlwSketchpad.setShape("spline"), mlwSketchpad.setColor({json.dumps(SKETCHPAD_COLOR)}), '
                       f'mlwSketchpad.setWidth({SKETCHPAD_WIDTH}))')
     toolbar.set_visibility(sess.sketchpad_active)
@@ -4124,6 +4679,8 @@ def handle_xsheet_row_clicked(e):
     data = (e.args or {}).get('data') or {}
     if 'Frame' in data:
         session().xsheet_current_frame = data['Frame']
+    if (e.args or {}).get('colId'):
+        session().xsheet_current_column = e.args['colId']  # for Edit > Delete Layer
 
 
 def handle_xsheet_header_clicked(e):
@@ -4148,6 +4705,60 @@ def _document_asset_ids(text: str) -> list[str]:
     except ET.ParseError:
         return []
     return [el.get('id') for el in root.iter() if el.tag.split('}')[-1] == 'Asset' and el.get('id')]
+
+
+def update_xml_menu_items() -> None:
+    """The XML menu's items act on the XML editor, so they can be chosen only
+    on the XML tab. (XML > XML Editor, the check box, always can.)"""
+    sess = session()
+    for item in sess.xml_menu_items:
+        item.set_enabled(sess.main_tab == 'XML')
+
+
+def close_find_dialogs(showing: str) -> None:
+    """The tab changed to `showing`: Find & Replace works on the XML and SVG
+    editors, so it closes on the XSheet tab; Find Frame works on the XSheet
+    grid, so it closes on the other tabs."""
+    sess = session()
+    if showing == 'XSheet' and sess.find_close is not None:
+        sess.find_close()
+    if showing != 'XSheet' and sess.find_frame_dialog is not None:
+        sess.find_frame_dialog.close()
+        sess.find_frame_dialog = None
+
+
+def shown_tabs() -> list[str]:
+    """The main tabs showing, left to right: XSheet, then SVG (while the
+    sketchpad is on), then XML (unless the XML editor is turned off)."""
+    sess = session()
+    return ['XSheet'] + (['SVG'] if sess.sketchpad_active else []) + (['XML'] if xml_editor_pref() else [])
+
+
+def update_tab_shortcuts() -> None:
+    """Ctrl+Alt+1, 2, 3 switch to the tabs showing, by position (see shown_tabs()):
+    the tabs' tooltips say which."""
+    names = shown_tabs()
+    for name, tip in session().tab_tooltips.items():
+        if name in names:
+            tip.text = f'Ctrl+Alt+{names.index(name) + 1}'
+
+
+def toggle_xml_editor(enabled: bool | None = None) -> None:
+    """XML > XML Editor: show or hide the XML tab. Only the view changes: the
+    editor still holds the document, so edits made on the XSheet tab update
+    it, and Save writes it, as ever. Turning it off while the XML tab is
+    showing goes to the XSheet tab."""
+    sess = session()
+    enabled = (not xml_editor_pref()) if enabled is None else bool(enabled)
+    user_storage()['xml_editor'] = enabled
+    if sess.xml_menu_icon is not None:
+        sess.xml_menu_icon.name = 'check_box' if enabled else 'check_box_outline_blank'
+    if sess.xml_tab is not None:
+        sess.xml_tab.set_visibility(enabled)
+    update_tab_shortcuts()
+    if not enabled and sess.main_tabs is not None and sess.main_tab == 'XML':
+        sess.main_tabs.value = 'XSheet'
+    update_xml_menu_items()
 
 
 def xml_tab_active() -> bool:
@@ -4453,6 +5064,155 @@ def show_add_frame_dialog() -> None:
     dlg.open()
 
 
+def show_delete_frame_dialog() -> None:
+    """Edit > Delete Frame (the XSheet tab): delete frames from the sheet,
+    starting at the selected one -- the rows go, and the later frames move up
+    (see delete_frames_in_text()). Undo with Ctrl+Z."""
+    import re
+    import xml.etree.ElementTree as ET
+    sess = session()
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if not rows:
+        ui.notify('Open an ExposureSheet document first' if not text.strip()
+                  else f'Delete Frame needs an ExposureSheet document. {message}', color='warning')
+        return
+    root = ET.fromstring(text)
+    layer_ids = layer_ids or []
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+    selected = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+    start_default = min(max(int(selected.group()), first), last) if selected else first
+
+    with ui.dialog() as dlg, titled_card('Delete Frame', classes='w-[420px] max-w-full', body_classes='gap-2'):
+        ui.label('Deletes frames from the sheet: their rows go, not just their drawings, and the later frames move '
+                 'up to close the gap (so do camera moves, audio cues and reviews). Undo with Ctrl+Z.') \
+            .classes('text-caption text-grey')
+        start_input = ui.number('Starting frame', value=start_default, min=first, max=last, step=1, format='%d') \
+            .classes('w-full')
+        count_input = ui.number('Number of frames to delete', value=1, min=1, step=1, format='%d').classes('w-full') \
+            .props('autofocus')
+        status = ui.label(f'The sheet has frames {first}–{last}.').classes('text-sm')
+
+        async def delete(_=None):
+            def whole(value):
+                return value is not None and float(value) == int(value)
+            if not whole(start_input.value) or not first <= int(start_input.value) <= last:
+                ui.notify(f'Starting frame must be a whole number from {first} to {last}', color='warning')
+                return
+            at = int(start_input.value)
+            if not whole(count_input.value) or int(count_input.value) < 1:
+                ui.notify('Number of frames must be a whole number, 1 or more', color='warning')
+                return
+            count = int(count_input.value)
+            if at + count - 1 > last:
+                ui.notify(f'Only {last - at + 1} frame(s) from frame {at} to the end of the sheet', color='warning')
+                return
+            if count >= last - first + 1:
+                ui.notify('A sheet needs at least one frame: not every frame can be deleted', color='warning')
+                return
+            # Later frames that were holding a drawing set in the deleted ones
+            # keep it: restate the layers whose drawing would otherwise change.
+            before = _frame_layer_state(root, layer_ids, at)
+            held = _frame_layer_state(root, layer_ids, at + count + 1)
+            next_frame = next((el for el in root.iter() if el.tag.split('}')[-1] == 'Frame'
+                               and el.get('number') == str(at + count)), None)
+            listed = {el.get('id') for el in next_frame.iter() if el.tag.split('}')[-1] == 'Layer'} \
+                if next_frame is not None else set()
+            restate = [attrs for lid, attrs in held.items() if lid not in listed and attrs != before.get(lid)] \
+                if at + count <= last else []
+            new_text = delete_frames_in_text(_editor_text(), at, count, restate)
+            dlg.close()
+            new_last = last - count
+            sess.xsheet_current_frame = min(at, new_last)
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            span = f'frame {at}' if count == 1 else f'frames {at}–{at + count - 1}'
+            ui.notify(f'Deleted {span}' + ('' if at + count > last else f'; later frames moved up by {count}'),
+                      color='positive')
+            new_layer_ids, new_rows, _message = parse_exposure_sheet(new_text)
+            display = _xsheet_display_rows(sess.xsheet_style, new_layer_ids or [], new_rows or [])
+            index = next((i for i, row in enumerate(display)
+                          if str(row['Frame']).split('–')[0] == str(min(at, new_last))), None)
+            if index is not None and sess.xsheet_grid is not None:
+                import asyncio
+                await asyncio.sleep(0.15)  # let the grid take the new rows first
+                sess.xsheet_grid.run_grid_method('ensureIndexVisible', index, 'middle')
+
+        count_input.on('keydown.enter', delete)
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Delete', on_click=delete).props('color=negative size=sm')
+    dlg.open()
+
+
+def _xsheet_deletable_columns(style: str, layer_ids: list[str]) -> list[tuple[str, str, str, str, str]]:
+    """The XSheet columns Edit > Delete Layer can delete, in the style shown:
+    (colId, heading, kind and key for delete_column_in_text(), what deleting it does)."""
+    layers = [(f'layer:{lid}', f'Layer {lid}', 'layer', lid,
+               f'Removes layer {lid} from every frame (and its OTIO track map). A frame left with no layer holds '
+               f'another layer\'s drawing.') for lid in layer_ids]
+    notes = ('Notes', 'Clears every frame\'s notes.', 'notes')
+    dialogue = ('Dialogue', 'Deletes every frame\'s dialogue.', 'dialogue')
+    camera = ('Camera moves', 'Deletes every camera move (the camera keyframes stay).', 'camera')
+    if style == 'traditional':
+        others = [('action', 'Action/Description') + notes[1:], ('audio', 'Audio', 'Deletes the audio cues of '
+                  'every track but sound effects.', 'music'), ('dialogue',) + dialogue,
+                  ('soundfx', 'Sound FX', 'Deletes the audio cues of the Effects tracks.', 'soundfx'),
+                  ('technotes', 'Tech. Notes', 'Clears the camera keyframes\' notes (review comments are edited in '
+                   'About > Reviews).', 'technotes'), ('camera', 'Camera Moves') + camera[1:]]
+    else:
+        others = [('Camera', 'Camera') + camera[1:], ('Dialogue',) + dialogue, ('Audio', 'Audio',
+                  'Deletes every audio cue.', 'audio'), ('Notes', 'Notes') + notes[1:]]
+    return layers + [(col, label, kind, '', what) for col, label, what, kind in others]
+
+
+def show_delete_layer_dialog() -> None:
+    """Edit > Delete Layer (the XSheet tab): delete the selected XSheet column
+    -- a layer, or one of the other data columns (notes, dialogue, audio,
+    camera moves, ...) -- from the document (see delete_column_in_text()).
+    The column last clicked is offered; the dialog can choose any other."""
+    sess = session()
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if not rows:
+        ui.notify('Open an ExposureSheet document first' if not text.strip()
+                  else f'Delete Layer needs an ExposureSheet document. {message}', color='warning')
+        return
+    columns = _xsheet_deletable_columns(sess.xsheet_style, layer_ids or [])
+    by_id = {col: (label, kind, key, what) for col, label, kind, key, what in columns}
+    default = sess.xsheet_current_column if sess.xsheet_current_column in by_id else columns[0][0]
+
+    with ui.dialog() as dlg, titled_card('Delete Layer', classes='w-[460px] max-w-full', body_classes='gap-2'):
+        ui.label('Deletes a whole column of the sheet from the document: a layer, or one of the other columns '
+                 '(its data in every frame). Undo with Ctrl+Z.').classes('text-caption text-grey')
+        chooser = ui.select({col: label for col, (label, *_rest) in by_id.items()}, value=default,
+                            label='Column to delete').classes('w-full')
+        what = ui.label(by_id[default][3]).classes('text-sm')
+        chooser.on_value_change(lambda e: what.set_text(by_id[e.value][3]))
+
+        def delete(_=None):
+            label, kind, key, _what = by_id[chooser.value]
+            if kind == 'layer' and len(layer_ids or []) <= 1:
+                ui.notify('A sheet needs at least one layer: the last one cannot be deleted', color='warning')
+                return
+            result = delete_column_in_text(_editor_text(), kind, key)
+            if result is None:
+                ui.notify('Could not delete the column (the document has no <Timeline>)', color='negative')
+                return
+            new_text, count = result
+            dlg.close()
+            if new_text == _editor_text():
+                ui.notify(f'{label} has nothing to delete', color='info')
+                return
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            sess.xsheet_current_column = None
+            ui.notify(f'Deleted {label}' + (f' ({count} item(s))' if count else ''), color='positive')
+
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Delete', on_click=delete).props('color=negative size=sm')
+    dlg.open()
+
+
 def _prompt_rename_layer(old: str) -> None:
     """Rename an animation layer in the open document, from its column
     heading in the traditional sheet. The edit goes through the editor like
@@ -4512,8 +5272,10 @@ def _load_document(path: str | None, text: str, saved_content: str):
     # initialize undo/redo stacks
     sess.undo_stack.clear()
     sess.redo_stack.clear()
+    clear_journal()
     if sess.current_file['modified']:
         sess.undo_stack.append(saved_content)
+        sess.journal.append({'domain': 'doc', 'tab': 'XML', 'what': 'the changes restored from the draft'})
     sess.last_editor_value = text
     # programmatic update — suppress change handler so initial load doesn't mark as modified
     sess.suppress_editor_change = True
@@ -4734,6 +5496,7 @@ def new_document():
         text = new_document_text()
         _load_document(None, text, '')
         session().undo_stack.clear()  # nothing to undo back to: it starts as it is
+        clear_journal()
         set_validation_status('')
         clear_validation_panel()
         remember_document()
@@ -4744,12 +5507,13 @@ def new_document():
 def _set_editor_text(new_text: str):
     """Programmatically replace the editor contents (used by Find & Replace),
     keeping undo/redo and modified-state tracking consistent -- same pattern
-    as do_undo/do_redo."""
+    as global_undo() and global_redo()."""
     sess = session()
     if new_text == sess.last_editor_value:
         return
     sess.undo_stack.append(sess.last_editor_value)
     sess.redo_stack.clear()
+    record_doc_edit()
     sess.suppress_editor_change = True
     sess.editor.value = new_text
     sess.suppress_editor_change = False
@@ -4764,9 +5528,35 @@ def _set_editor_text(new_text: str):
 
 
 def show_find_dialog():
-    """Find & Replace dialog with case-sensitive and regex options."""
+    """Find & Replace dialog with case-sensitive and regex options. It works
+    on the editor of the tab showing -- the XML editor, or on the SVG tab the
+    SVG editor (its replacements change the sketch, as typing there does) --
+    and starts afresh if the tab is switched while it's open."""
     import re
-    state = {'matches': [], 'index': -1}
+    state = {'matches': [], 'index': -1, 'tab': None}
+
+    def on_svg() -> bool:
+        return session().main_tab == 'SVG' and session().svg_editor is not None
+
+    def target_text() -> str:
+        if on_svg():
+            return session().svg_editor.value or ''
+        return _editor_text()
+
+    def set_target_text(new_text: str) -> None:
+        if on_svg():
+            session().svg_editor.value = new_text  # on_svg_editor_change() applies it to the sketch
+        else:
+            _set_editor_text(new_text)
+
+    def sync_tab() -> None:
+        """The matches belong to one editor: forget them if the other one is showing now."""
+        tab = 'SVG' if on_svg() else 'XML'
+        if state['tab'] != tab:
+            if state['tab'] is not None:
+                clear_highlight()
+            state.update(tab=tab, matches=[], index=-1)
+            status_label.set_text('')
 
     def build_pattern():
         query = find_input.value or ''
@@ -4792,18 +5582,19 @@ def show_find_dialog():
         # editor.id addresses the live CodeMirror EditorView so the highlight
         # is positioned via CodeMirror's own APIs (see mlwSelectRange) instead
         # of guessing at which lines happen to be rendered in the DOM.
-        ui.run_javascript(f'window.mlwSelectRange({session().editor.id}, {m.start()}, {m.end()});')
+        ui.run_javascript(f'window.mlwSelectRange({(session().svg_editor if on_svg() else session().editor).id}, {m.start()}, {m.end()});')
 
     def clear_highlight():
         ui.run_javascript('window.mlwClearFindHighlight && window.mlwClearFindHighlight();')
 
     def refresh_matches(anchor_pos: int | None = None):
+        sync_tab()
         pattern = build_pattern()
         if pattern is None:
             state['matches'] = []
             state['index'] = -1
             return
-        text = _editor_text()
+        text = target_text()
         state['matches'] = list(pattern.finditer(text))
         if not state['matches']:
             state['index'] = -1
@@ -4818,10 +5609,11 @@ def show_find_dialog():
         highlight_current()
 
     def do_find(delta: int):
+        sync_tab()
         pattern = build_pattern()
         if pattern is None:
             return
-        state['matches'] = list(pattern.finditer(_editor_text()))
+        state['matches'] = list(pattern.finditer(target_text()))
         if not state['matches']:
             state['index'] = -1
             set_status('No matches', ok=False)
@@ -4835,6 +5627,7 @@ def show_find_dialog():
         highlight_current()
 
     def do_replace():
+        sync_tab()
         if not (0 <= state['index'] < len(state['matches'])):
             do_find(1)
             if not (0 <= state['index'] < len(state['matches'])):
@@ -4845,19 +5638,20 @@ def show_find_dialog():
         except re.error as exc:
             ui.notify(f'Replacement error: {exc}', color='negative')
             return
-        text = _editor_text()
+        text = target_text()
         new_text = text[:m.start()] + replacement + text[m.end():]
-        _set_editor_text(new_text)
+        set_target_text(new_text)
         refresh_matches(anchor_pos=m.start() + len(replacement))
 
     def do_replace_all():
+        sync_tab()
         pattern = build_pattern()
         if pattern is None:
             return
         replacement = replace_input.value or ''
         repl = (lambda mo: mo.expand(replacement)) if regex_cb.value else (lambda mo: replacement)
-        new_text, count = pattern.subn(repl, _editor_text())
-        _set_editor_text(new_text)
+        new_text, count = pattern.subn(repl, target_text())
+        set_target_text(new_text)
         state['matches'] = []
         state['index'] = -1
         set_status(f'Replaced {count} occurrence(s)', ok=bool(count))
@@ -4867,6 +5661,7 @@ def show_find_dialog():
     def do_close():
         clear_highlight()
         dlg.close()
+        session().find_close = None
 
     # Seamless (no backdrop) and docked to the right edge, over the Hierarchy
     # panel: matches are scrolled to the middle of the editor, so a centered,
@@ -4887,6 +5682,11 @@ def show_find_dialog():
             ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline size=sm')
         with ui.row().classes('w-full justify-end'):
             ui.button('Close', on_click=lambda _: do_close()).props('size=sm')
+    sync_tab()
+    if session().find_close is not None:
+        session().find_close()  # one at a time
+    session().find_close = do_close
+    dlg.on('hide', lambda _: session().find_close is do_close and setattr(session(), 'find_close', None))
     dlg.open()
 
 
@@ -5470,26 +6270,56 @@ def index():
         padding-bottom: 6.25% !important;
     }
 }
+/* the colour chooser's chosen swatch (see mlwMarkSwatch()): ringed, until the chooser closes */
+.q-color-picker.mlw-palette-16 .q-color-picker__cube.mlw-swatch-chosen {
+    position: relative;
+    z-index: 1;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1976d2;
+}
 /* the colour chooser's swatches: a faint edge, so white shows too */
 .q-color-picker__cube {
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 </style>
 <script>
+// The colour chooser's palette: the swatch picked is ringed (so is the pen's colour, when the chooser
+// opens). The ring is on the swatch's element only, so it is gone when the chooser closes.
+window.mlwMarkSwatch = function(hex) {
+    const rgb = (h) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(h || ''); return m ? `rgb(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)})` : null; };
+    const want = rgb(hex);
+    document.querySelectorAll('.q-color-picker.mlw-palette-16').forEach(palette => {
+        palette.querySelectorAll('.q-color-picker__cube').forEach(cube => {
+            cube.classList.toggle('mlw-swatch-chosen', !!want && cube.style.backgroundColor === want);
+        });
+    });
+};
+document.addEventListener('click', (e) => {
+    const cube = e.target.closest && e.target.closest('.q-color-picker.mlw-palette-16 .q-color-picker__cube');
+    if (!cube) return;
+    const palette = cube.closest('.q-color-picker');
+    palette.querySelectorAll('.mlw-swatch-chosen').forEach(c => c.classList.remove('mlw-swatch-chosen'));
+    cube.classList.add('mlw-swatch-chosen');
+    // the palette redraws as the colour is set: keep the ring on the same swatch
+    const colour = cube.style.backgroundColor;
+    requestAnimationFrame(() => palette.querySelectorAll('.q-color-picker__cube').forEach(c =>
+        c.classList.toggle('mlw-swatch-chosen', c.style.backgroundColor === colour)));
+}, true);
 window.mlwSketchpad = window.mlwSketchpad || (() => {
     const NS = 'http://www.w3.org/2000/svg';
     // shapes: [{type: 'spline' | 'rect' | 'circle', color, width, points: [[x, y], ...]}], in CSS pixels.
     // spline: its anchors, and tangents: per anchor [inX, inY, outX, outY], its two direction handles
     // relative to it (their direction sets the curve's slope there, their length -- the magnitude --
     // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
-    const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4,  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
-                selected: -1, node: null, history: [], label: null,  // node: [shape, anchor] whose arms show
+    const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4, font: 'sans-serif', fontSize: 24,  /* text: see setTextStyle() */
+                 /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
+                selected: -1, node: null, history: [], future: [], label: null,  // node: [shape, anchor] whose arms show
                 poly: null};  // the polyline being drawn: its last point follows the pointer
     const hosts = new Set();
     const round = (v) => Math.round(v * 10) / 10;
     const copy = (shapes) => shapes.map(s => ({...s, points: s.points.map(p => [...p]),
                                                ...(s.tangents ? {tangents: s.tangents.map(t => [...t])} : {})}));
-    const remember = () => { st.history.push(copy(st.shapes)); if (st.history.length > 200) st.history.shift(); };
+    // (a new change drops what could be redone)
+    const remember = () => { st.history.push(copy(st.shapes)); if (st.history.length > 200) st.history.shift(); st.future.length = 0; };
 
     // Ramer-Douglas-Peucker: the few points that keep the drawn line's shape
     function simplify(points, tolerance) {
@@ -5535,10 +6365,38 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
         return e;
     }
+    // Text: a string at points[0] (its top-left), with its own typeface (font:
+    // sans-serif, serif or monospace) and size in pixels, from Preferences >
+    // Sketchpad when it was typed; its colour is the fill. The brush doesn't size it.
+    const fontSize = (s) => s.size || 24;
+    const FONTS = ['sans-serif', 'serif', 'monospace'];
+    const fontOf = (s) => FONTS.includes(s.font) ? s.font : 'sans-serif';
+    let measurer = null;
+    // a string can have several lines (Shift+Enter in the box; "\\n" in the text), a line 1.2 times the size down from the last
+    const textLines = (s) => String(s.text || '').split('\\n');
+    const textBox = (s) => {
+        measurer = measurer || document.createElement('canvas').getContext('2d');
+        measurer.font = `${fontSize(s)}px ${fontOf(s)}`;
+        const lines = textLines(s);
+        return {x: s.points[0][0], y: s.points[0][1], w: Math.max(...lines.map(l => measurer.measureText(l).width), 4),
+                h: fontSize(s) * 1.2 * lines.length};
+    };
     const radius = (s) => Math.hypot(s.points[1][0] - s.points[0][0], s.points[1][1] - s.points[0][1]);
     // the shape's SVG element, with the given presentation attributes
     function shapeEl(s, attrs) {
         const [[x1, y1], [x2, y2] = [x1, y1]] = s.points;
+        if (s.type === 'text') {
+            const t = el('text', {x: round(x1), y: round(y1 + fontSize(s) * 0.85), 'font-size': fontSize(s),
+                                  'font-family': fontOf(s), ...attrs});
+            const lines = textLines(s);
+            if (lines.length === 1) t.textContent = s.text;
+            else lines.forEach((line, i) => {  // a <tspan> a line, each placed where it goes
+                const tspan = el('tspan', {x: round(x1), y: round(y1 + fontSize(s) * (0.85 + 1.2 * i))});
+                tspan.textContent = line;
+                t.appendChild(tspan);
+            });
+            return t;
+        }
         if (s.type === 'polyline')
             return el('polyline', {points: s.points.map(([x, y]) => `${round(x)},${round(y)}`).join(' '), ...attrs});
         if (s.type === 'rect')
@@ -5548,6 +6406,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         return el('path', {d: splinePath(s), ...attrs});
     }
     function strokeAttrs(s) {
+        if (s.type === 'text') return {fill: s.color};
         return {fill: 'none', stroke: s.color, 'stroke-width': s.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
     }
     // where a selected shape's handles go: a spline's anchors, a polyline's
@@ -5595,12 +6454,16 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         svg = g;
         st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {...strokeAttrs(s), 'data-shape': i})));
         if (plain || !st.active || st.tool !== 'select') return;
-        st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {
+        const boxEl = (s, attrs) => { const b = textBox(s); return el('rect', {x: b.x - 2, y: b.y - 2, width: b.w + 4, height: b.h + 4, ...attrs}); };
+        st.shapes.forEach((s, i) => svg.appendChild(s.type === 'text' ? boxEl(s, {
+            fill: 'transparent', 'pointer-events': 'all', 'data-shape': i,
+            class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'}) : shapeEl(s, {
             fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14), 'stroke-linecap': 'round',
             'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
         const s = st.shapes[st.selected];
         if (!s) return;
-        svg.insertBefore(shapeEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': s.width + 8,
+        svg.insertBefore(s.type === 'text' ? boxEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.6, 'stroke-width': 2,
+            'pointer-events': 'none'}) : shapeEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': s.width + 8,
             'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none'}), svg.firstChild);
         if (s.type === 'spline' && s.points.length > 1) {
             // the selected anchor's direction handles: an arm to a knob each side
@@ -5687,6 +6550,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const r = radius(s), [cx, cy] = p[0];
             return {closed: true, points: Array.from({length: 48}, (_, k) => [cx + r * Math.cos(k * Math.PI / 24), cy + r * Math.sin(k * Math.PI / 24)])};
         }
+        if (s.type === 'text') return {closed: false, points: []};
         if (s.type !== 'spline' || p.length < 2) return {closed: false, points: p.length === 1 ? [p[0], p[0]] : p};
         const t = tangentsOf(s), out = [p[0]];
         for (let i = 0; i < p.length - 1; i++) {
@@ -5722,6 +6586,54 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         }
         rebuildAll();
     }
+    // Typing a text string: an input over the sketch at the string's place.
+    // Enter or a click elsewhere keeps it, Escape drops it; an empty string
+    // is no string (an existing one is deleted).
+    let typing = null;  // {input, index (null: a new string), at}
+    function finishText(keep = true) {
+        const t = typing;
+        if (!t) return;
+        typing = null;
+        const text = t.input.value.trim();
+        t.input.remove();
+        const s = t.index === null ? null : st.shapes[t.index];
+        if (!keep || (t.index === null && !text) || (s && s.text === text)) return;
+        remember();
+        if (t.index === null) { st.shapes.push({type: 'text', color: st.color, size: st.fontSize, font: st.font, points: [t.at], text}); }
+        else if (!text) { st.shapes.splice(t.index, 1); st.selected = -1; st.node = null; }
+        else s.text = text;
+        rebuildAll();
+    }
+    function editText(host, index, x, y) {
+        finishText();
+        const s = index === null ? {text: '', color: st.color, size: st.fontSize, font: st.font} : st.shapes[index];
+        const [sx, sy] = scrollOf(host), size = fontSize(s);
+        const input = document.createElement('textarea');  // Shift+Enter adds a line; Enter ends the string
+        input.value = s.text;
+        input.placeholder = 'Text';
+        input.rows = 1;
+        input.wrap = 'off';
+        Object.assign(input.style, {position: 'absolute', left: `${x - sx - 3}px`, top: `${y - sy - 3}px`, zIndex: 10,
+            font: `${size}px ${fontOf(s)}`, color: s.color, background: 'rgba(255,255,255,0.85)', border: '1px dashed #5898d4',
+            padding: '2px', outline: 'none', lineHeight: 1.2, boxSizing: 'content-box', resize: 'none', overflow: 'hidden',
+            margin: 0});
+        // as big as its text: as wide as the longest line, and a line tall for each
+        const fit = () => {
+            const box = textBox({text: input.value, size, font: fontOf(s), points: [[0, 0]]});
+            input.style.width = `${Math.max(box.w + 24, 120)}px`;
+            input.style.height = `${box.h}px`;
+        };
+        input.addEventListener('input', fit);
+        fit();
+        ['pointerdown', 'pointerup', 'keydown', 'keyup', 'wheel'].forEach(n => input.addEventListener(n, (e) => e.stopPropagation()));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finishText(); }
+            else if (e.key === 'Escape') { e.preventDefault(); finishText(false); }
+        });
+        host.appendChild(input);
+        typing = {input, index, at: [x, y]};
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+    }
     function rebuildAll() {
         for (const h of [...hosts]) {
             if (!h.isConnected) { hosts.delete(h); continue; }
@@ -5738,14 +6650,19 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // the document shows as changed and Close asks to save it.
     // 'source': 'editor' for a change made in the SVG tab's editor (see
     // applySVG()), which the server then leaves as it is typed.
-    let sent = '[]', saved = '[]', sendTimer = null, origin = null;
+    let sent = '[]', sentDepth = '', saved = '[]', sendTimer = null, origin = null;
     function changed(force = false) {
         clearTimeout(sendTimer);
         sendTimer = setTimeout(() => {
             const now = JSON.stringify(st.shapes);
-            if (now === sent && !force) return;
+            // 'depth' and 'redo': how many steps can be undone and redone, for the
+            // server's global Undo/Redo (see reconcile_sketch_history())
+            const depth = `${st.history.length}/${st.future.length}`;
+            if (now === sent && depth === sentDepth && !force) return;
             sent = now;
-            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved, source: origin});
+            sentDepth = depth;
+            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved, source: origin,
+                                             depth: st.history.length, redo: st.future.length});
             origin = null;
         }, force ? 0 : 300);
     }
@@ -5759,9 +6676,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (doc.querySelector('parsererror')) return null;
         const num = (e, a) => parseFloat(e.getAttribute(a)) || 0;
         const shapes = [];
-        doc.querySelectorAll('path, polyline, rect, circle').forEach(e => {
+        doc.querySelectorAll('path, polyline, rect, circle, text').forEach(e => {
             const style = {color: e.getAttribute('stroke') || '#000000', width: num(e, 'stroke-width') || 1};
             const tag = e.tagName.toLowerCase();
+            if (tag === 'text') {
+                const size = num(e, 'font-size') || 16;
+                const spans = [...e.querySelectorAll('tspan')];  // a line to a <tspan>, else the one line
+                const text = spans.length ? spans.map(t => t.textContent.trim()).join('\\n').replace(/^\\n+|\\n+$/g, '') : e.textContent.trim();
+                const font = (e.getAttribute('font-family') || '').trim();
+                if (text) shapes.push({type: 'text', color: e.getAttribute('fill') || '#000000', size, font: FONTS.includes(font) ? font : 'sans-serif',
+                                       points: [[num(e, 'x'), num(e, 'y') - size * 0.85]], text});
+                return;
+            }
             if (tag === 'rect') {
                 const x = num(e, 'x'), y = num(e, 'y');
                 shapes.push({type: 'rect', ...style, points: [[x, y], [x + num(e, 'width'), y + num(e, 'height')]]});
@@ -5830,8 +6756,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         host.addEventListener('pointerdown', (e) => {
             if (!st.active || e.button > 0) return;
             e.preventDefault();
+            if (typing) { finishText(); return; }  // a click away from the string being typed keeps it
             host.setPointerCapture(e.pointerId);
             const [x, y] = at(e);
+            if (st.tool === 'draw' && st.shape === 'text') { editText(host, null, x, y); return; }
             if (st.tool === 'draw' && st.shape === 'polyline') {
                 // Polyline: each click adds a point, a double-click (or Enter) ends it. (A
                 // double-click is told here, from the time and distance since the last click:
@@ -5872,9 +6800,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 st.node = [i, +t.dataset.point];  // a spline's anchor: show its arms
                 rebuildAll();
             } else if (t.classList.contains('mlw-hit')) {
+                const was = st.selected === i;
                 if (st.selected !== i || st.node) { st.selected = i; st.node = null; rebuildAll(); }
                 remember();
-                drag = {kind: 'move', shape: i, from: [x, y], moved: false};
+                drag = {kind: 'move', shape: i, from: [x, y], moved: false, again: was && st.shapes[i].type === 'text'};
             } else if (st.selected !== -1) {
                 st.selected = -1;
                 st.node = null;
@@ -5941,10 +6870,12 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                     if (tiny) { st.shapes.pop(); st.history.pop(); }  // a click, not a drag: nothing drawn
                 }
             } else if (!drag.moved) st.history.pop();  // a click to select (a shape, or an anchor): nothing to undo
+            const edit = drag.kind === 'move' && !drag.moved && drag.again ? drag.shape : null;  // a click on a selected string: edit it
             drag = null;
             st.label = null;
             rebuildAll();
             sheetGeometry(host);  // for an export from the XML tab (see sheetShapes())
+            if (edit !== null) { const [x, y] = st.shapes[edit].points[0]; editText(host, edit, x, y); }
         };
         host.addEventListener('pointerup', end);
         host.addEventListener('pointercancel', end);
@@ -5962,6 +6893,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             rebuildAll();
         } else finishPoly(e.key === 'Enter');
     }, true);
+    // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z): the server's global Undo / Redo (see global_undo()),
+    // across the XSheet, XML and SVG tabs -- caught before an editor's own undo can act.
+    // (Plain input boxes, in dialogs, keep their own.)
+    window.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        const key = e.key.toLowerCase();
+        if (key !== 'z' && key !== 'y') return;
+        if (e.target.closest && e.target.closest('input, textarea, select')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        emitEvent(key === 'y' || e.shiftKey ? 'mlw_redo' : 'mlw_undo', {});
+    }, true);
     document.addEventListener('keydown', (e) => {
         if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
         if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
@@ -5972,10 +6915,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         .observe(document.body, {childList: true, subtree: true});
     document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
-        setActive(on) { finishPoly(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setActive(on) { finishPoly(); finishText(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
         // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
-        setTool(tool) { finishPoly(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
-        setShape(shape) { st.shape = ['polyline', 'rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
+        setTool(tool) { finishPoly(); finishText(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setShape(shape) { st.shape = ['polyline', 'rect', 'circle', 'text'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
         // the pen's colour / width, and the selected shape's
         setColor(color) {
             st.color = color;
@@ -5985,7 +6928,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         setWidth(width) {
             st.width = width;
             const s = st.shapes[st.selected];
-            if (s && s.width !== width) { remember(); s.width = width; rebuildAll(); }
+            if (s && s.type !== 'text' && s.width !== width) { remember(); s.width = width; rebuildAll(); }
         },
         deleteSelected() {
             if (!st.shapes[st.selected]) return false;
@@ -6016,21 +6959,36 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return true;
         },
         undo() {
+            if (typing) { finishText(false); return true; }
             if (st.poly) { finishPoly(false); return true; }  // drawing a polyline: Undo drops it
             if (!st.history.length) return false;
+            st.future.push(copy(st.shapes));
             st.shapes = st.history.pop();
             if (!st.shapes[st.selected]) st.selected = -1;
             rebuildAll();
             return true;
         },
+        redo() {
+            if (st.poly) finishPoly(false);
+            if (!st.future.length) return false;
+            st.history.push(copy(st.shapes));
+            st.shapes = st.future.pop();
+            if (!st.shapes[st.selected]) st.selected = -1;
+            rebuildAll();
+            return true;
+        },
+        // how many steps can be undone and redone (the server's Undo/Redo
+        // asks, as the sketch's report to it comes a moment after a change)
+        depths() { return [st.history.length, st.future.length]; },
+        clearRedo() { st.future.length = 0; changed(); },
         // a document opened with a sketch saved beside it (see fromSVG()): that
         // sketch, and nothing to undo
         // (unsaved: a sketch from a draft, not yet saved beside the document)
         loadSVG(text, unsaved = false) {
             const shapes = fromSVG(text);
             if (!shapes) return false;
-            finishPoly(false);
-            st.shapes = shapes; st.history = []; st.selected = -1; st.node = null; st.label = null;
+            finishPoly(false); finishText(false);
+            st.shapes = shapes; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null;
             saved = unsaved ? null : JSON.stringify(shapes);
             rebuildAll();
             return true;
@@ -6045,7 +7003,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const shapes = fromSVG(text);
             if (!shapes) return 'invalid';
             if (JSON.stringify(shapes) === JSON.stringify(st.shapes)) return 'same';
-            finishPoly(false);
+            finishPoly(false); finishText(false);
             if (Date.now() - editorEdit > 1500) remember();
             editorEdit = Date.now();
             st.shapes = shapes; st.selected = -1; st.node = null; st.label = null;
@@ -6054,9 +7012,11 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return 'ok';
         },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { saved = '[]'; st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
-        clear() { finishPoly(); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
+        clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
+        // the typeface and size (pixels) of the strings typed from now on (Preferences > Sketchpad)
+        setTextStyle(font, size) { st.font = FONTS.includes(font) ? font : 'sans-serif'; st.fontSize = Math.max(+size || 24, 1); },
         setPenColor(color) { st.color = color; },
         setPenWidth(width) { st.width = width; },
         // For the colour and brush choosers: where the undo history stood when
@@ -6067,10 +7027,11 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (st.history.length <= n) return;
             st.shapes = st.history[n];
             st.history.length = n;
+            st.future.length = 0;
             if (!st.shapes[st.selected]) st.selected = -1;
             rebuildAll();
         },
-        squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; },
+        squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; st.future.length = 0; },
         tool() { return st.tool; },
         shape() { return st.shape; },
         selected() { return st.selected; },
@@ -6095,6 +7056,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 columns: geo.columns.map(([l, w]) => [round3(l - geo.left), round3(w)]),
                 rows: geo.rows.map(([, h, a, b]) => [a, b, round3(h)]),
                 shapes: st.shapes.map(s => {
+                    if (s.type === 'text') {
+                        return {color: s.color, width: 0, closed: false, text: s.text, size: fontSize(s), font: fontOf(s),
+                                span: round3(textBox(s).w), points: [toSheet(s.points[0], geo)]};
+                    }
                     const {closed, points} = outline(s);
                     return {color: s.color, width: s.width, closed, points: points.map(pt => toSheet(pt, geo))};
                 }),
@@ -6493,12 +7458,15 @@ window.mlwSelectRange = function(elementId, from, to) {
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
                 ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog())
+                # deletes rows of the sheet: available on the XSheet tab only (see update_delete_frame_item())
+                sess.delete_frame_item = ui.menu_item('Delete Frame', on_click=lambda _: show_delete_frame_dialog())
                 ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
+                sess.delete_layer_item = ui.menu_item('Delete Layer', on_click=lambda _: show_delete_layer_dialog())
                 ui.separator()
-                ui.menu_item('Find', on_click=lambda _: show_find_dialog())
+                ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
-                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
-                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
+                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo())
+                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
                 # these act on the grid, so they are disabled on the XML tab and
@@ -6524,14 +7492,25 @@ window.mlwSelectRange = function(elementId, from, to) {
             # the editor's content.
             sess.xml_menu_button = ui.dropdown_button('XML', auto_close=True).props('flat color=white')
             with sess.xml_menu_button:
-                ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
-                ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema())
-                ui.menu_item('Clear Validation', on_click=lambda _: clear_validation())
+                # a check box shows whether the XML tab is shown (see toggle_xml_editor())
+                with ui.menu_item(on_click=lambda _: toggle_xml_editor()):
+                    with ui.item_section():
+                        ui.label('XML Editor')
+                    with ui.item_section().props('side'):  # the check box, at the right
+                        sess.xml_menu_icon = ui.icon('check_box', size='xs')
                 ui.separator()
-                ui.menu_item('Select Schema…', on_click=lambda _: choose_schema())
-                ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
+                sess.xml_menu_items = [
+                    ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml()),
+                    ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema()),
+                    ui.menu_item('Clear Validation', on_click=lambda _: clear_validation()),
+                ]
                 ui.separator()
-                ui.menu_item('Format', on_click=lambda _: format_xml())
+                sess.xml_menu_items += [
+                    ui.menu_item('Select Schema…', on_click=lambda _: choose_schema()),
+                    ui.menu_item('Clear Schema', on_click=lambda _: clear_schema()),
+                ]
+                ui.separator()
+                sess.xml_menu_items.append(ui.menu_item('Format', on_click=lambda _: format_xml()))
             # About menu: the app's About dialog, and the document's reviews
             with ui.dropdown_button('About', auto_close=True).props('flat color=white'):
                 ui.menu_item('About', on_click=lambda _: show_about_dialog())
@@ -6578,9 +7557,10 @@ window.mlwSelectRange = function(elementId, from, to) {
         # the tab being left, and the one shown now (XSheet, XML or SVG)
         leaving, showing = sess.main_tab, str(new_value)
         sess.main_tab = showing
-        if sess.xml_menu_button is not None:  # the XML menu acts on the XML editor
-            sess.xml_menu_button.enable() if showing == 'XML' else sess.xml_menu_button.disable()
+        update_xml_menu_items()  # most of the XML menu acts on the XML editor
+        close_find_dialogs(showing)
         update_xsheet_view_items(showing == 'XSheet')
+        update_delete_frame_item(showing == 'XSheet')
         update_sketchpad_item(showing == 'XSheet')
         try:
             if leaving == 'XML':
@@ -6610,14 +7590,22 @@ window.mlwSelectRange = function(elementId, from, to) {
 
     with ui.tabs(on_change=on_main_tab_change).classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
         sess.main_tabs = main_tabs
-        # XSheet first; the shortcuts follow the tabs' positions
-        xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
-        xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
-        svg_tab = ui.tab('SVG').tooltip('Ctrl+Alt+3')  # the Sketchpad sketch's .svg
+        # XSheet first, then SVG (the Sketchpad sketch's .svg, while the sketchpad is on), then
+        # XML (unless it's turned off); the shortcuts follow the positions of those showing
+        # (see update_tab_shortcuts())
+        xsheet_tab = ui.tab('XSheet')
+        svg_tab = ui.tab('SVG')
+        xml_tab = ui.tab('XML')
+        sess.xml_tab, sess.svg_tab = xml_tab, svg_tab
+        for name, tab in (('XSheet', xsheet_tab), ('SVG', svg_tab), ('XML', xml_tab)):
+            with tab:
+                sess.tab_tooltips[name] = ui.tooltip('')
+        svg_tab.set_visibility(sess.sketchpad_active)  # shown only while the sketchpad is on
 
-    # The XSheet tab is showing when the page opens; the XML menu acts on the
-    # editor, so it starts disabled until the XML tab is chosen.
-    sess.xml_menu_button.disable()
+    # The XSheet tab is showing when the page opens; most of the XML menu acts on the
+    # editor, so it starts disabled until the XML tab is chosen. The XML tab is
+    # hidden if this user turned the XML editor off.
+    toggle_xml_editor(xml_editor_pref())
     with ui.tab_panels(main_tabs, value=xsheet_tab).classes('w-full'):
         with ui.tab_panel(xml_tab).classes('gap-1'):  # little space between the editor and Validation Results
             with ui.row().classes('gap-4 w-full flex-nowrap'):
@@ -6635,6 +7623,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                             sess.undo_stack.append(sess.last_editor_value)
                             # clear redo stack on new edit
                             sess.redo_stack.clear()
+                            record_doc_edit()
                             sess.last_editor_value = new_val
                         # mark document modified and update label
                         sess.current_file['modified'] = (new_val != sess.current_file.get('saved_content', ''))
@@ -6654,34 +7643,6 @@ window.mlwSelectRange = function(elementId, from, to) {
                         if hasattr(ui, comp):
                             sess.editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                             break
-                    # add Edit menu undo/redo after editor creation
-                    def do_undo(_=None):
-                        if not sess.undo_stack:
-                            ui.notify('Nothing to undo', color='info')
-                            return
-                        prev = sess.undo_stack.pop()
-                        sess.redo_stack.append(sess.last_editor_value)
-                        sess.suppress_editor_change = True
-                        sess.editor.value = prev
-                        sess.suppress_editor_change = False
-                        sess.last_editor_value = prev
-                        sess.current_file['modified'] = (prev != sess.current_file.get('saved_content', ''))
-                        set_filename_label()
-                        remember_document()
-
-                    def do_redo(_=None):
-                        if not sess.redo_stack:
-                            ui.notify('Nothing to redo', color='info')
-                            return
-                        nxt = sess.redo_stack.pop()
-                        sess.undo_stack.append(sess.last_editor_value)
-                        sess.suppress_editor_change = True
-                        sess.editor.value = nxt
-                        sess.suppress_editor_change = False
-                        sess.last_editor_value = nxt
-                        sess.current_file['modified'] = (nxt != sess.current_file.get('saved_content', ''))
-                        set_filename_label()
-                        remember_document()
                     if sess.editor is None:
                         # fallback to textarea
                         sess.editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
@@ -6757,6 +7718,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
+            ui.on('mlw_undo', lambda _: global_undo())  # Ctrl+Z (see global_undo())
+            ui.on('mlw_redo', lambda _: global_redo())
             ui.on('mlw_sketch_changed', handle_sketch_changed)  # the sketch, for Save (see save_sketch_beside())
             # XSheet > Sketchpad: the sketchpad over everything above, and
             # its tools while it's on (see toggle_sketchpad() and mlwSketchpad)
@@ -6799,16 +7762,13 @@ window.mlwSelectRange = function(elementId, from, to) {
         # it fired on both keydown and keyup -- both fixed below.
         if not e.action.keydown:
             return
-        if e.key == 'z' and e.modifiers.ctrl and sess.main_tab != 'SVG':  # (the SVG editor undoes its own)
-            do_undo()
-        elif e.key == 'y' and e.modifiers.ctrl and sess.main_tab != 'SVG':
-            do_redo()
-        elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'XSheet'
-        elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'XML'
-        elif e.key.number == 3 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'SVG'
+        # (Ctrl+Z and Ctrl+Y are caught in the browser: see mlw_undo and mlw_redo)
+        if e.modifiers.ctrl and e.modifiers.alt and e.key in ('PageUp', 'PageDown'):
+            move_frame_group(-1 if e.key == 'PageUp' else 1)  # to the start of the previous / next second
+        elif e.modifiers.ctrl and e.modifiers.alt and isinstance(e.key.number, int):
+            names = shown_tabs()  # Ctrl+Alt+1, 2, 3: the tabs showing, by position
+            if 1 <= e.key.number <= len(names):
+                main_tabs.value = names[e.key.number - 1]
     ui.keyboard(on_key=handle_keyboard)
 
 

@@ -515,7 +515,8 @@ def _screen_layout(pdf: FPDF, columns: list[dict], sketch: dict | None) -> dict 
         return None
     cols = sketch['columns']
     right = max(l + w for l, w in cols)
-    reach = max((x + shape.get('width', 0) / 2 for shape in sketch['shapes'] for x, _ in shape.get('points') or []),
+    reach = max((x + shape.get('width', 0) / 2 + shape.get('span', 0)
+                 for shape in sketch['shapes'] for x, _ in shape.get('points') or []),
                 default=0)
     extent = max(right, min(reach, sketch.get('width') or reach))
     scale = (pdf.w - pdf.l_margin - pdf.r_margin) / extent
@@ -533,7 +534,7 @@ def _draw_sketch(pdf: FPDF, layout: dict, sketch: dict | None, screen: dict | No
     _draw_sheet_table() drew (its `layout`), on each page it crosses and
     clipped to that page's rows. The sketch is as the browser gives it (see
     mlwSketchpad.sheetShapes()): each shape's colour, width, whether it's
-    closed, and its points as [x, frame] -- pixels from the grid's left, and
+    closed (or, for a text string, its 'text', 'font' (a generic family), 'size' and 'span'), and its points as [x, frame] -- pixels from the grid's left, and
     a frame's number plus how far down it. With the table laid out as on
     screen (`screen`, see _screen_layout()), a point's place is its pixels at
     that one scale, so the sketch isn't distorted, and a mark in the space
@@ -585,15 +586,27 @@ def _draw_sketch(pdf: FPDF, layout: dict, sketch: dict | None, screen: dict | No
         except ValueError:
             rgb = (0, 0, 0)
         width = max(float(shape.get('width') or 0) * scale, 0.2)
-        shapes.append((points, rgb, width, bool(shape.get('closed'))))
+        text = None
+        if shape.get('text'):  # a text string: its top-left point, and its font size in pixels
+            size = float(shape.get('size') or 16) * scale
+            family = {'serif': 'Times', 'monospace': 'Courier'}.get(shape.get('font'), 'Helvetica')
+            lines = _sanitize(str(shape['text'])).split('\n')
+            text, width = (lines, size, family), size * 1.2 * len(lines)
+        shapes.append((points, rgb, width, bool(shape.get('closed')), text))
     last_page = pdf.page
     for page, (v0, v1, top) in pages.items():
         pdf.page = page
         with pdf.rect_clip(pdf.l_margin, top, clip_w, v1 - v0):
-            for points, rgb, width, closed in shapes:
+            for points, rgb, width, closed, text in shapes:
                 ys = [v for _, v in points]
                 if max(ys) < v0 - width or min(ys) > v1 + width:
                     continue  # not on this page
+                if text:
+                    (x, v), size = points[0], text[1]
+                    with pdf.local_context(text_color=rgb, font_family=text[2], font_style='', font_size_pt=size):
+                        for i, line in enumerate(text[0]):  # a line each, 1.2 times the size apart
+                            pdf.text(x, top + v - v0 + size * (0.85 + 1.2 * i), line)
+                    continue
                 with pdf.local_context(draw_color=rgb, line_width=width, stroke_cap_style=StrokeCapStyle.ROUND,
                                        stroke_join_style=StrokeJoinStyle.ROUND):
                     pdf.polyline([(x, top + v - v0) for x, v in points], polygon=closed, style='D')
