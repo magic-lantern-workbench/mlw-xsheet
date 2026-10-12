@@ -15,5 +15,13 @@ services:
       # .env (e.g. TZ=America/Denver). It's passed as MLW_TZ rather than TZ,
       # since an empty TZ would silently mean UTC.
       MLW_TZ: ${TZ:-}
+      # Login against Keycloak (realm mlw); see auth.py. With MLW_KEYCLOAK_URL
+      # empty, or Keycloak unreachable, only the built-in admin account works.
+      MLW_KEYCLOAK_URL: ${MLW_KEYCLOAK_URL:-}
+      MLW_KEYCLOAK_REALM: ${MLW_KEYCLOAK_REALM:-mlw}
+      MLW_KEYCLOAK_CLIENT_ID: ${MLW_KEYCLOAK_CLIENT_ID:-mlw-xsheet}
+      MLW_KEYCLOAK_CLIENT_SECRET: ${MLW_KEYCLOAK_CLIENT_SECRET:-}
+      MLW_KEYCLOAK_ADMIN_ROLE: ${MLW_KEYCLOAK_ADMIN_ROLE:-admin}
+      MLW_KEYCLOAK_VERIFY_TLS: ${MLW_KEYCLOAK_VERIFY_TLS:-1}
     volumes:
       - /etc/localtime:/etc/localtime:ro

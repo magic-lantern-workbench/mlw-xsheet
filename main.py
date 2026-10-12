@@ -1016,15 +1016,26 @@ def show_preferences_dialog():
                     ui.button('Download', icon='download', on_click=download_log).props('outline size=sm')
                     ui.button('Clear Log', icon='delete', on_click=confirm_clear_log).props('outline size=sm')
             with ui.tab_panel(login_tab).classes('px-0 gap-2'):
-                ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
+                roles_text = ', '.join(auth.current_roles()) or 'none'
+                ui.label(f'Signed in as {auth.current_username()} ({roles_text})').classes('text-sm text-gray-500')
                 timeout_input = ui.number(
                     f'Log out after this many idle minutes (1–{auth.MAX_TIMEOUT_MINUTES})',
                     value=auth.session_timeout_minutes(), min=1, max=auth.MAX_TIMEOUT_MINUTES, step=1, format='%d',
                 ).classes('w-full')
-                ui.label('Change password (leave blank to keep it)').classes('text-sm text-gray-500 mt-2')
-                current_pw = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
-                new_pw = ui.input('New password', password=True, password_toggle_button=True).classes('w-full')
-                confirm_pw = ui.input('Confirm new password', password=True, password_toggle_button=True).classes('w-full')
+                if auth.is_admin():
+                    ui.label('The time-out applies to everyone using this server').classes('text-sm text-gray-500')
+                else:
+                    timeout_input.disable()
+                    ui.label(f'Only the "{auth.ADMIN_ROLE}" role can change the time-out').classes('text-sm text-gray-500')
+                current_pw = new_pw = confirm_pw = None
+                if auth.is_local_account():
+                    ui.label('Change the built-in account\'s password (leave blank to keep it)') \
+                        .classes('text-sm text-gray-500 mt-2')
+                    current_pw = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
+                    new_pw = ui.input('New password', password=True, password_toggle_button=True).classes('w-full')
+                    confirm_pw = ui.input('Confirm new password', password=True, password_toggle_button=True).classes('w-full')
+                else:
+                    ui.label('Your password is managed in Keycloak').classes('text-sm text-gray-500 mt-2')
 
         def do_save(_=None):
             # Check a password change first, so a mistake there saves nothing
@@ -1034,7 +1045,7 @@ def show_preferences_dialog():
                 tabs.value = logs_tab
                 ui.notify('Choose the time zone for the log', color='warning')
                 return
-            changing_password = any((current_pw.value, new_pw.value, confirm_pw.value))
+            changing_password = current_pw is not None and any((current_pw.value, new_pw.value, confirm_pw.value))
             if changing_password:
                 error = None
                 if not auth.check_password(current_pw.value or ''):
@@ -1048,10 +1059,11 @@ def show_preferences_dialog():
                     ui.notify(error, color='negative')
                     return
                 auth.set_password(new_pw.value)
-            try:
-                auth.set_session_timeout_minutes(int(timeout_input.value))
-            except (TypeError, ValueError):
-                auth.set_session_timeout_minutes(auth.DEFAULT_TIMEOUT_MINUTES)
+            if auth.is_admin():
+                try:
+                    auth.set_session_timeout_minutes(int(timeout_input.value))
+                except (TypeError, ValueError):
+                    auth.set_session_timeout_minutes(auth.DEFAULT_TIMEOUT_MINUTES)
             prefs['use_tabs'] = bool(use_tabs_cb.value)
             try:
                 prefs['indent_size'] = max(int(indent_input.value), 1)

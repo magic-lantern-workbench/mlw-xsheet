@@ -132,10 +132,28 @@ docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R
 
 ### Logging in
 
-The app asks you to log in first. For now there's a single account for the whole server:
+The app asks you to log in first. Users sign in against a **Keycloak** server (realm **`mlw`**),
+which provides any number of users and their roles. Set it up with these environment variables
+(in `.env`, which `compose.yaml` passes through):
+
+| Variable | Meaning |
+|---|---|
+| `MLW_KEYCLOAK_URL` | The server's base URL, e.g. `https://sso.example.com`. Empty turns Keycloak off. |
+| `MLW_KEYCLOAK_REALM` | Realm; default `mlw`. |
+| `MLW_KEYCLOAK_CLIENT_ID` | A client in that realm with **Direct access grants** enabled; default `mlw-xsheet`. |
+| `MLW_KEYCLOAK_CLIENT_SECRET` | The client's secret, if it is a confidential client. |
+| `MLW_KEYCLOAK_ADMIN_ROLE` | The realm or client role that makes a user an administrator; default `admin`. |
+| `MLW_KEYCLOAK_VERIFY_TLS` | `0` to accept a self-signed certificate. |
+| `MLW_KEYCLOAK_TIMEOUT` | Seconds to wait for Keycloak; default 5. |
+
+Users with the administrator role may change the idle time-out in Preferences. Other roles are
+recorded and shown in **Preferences > Login**.
+
+**Fallback account.** If Keycloak is off or can't be reached, the built-in account still works:
 user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).
 Change it before exposing the server to anyone else. The password is stored only as a salted
-hash, in `NICEGUI_STORAGE_PATH`.
+hash, in `NICEGUI_STORAGE_PATH`. While Keycloak is reachable it decides every login, so a wrong
+Keycloak password is not retried against the built-in account.
 
 - Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
   opens a menu with **Logout**, which logs them all out and returns to the login page. If the
@@ -368,11 +386,12 @@ change it.
   browser's** picks your browser's own zone. The server's time zone is the host's, from its
   `/etc/localtime` (which `compose.yaml` mounts into the container), unless `TZ` is set in
   `.env` (e.g. `TZ=America/Denver`).
-- **Login** — the server's single account (see [Logging in](#logging-in)):
-  - **Log out after this many idle minutes** — 1–1440, default 30.
-  - **Change password** — enter the current password and the new one twice. Leave all three
-    blank to keep the password. If something's wrong, nothing is saved and the dialog stays
-    open.
+- **Login** — who is signed in, with their roles (see [Logging in](#logging-in)):
+  - **Log out after this many idle minutes** — 1–1440, default 30; applies to everyone, and only
+    administrators can change it.
+  - **Change password** — for the built-in account only (Keycloak users manage their password in
+    Keycloak): enter the current password and the new one twice. Leave all three blank to keep
+    the password. If something's wrong, nothing is saved and the dialog stays open.
 
 ### Hierarchy tree
 

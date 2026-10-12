@@ -24,12 +24,34 @@
 #
 # COPYRIGHT_END
 
-"""Simple login: a single user name/password for the whole server, and an
-inactivity time-out that returns a browser to the logged-out state.
+"""Login, and an inactivity time-out that returns a browser to the
+logged-out state.
+
+Users sign in against a Keycloak server (realm "mlw" by default), which
+provides any number of users and their roles. If the server isn't set up
+(MLW_KEYCLOAK_URL empty) or can't be reached, the built-in administrative
+account below still works. A Keycloak answer of "wrong password" is final:
+the fallback account is only offered when Keycloak can't answer at all.
+
+Keycloak settings come from the environment:
+  MLW_KEYCLOAK_URL:           the server's base URL, e.g. https://sso.example.com
+                              (include /auth for older, pre-17 servers). Empty
+                              means Keycloak is off and only the built-in account is used.
+  MLW_KEYCLOAK_REALM:         default "mlw".
+  MLW_KEYCLOAK_CLIENT_ID:     default "mlw-xsheet": a client in that realm with
+                              "Direct access grants" enabled.
+  MLW_KEYCLOAK_CLIENT_SECRET: the client's secret, if it's a confidential client.
+  MLW_KEYCLOAK_ADMIN_ROLE:    the realm (or client) role that makes someone an
+                              administrator of this server; default "admin".
+  MLW_KEYCLOAK_VERIFY_TLS:    "0" to accept a self-signed certificate.
+  MLW_KEYCLOAK_TIMEOUT:       seconds to wait for Keycloak; default 5.
+
+The built-in account (the fallback) is the one below.
 
 Server-wide settings live in app.storage.general (persisted next to the
 per-user storage, in NICEGUI_STORAGE_PATH):
-  'credential':              {'username', 'salt', 'hash'} -- the password is
+  'credential':              {'username', 'salt', 'hash'} -- the fallback
+                             administrative account. The password is
                              stored only as a salted scrypt hash. Created
                              with admin/admin the first time it's needed.
   'session_timeout_minutes': idle minutes before a browser is logged out.
@@ -37,17 +59,24 @@ per-user storage, in NICEGUI_STORAGE_PATH):
 Whether a browser is logged in is kept in its app.storage.user, so all of its
 tabs share one login:
   'authenticated':  True while logged in.
+  'username':       who logged in (their Keycloak user name, or the built-in account's).
+  'roles':          their roles (the built-in account has the administrator role).
+  'auth_source':    'keycloak' or 'local' (the built-in account).
   'last_activity':  time (epoch seconds) of the latest keyboard/mouse/touch
                     activity in any of its tabs, reported by index()'s
                     session timer.
 """
 import asyncio
+import base64
 import hashlib
 import hmac
+import json
+import os
 import secrets
 import time
 from urllib.parse import quote
 
+import httpx
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui
@@ -59,6 +88,17 @@ DEFAULT_USERNAME = 'admin'
 DEFAULT_PASSWORD = 'admin'
 DEFAULT_TIMEOUT_MINUTES = 30
 MAX_TIMEOUT_MINUTES = 24 * 60
+
+KEYCLOAK_URL = (os.environ.get('MLW_KEYCLOAK_URL') or '').strip().rstrip('/')
+KEYCLOAK_REALM = (os.environ.get('MLW_KEYCLOAK_REALM') or 'mlw').strip()
+KEYCLOAK_CLIENT_ID = (os.environ.get('MLW_KEYCLOAK_CLIENT_ID') or 'mlw-xsheet').strip()
+KEYCLOAK_CLIENT_SECRET = os.environ.get('MLW_KEYCLOAK_CLIENT_SECRET') or ''
+ADMIN_ROLE = (os.environ.get('MLW_KEYCLOAK_ADMIN_ROLE') or 'admin').strip()
+KEYCLOAK_VERIFY_TLS = (os.environ.get('MLW_KEYCLOAK_VERIFY_TLS') or '1').strip().lower() not in ('0', 'false', 'no')
+try:
+    KEYCLOAK_TIMEOUT = float(os.environ.get('MLW_KEYCLOAK_TIMEOUT') or 5)
+except ValueError:
+    KEYCLOAK_TIMEOUT = 5.0
 
 # Reachable without logging in. NiceGUI's own routes (/_nicegui/...: its
 # scripts, styles and websocket) are always let through too.
@@ -82,8 +122,31 @@ def _credential() -> dict:
     return cred
 
 
+def _store():
+    return app.storage.user
+
+
 def current_username() -> str:
-    return _credential()['username']
+    """The logged-in user's name ('' when no one is)."""
+    return _store().get('username') or ''
+
+
+def current_roles() -> list:
+    return list(_store().get('roles') or [])
+
+
+def is_admin() -> bool:
+    """Whether the logged-in user may change server-wide settings."""
+    return ADMIN_ROLE in current_roles()
+
+
+def is_local_account() -> bool:
+    """Whether the logged-in user is the built-in (fallback) account."""
+    return _store().get('auth_source') == 'local'
+
+
+def keycloak_enabled() -> bool:
+    return bool(KEYCLOAK_URL)
 
 
 def check_credentials(username: str, password: str) -> bool:
@@ -91,6 +154,71 @@ def check_credentials(username: str, password: str) -> bool:
     username_ok = hmac.compare_digest(username.encode(), cred['username'].encode())
     password_ok = hmac.compare_digest(_hash_password(password, cred['salt']), cred['hash'])
     return username_ok and password_ok
+
+
+def _token_claims(token: str) -> dict:
+    """The claims in a JWT. It isn't verified: it came straight from
+    Keycloak's token endpoint over our own request, which is what vouches for it."""
+    try:
+        payload = token.split('.')[1]
+        return json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+    except Exception:
+        return {}
+
+
+def _roles_from_claims(claims: dict) -> list:
+    roles = list((claims.get('realm_access') or {}).get('roles') or [])
+    for client in (claims.get('resource_access') or {}).values():
+        roles += list((client or {}).get('roles') or [])
+    return sorted(set(roles))
+
+
+async def keycloak_login(username: str, password: str) -> tuple:
+    """Ask Keycloak to check a user name and password. Returns
+    ('ok', {'username', 'roles'}), ('denied', None) when Keycloak says no, or
+    ('unreachable', None) when it can't be asked or gives no sensible answer."""
+    url = f'{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token'
+    data = {'grant_type': 'password', 'client_id': KEYCLOAK_CLIENT_ID, 'username': username,
+            'password': password, 'scope': 'openid'}
+    if KEYCLOAK_CLIENT_SECRET:
+        data['client_secret'] = KEYCLOAK_CLIENT_SECRET
+    try:
+        async with httpx.AsyncClient(timeout=KEYCLOAK_TIMEOUT, verify=KEYCLOAK_VERIFY_TLS) as client:
+            response = await client.post(url, data=data)
+    except Exception as exc:
+        _record(f'Keycloak unreachable ({type(exc).__name__})')
+        return 'unreachable', None
+    if response.status_code in (400, 401):
+        try:
+            error = response.json().get('error', '')
+        except Exception:
+            error = ''
+        if error == 'invalid_grant':  # wrong user name or password
+            return 'denied', None
+        _record(f'Keycloak refused the request ({error or response.status_code}); check the client settings')
+        return 'unreachable', None
+    if response.status_code != 200:
+        _record(f'Keycloak answered {response.status_code}')
+        return 'unreachable', None
+    try:
+        claims = _token_claims(response.json()['access_token'])
+    except Exception:
+        return 'unreachable', None
+    return 'ok', {'username': claims.get('preferred_username') or username, 'roles': _roles_from_claims(claims)}
+
+
+async def authenticate(username: str, password: str) -> dict | None:
+    """Check a login. Returns {'username', 'roles', 'source'} or None.
+    Keycloak decides when it's reachable; the built-in account only when it isn't."""
+    if keycloak_enabled():
+        outcome, who = await keycloak_login(username, password)
+        if outcome == 'ok':
+            return {**who, 'source': 'keycloak'}
+        if outcome == 'denied':
+            return None
+    if check_credentials(username, password):
+        return {'username': _credential()['username'], 'roles': [ADMIN_ROLE], 'source': 'local'}
+    return None
 
 
 def check_password(password: str) -> bool:
@@ -188,7 +316,11 @@ def login_page(redirect_to: str = '/', reason: str = ''):
         return RedirectResponse(_safe_redirect(redirect_to))
 
     async def try_login(_=None):
-        if check_credentials(username.value or '', password.value or ''):
+        who = await authenticate((username.value or '').strip(), password.value or '')
+        if who:
+            store['username'] = who['username']
+            store['roles'] = who['roles']
+            store['auth_source'] = who['source']
             store['authenticated'] = True
             store['last_activity'] = time.time()
             _record('Logged in')
