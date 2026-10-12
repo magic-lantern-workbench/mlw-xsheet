@@ -1585,6 +1585,112 @@ async def go_to_review(review_id: str, frame) -> None:
     grid.run_row_method(str(display[index]['Frame']), 'setSelected', True)
 
 
+def _frame_rate() -> int:
+    """The open document's frame rate, or 0 if it has none."""
+    rate = str((read_production_info(_editor_text()) or {}).get('FrameRate', '')).strip()
+    return int(rate) if rate.isdigit() else 0
+
+
+def _select_frame(target: int) -> bool:
+    """Select frame `target` in the XSheet grid (its run's row, if it's in a
+    collapsed run) and scroll it into view. False if the sheet has no such frame."""
+    sess = session()
+    grid = sess.xsheet_grid
+    layer_ids, rows, _message = parse_exposure_sheet(_editor_text())
+    if grid is None or not rows:
+        return False
+    display = _xsheet_display_rows(sess.xsheet_style, layer_ids or [], rows)
+    index = next((i for i, row in enumerate(display)
+                  if row['Frame'] == target or (row.get('_range_start') is not None and '–' in str(row['Frame'])
+                                                and row['_range_start'] <= target <= row['_range_end'])), None)
+    if index is None:
+        return False
+    sess.xsheet_current_frame = display[index]['Frame']
+    grid.run_grid_method('ensureIndexVisible', index, 'middle')
+    grid.run_row_method(str(display[index]['Frame']), 'setSelected', True)
+    return True
+
+
+def move_frame_group(direction: int) -> int | None:
+    """Ctrl+Alt+Page Up / Page Down on the XSheet tab, and Find's Previous /
+    Next Group: select the first frame of the group before (-1) or after (+1)
+    the current one, and scroll it into view. Groups are the document's frame
+    rate in frames, from the first frame (at 24 fps: 1-24, 25-48, ...; from
+    frame 30, Page Down goes to 49 and Page Up to 1). It stops at the first
+    group, and the last one. (A collapsed run counts from its first frame.)
+    Returns that frame, or None if nothing moved."""
+    import re
+    sess = session()
+    if sess.xsheet_grid is None or sess.main_tab != 'XSheet' or not sess.document_open:
+        return None
+    _layer_ids, rows, _message = parse_exposure_sheet(_editor_text())
+    if not rows:
+        return None
+    rate = _frame_rate()
+    if rate < 1:
+        ui.notify('Set a Frame Rate in the document to move by frame groups', color='info')
+        return None
+    current = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+    here = int(current.group()) if current else first
+    start = first + (here - first) // rate * rate  # the start of the group the current frame is in
+    target = min(max(start + direction * rate, first), first + (last - first) // rate * rate)
+    return target if _select_frame(target) else None
+
+
+def show_find_frame_dialog() -> None:
+    """Edit > Find on the XSheet tab: type a frame number to scroll the grid
+    to it and select it, or step to the previous / next group of frames (the
+    document's frame rate in frames; see move_frame_group())."""
+    import re
+    sess = session()
+    _layer_ids, rows, _message = parse_exposure_sheet(_editor_text()) if sess.document_open else (None, None, '')
+    if not rows:
+        ui.notify('Open an ExposureSheet document to find frames in it', color='info')
+        return
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+
+    def say(text: str, ok: bool = True) -> None:
+        status.set_text(text)
+        status.style(f'color: {"inherit" if ok else "red"}')
+
+    def go(_=None) -> None:
+        try:
+            number = int(float(frame_input.value))  # (a number input's value is a float)
+        except (TypeError, ValueError):
+            say('Type a frame number', ok=False)
+            return
+        if _select_frame(number):
+            say(f'Frame {number}')
+        else:
+            say(f'Frame {number} is not in the sheet ({first}–{last})', ok=False)
+
+    def step(direction: int) -> None:
+        frame = move_frame_group(direction)
+        if frame is None:
+            say('No frame rate to make groups of' if _frame_rate() < 1 else 'No group there', ok=False)
+            return
+        frame_input.value = frame
+        rate = _frame_rate()
+        say(f'Group {(frame - first) // rate + 1}: frames {frame}–{min(frame + rate - 1, last)}')
+
+    with ui.dialog().props('seamless position=right') as dlg, \
+            titled_card('Find Frame', classes='w-[420px] max-w-full', body_classes='gap-2'):
+        current = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+        with ui.row().classes('w-full items-center gap-2 no-wrap'):
+            frame_input = ui.number('Frame number', value=int(current.group()) if current else first,
+                                    min=first, max=last, step=1, precision=0).classes('grow')
+            ui.button('Go', on_click=go).props('outline size=sm')
+        status = ui.label(f'Frames {first}–{last}' + (f', {_frame_rate()} per group' if _frame_rate() else ''))
+        frame_input.on('keydown.enter', go)
+        with ui.row().classes('w-full gap-2 mt-2'):
+            ui.button('Next Group', on_click=lambda: step(1)).props('outline size=sm')
+            ui.button('Previous Group', on_click=lambda: step(-1)).props('outline size=sm')
+        with ui.row().classes('w-full justify-end'):
+            ui.button('Close', on_click=dlg.close).props('size=sm')
+    dlg.open()
+
+
 def show_reviews_dialog() -> None:
     """About > Reviews: list the open document's <Review> entries; click
     one to go to it, ✏️ to edit it, or Add Review for a new one."""
@@ -4883,9 +4989,35 @@ def _set_editor_text(new_text: str):
 
 
 def show_find_dialog():
-    """Find & Replace dialog with case-sensitive and regex options."""
+    """Find & Replace dialog with case-sensitive and regex options. It works
+    on the editor of the tab showing -- the XML editor, or on the SVG tab the
+    SVG editor (its replacements change the sketch, as typing there does) --
+    and starts afresh if the tab is switched while it's open."""
     import re
-    state = {'matches': [], 'index': -1}
+    state = {'matches': [], 'index': -1, 'tab': None}
+
+    def on_svg() -> bool:
+        return session().main_tab == 'SVG' and session().svg_editor is not None
+
+    def target_text() -> str:
+        if on_svg():
+            return session().svg_editor.value or ''
+        return _editor_text()
+
+    def set_target_text(new_text: str) -> None:
+        if on_svg():
+            session().svg_editor.value = new_text  # on_svg_editor_change() applies it to the sketch
+        else:
+            _set_editor_text(new_text)
+
+    def sync_tab() -> None:
+        """The matches belong to one editor: forget them if the other one is showing now."""
+        tab = 'SVG' if on_svg() else 'XML'
+        if state['tab'] != tab:
+            if state['tab'] is not None:
+                clear_highlight()
+            state.update(tab=tab, matches=[], index=-1)
+            status_label.set_text('')
 
     def build_pattern():
         query = find_input.value or ''
@@ -4911,18 +5043,19 @@ def show_find_dialog():
         # editor.id addresses the live CodeMirror EditorView so the highlight
         # is positioned via CodeMirror's own APIs (see mlwSelectRange) instead
         # of guessing at which lines happen to be rendered in the DOM.
-        ui.run_javascript(f'window.mlwSelectRange({session().editor.id}, {m.start()}, {m.end()});')
+        ui.run_javascript(f'window.mlwSelectRange({(session().svg_editor if on_svg() else session().editor).id}, {m.start()}, {m.end()});')
 
     def clear_highlight():
         ui.run_javascript('window.mlwClearFindHighlight && window.mlwClearFindHighlight();')
 
     def refresh_matches(anchor_pos: int | None = None):
+        sync_tab()
         pattern = build_pattern()
         if pattern is None:
             state['matches'] = []
             state['index'] = -1
             return
-        text = _editor_text()
+        text = target_text()
         state['matches'] = list(pattern.finditer(text))
         if not state['matches']:
             state['index'] = -1
@@ -4937,10 +5070,11 @@ def show_find_dialog():
         highlight_current()
 
     def do_find(delta: int):
+        sync_tab()
         pattern = build_pattern()
         if pattern is None:
             return
-        state['matches'] = list(pattern.finditer(_editor_text()))
+        state['matches'] = list(pattern.finditer(target_text()))
         if not state['matches']:
             state['index'] = -1
             set_status('No matches', ok=False)
@@ -4954,6 +5088,7 @@ def show_find_dialog():
         highlight_current()
 
     def do_replace():
+        sync_tab()
         if not (0 <= state['index'] < len(state['matches'])):
             do_find(1)
             if not (0 <= state['index'] < len(state['matches'])):
@@ -4964,19 +5099,20 @@ def show_find_dialog():
         except re.error as exc:
             ui.notify(f'Replacement error: {exc}', color='negative')
             return
-        text = _editor_text()
+        text = target_text()
         new_text = text[:m.start()] + replacement + text[m.end():]
-        _set_editor_text(new_text)
+        set_target_text(new_text)
         refresh_matches(anchor_pos=m.start() + len(replacement))
 
     def do_replace_all():
+        sync_tab()
         pattern = build_pattern()
         if pattern is None:
             return
         replacement = replace_input.value or ''
         repl = (lambda mo: mo.expand(replacement)) if regex_cb.value else (lambda mo: replacement)
-        new_text, count = pattern.subn(repl, _editor_text())
-        _set_editor_text(new_text)
+        new_text, count = pattern.subn(repl, target_text())
+        set_target_text(new_text)
         state['matches'] = []
         state['index'] = -1
         set_status(f'Replaced {count} occurrence(s)', ok=bool(count))
@@ -5006,6 +5142,7 @@ def show_find_dialog():
             ui.button('Replace All', on_click=lambda _: do_replace_all()).props('outline size=sm')
         with ui.row().classes('w-full justify-end'):
             ui.button('Close', on_click=lambda _: do_close()).props('size=sm')
+    sync_tab()
     dlg.open()
 
 
@@ -6696,7 +6833,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog())
                 ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
                 ui.separator()
-                ui.menu_item('Find', on_click=lambda _: show_find_dialog())
+                ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
                 ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
                 ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
@@ -7022,6 +7159,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             do_undo()
         elif e.key == 'y' and e.modifiers.ctrl and sess.main_tab != 'SVG':
             do_redo()
+        elif e.modifiers.ctrl and e.modifiers.alt and e.key in ('PageUp', 'PageDown'):
+            move_frame_group(-1 if e.key == 'PageUp' else 1)  # to the start of the previous / next second
         elif e.modifiers.ctrl and e.modifiers.alt and isinstance(e.key.number, int):
             names = shown_tabs()  # Ctrl+Alt+1, 2, 3: the tabs showing, by position
             if 1 <= e.key.number <= len(names):

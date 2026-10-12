@@ -236,7 +236,7 @@ switching browsers starts fresh settings.
 |---|---|
 | Add Frame | Add one or more frames to an ExposureSheet — at the end (the default) or inserted **Before frame** *N* (it defaults to the frame selected in the XSheet). The dialog asks how many frames, and for the first new frame's values: each layer's cel or scene file (prefilled with what the sheet shows at that point; leave one blank to leave that layer out), an optional Dialogue phoneme and text, and Notes. The first new frame gets a `<Frame>` with those values, and the others hold it. Inserting moves every later frame along — `<Frame number>`, `<AudioRef>`, `<CameraMove>` and camera `<Keyframe>`, and `<Review>` frames, and the "Frame N" comment banners — so a camera move or audio cue that spans the insertion point grows to take in the new frames; **EndFrame** grows to match. If the insertion point was holding an earlier drawing, a `<Frame>` after the new ones restates it, so the later frames still show it. The result stays valid against the schema. It's one edit (**Ctrl+Z** undoes it); the XSheet scrolls to the new frames, and on the XML tab the editor and Hierarchy show the new `<Frame>`. |
 | Add Layer | Add a new animation layer to an ExposureSheet: a dialog for the new `<Layer>` element, prefilled with placeholder values to replace — layer name (`New Layer`, or `New Layer 2`… if taken), asset (**Unknown** by default, written as `assetRef="Unknown"`, a placeholder for when the asset isn't known yet; or one of the document's Assets), type (2D/3D), cel (for 2D) or scene file (for 3D), stacking order (10 above the current top layer), and the starting frame, which can be any frame number from 1, including ones past the last frame. **Add** inserts it into that frame's `<Layers>`; if the document has no `<Frame>` with that number, a new one (with the required `<Layers>` and an empty `<Notes/>`) is created in the Timeline in frame-number order. It matches the file's formatting, it's an ordinary, undoable edit, and the layer appears as a new column in the XSheet grid. A layer added beyond the shot's `<EndFrame>` moves EndFrame out to that frame, in the same edit (one Undo reverts both). If the XML tab is showing, the editor scrolls to the new `<Layer>` and the Hierarchy tree selects and reveals it. Existing names, and a 2D layer without a cel or a 3D layer without a scene file, are refused. |
-| Find | Open the Find & Replace dialog. |
+| Find | On the XML or SVG tab, open the Find & Replace dialog. On the XSheet tab, open the **Find Frame** dialog instead (see below). |
 | Undo / Redo (Ctrl+Z / Ctrl+Y) | Step backward/forward through the in-memory edit history. Typing, Find & Replace, and Format all push onto this history. |
 
 **Find & Replace dialog:** enter a search term, optionally enable Case sensitive and/or Regex.
@@ -245,6 +245,18 @@ highlighted) and Replace / Replace All (substitute text, with regex replacements
 `\1`-style backreferences). Close is on its own row below. The dialog sits at the right edge
 of the window, over the Hierarchy panel, so it doesn't cover the matches it highlights, and
 you can keep working in the editor while it's open.
+
+It searches and replaces in the editor of the tab showing — the XML editor, or on the SVG tab the SVG
+editor (a replacement there changes the sketch, as typing in that editor does). Switching tabs while
+it's open starts the search afresh in the other editor.
+
+**Find Frame dialog** (Find on the XSheet tab): type a **Frame number** and press Enter or **Go** (the button to the right of the box)
+to scroll the grid to that frame and select it (a frame inside a collapsed run selects the run's
+row; a number outside the sheet says so and shows the sheet's first and last frames).
+**Next Group** and **Previous Group** (in that order) step to the first frame of the previous or next group of
+frames — the document's Frame Rate in frames, counted from the first frame, the same as
+`Ctrl+Alt+Page Up` / `Page Down` — and show it in the box. Like Find & Replace, it sits at the
+right edge of the window and leaves the grid usable while it's open.
 
 ### XSheet menu
 
@@ -503,6 +515,7 @@ no document open, the editor is empty and can't be edited.
 - `Ctrl+Alt+1` — Switch to the XSheet tab (always the first)
 - `Ctrl+Alt+2` — Switch to the second tab (SVG while the Sketchpad is on, otherwise XML)
 - `Ctrl+Alt+3` — Switch to the third tab (XML, while the Sketchpad is on and the XML Editor is too)
+- `Ctrl+Alt+Page Up` / `Ctrl+Alt+Page Down` — On the XSheet tab, select the first frame of the previous / next group of frames and scroll to it. Groups are the document's Frame Rate in frames, counted from the first frame (24 at 24 fps: 1–24, 25–48, …; from frame 30, Page Down goes to 49 and Page Up to 1). It stops at the first and last groups. Needs a Frame Rate in the Production info.
 
 (On the SVG tab, `Ctrl+Z` and `Ctrl+Y` undo and redo in the SVG editor itself.)
 
