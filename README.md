@@ -146,6 +146,29 @@ which provides any number of users and their roles. Set it up with these environ
 | `MLW_KEYCLOAK_VERIFY_TLS` | `0` to accept a self-signed certificate. |
 | `MLW_KEYCLOAK_TIMEOUT` | Seconds to wait for Keycloak; default 5. |
 
+**Setting up Keycloak.** `tools/keycloak_setup.py` creates what the app needs in the server: the
+realm, a public client (`mlw-xsheet`) with Direct access grants, and the `admin` realm role, and
+optionally a first user. It uses only the Python standard library and can be run again safely;
+anything that already exists is left alone.
+
+```sh
+# Realm, client and role, using the Keycloak admin account (the password is asked for,
+# or taken from --admin-password or KEYCLOAK_ADMIN_PASSWORD):
+python3 tools/keycloak_setup.py --url http://localhost:8180 --admin-user admin
+
+# Also create an administrator (temporary password, changed at first login):
+python3 tools/keycloak_setup.py --user alice --user-admin
+
+# Tell it the address the container uses for Keycloak, for the .env lines it prints:
+python3 tools/keycloak_setup.py --app-url http://mlw-keycloak:8080
+```
+
+Other options: `--realm`, `--client-id`, `--admin-role`, `--user-password` (or
+`KEYCLOAK_USER_PASSWORD`), `--user-permanent`. It ends by printing the `MLW_KEYCLOAK_*` lines to
+put in `.env` (copy `.env.example`). The container must be able to reach Keycloak: in
+development, `compose.override.yaml` joins the `mlw-platform_default` network, so the URL there
+is `http://mlw-keycloak:8080`, not `localhost:8180`.
+
 Users with the administrator role may change the idle time-out in Preferences. Other roles are
 recorded and shown in **Preferences > Login**.
 
@@ -633,6 +656,6 @@ main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, vali
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
 xml/              XSD schemas defining the ExposureSheet document format
 examples/         Sample .xml / .xsd / .json documents
-tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA
+tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA, Keycloak setup
 doc/              XDTS file format reference and XML validation notes
 ```
