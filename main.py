@@ -6349,10 +6349,14 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     const FONTS = ['sans-serif', 'serif', 'monospace'];
     const fontOf = (s) => FONTS.includes(s.font) ? s.font : 'sans-serif';
     let measurer = null;
+    // a string can have several lines (Shift+Enter in the box; "\\n" in the text), a line 1.2 times the size down from the last
+    const textLines = (s) => String(s.text || '').split('\\n');
     const textBox = (s) => {
         measurer = measurer || document.createElement('canvas').getContext('2d');
         measurer.font = `${fontSize(s)}px ${fontOf(s)}`;
-        return {x: s.points[0][0], y: s.points[0][1], w: Math.max(measurer.measureText(s.text || '').width, 4), h: fontSize(s) * 1.2};
+        const lines = textLines(s);
+        return {x: s.points[0][0], y: s.points[0][1], w: Math.max(...lines.map(l => measurer.measureText(l).width), 4),
+                h: fontSize(s) * 1.2 * lines.length};
     };
     const radius = (s) => Math.hypot(s.points[1][0] - s.points[0][0], s.points[1][1] - s.points[0][1]);
     // the shape's SVG element, with the given presentation attributes
@@ -6361,7 +6365,13 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (s.type === 'text') {
             const t = el('text', {x: round(x1), y: round(y1 + fontSize(s) * 0.85), 'font-size': fontSize(s),
                                   'font-family': fontOf(s), ...attrs});
-            t.textContent = s.text;
+            const lines = textLines(s);
+            if (lines.length === 1) t.textContent = s.text;
+            else lines.forEach((line, i) => {  // a <tspan> a line, each placed where it goes
+                const tspan = el('tspan', {x: round(x1), y: round(y1 + fontSize(s) * (0.85 + 1.2 * i))});
+                tspan.textContent = line;
+                t.appendChild(tspan);
+            });
             return t;
         }
         if (s.type === 'polyline')
@@ -6575,16 +6585,26 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         finishText();
         const s = index === null ? {text: '', color: st.color, size: st.fontSize, font: st.font} : st.shapes[index];
         const [sx, sy] = scrollOf(host), size = fontSize(s);
-        const input = document.createElement('input');
-        input.type = 'text';
+        const input = document.createElement('textarea');  // Shift+Enter adds a line; Enter ends the string
         input.value = s.text;
         input.placeholder = 'Text';
+        input.rows = 1;
+        input.wrap = 'off';
         Object.assign(input.style, {position: 'absolute', left: `${x - sx - 3}px`, top: `${y - sy - 3}px`, zIndex: 10,
             font: `${size}px ${fontOf(s)}`, color: s.color, background: 'rgba(255,255,255,0.85)', border: '1px dashed #5898d4',
-            padding: '2px', outline: 'none', minWidth: '120px', lineHeight: 1.1, boxSizing: 'content-box'});
+            padding: '2px', outline: 'none', lineHeight: 1.2, boxSizing: 'content-box', resize: 'none', overflow: 'hidden',
+            margin: 0});
+        // as big as its text: as wide as the longest line, and a line tall for each
+        const fit = () => {
+            const box = textBox({text: input.value, size, font: fontOf(s), points: [[0, 0]]});
+            input.style.width = `${Math.max(box.w + 24, 120)}px`;
+            input.style.height = `${box.h}px`;
+        };
+        input.addEventListener('input', fit);
+        fit();
         ['pointerdown', 'pointerup', 'keydown', 'keyup', 'wheel'].forEach(n => input.addEventListener(n, (e) => e.stopPropagation()));
         input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); finishText(); }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finishText(); }
             else if (e.key === 'Escape') { e.preventDefault(); finishText(false); }
         });
         host.appendChild(input);
@@ -6637,7 +6657,9 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const style = {color: e.getAttribute('stroke') || '#000000', width: num(e, 'stroke-width') || 1};
             const tag = e.tagName.toLowerCase();
             if (tag === 'text') {
-                const size = num(e, 'font-size') || 16, text = e.textContent.trim();
+                const size = num(e, 'font-size') || 16;
+                const spans = [...e.querySelectorAll('tspan')];  // a line to a <tspan>, else the one line
+                const text = spans.length ? spans.map(t => t.textContent.trim()).join('\\n').replace(/^\\n+|\\n+$/g, '') : e.textContent.trim();
                 const font = (e.getAttribute('font-family') || '').trim();
                 if (text) shapes.push({type: 'text', color: e.getAttribute('fill') || '#000000', size, font: FONTS.includes(font) ? font : 'sans-serif',
                                        points: [[num(e, 'x'), num(e, 'y') - size * 0.85]], text});

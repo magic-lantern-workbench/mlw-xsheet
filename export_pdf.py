@@ -590,7 +590,8 @@ def _draw_sketch(pdf: FPDF, layout: dict, sketch: dict | None, screen: dict | No
         if shape.get('text'):  # a text string: its top-left point, and its font size in pixels
             size = float(shape.get('size') or 16) * scale
             family = {'serif': 'Times', 'monospace': 'Courier'}.get(shape.get('font'), 'Helvetica')
-            text, width = (_sanitize(str(shape['text'])), size, family), size
+            lines = _sanitize(str(shape['text'])).split('\n')
+            text, width = (lines, size, family), size * 1.2 * len(lines)
         shapes.append((points, rgb, width, bool(shape.get('closed')), text))
     last_page = pdf.page
     for page, (v0, v1, top) in pages.items():
@@ -603,7 +604,8 @@ def _draw_sketch(pdf: FPDF, layout: dict, sketch: dict | None, screen: dict | No
                 if text:
                     (x, v), size = points[0], text[1]
                     with pdf.local_context(text_color=rgb, font_family=text[2], font_style='', font_size_pt=size):
-                        pdf.text(x, top + v - v0 + size * 0.85, text[0])
+                        for i, line in enumerate(text[0]):  # a line each, 1.2 times the size apart
+                            pdf.text(x, top + v - v0 + size * (0.85 + 1.2 * i), line)
                     continue
                 with pdf.local_context(draw_color=rgb, line_width=width, stroke_cap_style=StrokeCapStyle.ROUND,
                                        stroke_join_style=StrokeJoinStyle.ROUND):
