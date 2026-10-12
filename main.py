@@ -193,6 +193,10 @@ def session() -> Session:
 #   'export_sketch':  whether XSheet > Export XSheet draws the Sketchpad's
 #                     sketch over the grid (default: yes); set in File >
 #                     Preferences > Report.
+#   'sketch_font':    the typeface of new Sketchpad text strings (one of
+#                     SKETCHPAD_FONTS; default sans-serif); set in File >
+#                     Preferences > Sketchpad.
+#   'sketch_font_size': their size, in pixels (default 24; 6-200); same place.
 #   'popup_log':      whether this user's status pop-ups (ui.notify) are
 #                     recorded in their log file (default: yes); set in File >
 #                     Preferences > Logs. See the "Pop-up log" section below.
@@ -462,6 +466,35 @@ def export_sketch_pref() -> bool:
 
 def set_export_sketch_pref(include: bool) -> None:
     user_storage()['export_sketch'] = bool(include)
+
+
+def sketch_font_pref() -> str:
+    font = user_storage().get('sketch_font', DEFAULT_SKETCH_FONT)
+    return font if font in SKETCHPAD_FONTS else DEFAULT_SKETCH_FONT
+
+
+def sketch_font_size_pref() -> int:
+    try:
+        return min(max(int(user_storage().get('sketch_font_size', DEFAULT_SKETCH_FONT_SIZE)), MIN_SKETCH_FONT_SIZE),
+                   MAX_SKETCH_FONT_SIZE)
+    except (TypeError, ValueError):
+        return DEFAULT_SKETCH_FONT_SIZE
+
+
+def set_sketch_text_prefs(font: str, size) -> None:
+    """Save the Sketchpad text preferences, and give them to the sketchpad (for the strings typed from now on)."""
+    storage = user_storage()
+    storage['sketch_font'] = font if font in SKETCHPAD_FONTS else DEFAULT_SKETCH_FONT
+    try:
+        storage['sketch_font_size'] = min(max(int(size), MIN_SKETCH_FONT_SIZE), MAX_SKETCH_FONT_SIZE)
+    except (TypeError, ValueError):
+        storage['sketch_font_size'] = DEFAULT_SKETCH_FONT_SIZE
+    apply_sketch_text_prefs()
+
+
+def apply_sketch_text_prefs() -> None:
+    ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.setTextStyle({json.dumps(sketch_font_pref())}, '
+                      f'{sketch_font_size_pref()})')
 
 
 def oca_export_options() -> dict:
@@ -828,20 +861,21 @@ def format_xml():
 
 
 def show_preferences_dialog():
-    """Preferences dialog: a Format tab for the XML/XSD pretty-printer
-    (XML > Format), a Recent Files tab for File > Open Recent, an XSheet tab
-    for the Exposure Sheet style, a Report tab for what XSheet > Generate
-    Report includes, a Logs tab for recording the status pop-ups, and a Login tab for the server's password and
-    inactivity time-out (see auth.py)."""
+    """Preferences dialog, in tabs: XSheet (the Exposure Sheet style), Sketchpad
+    (the typeface and size of text strings), Format (the XML/XSD pretty-printer,
+    XML > Format), Recent Files (File > Open Recent), Report (what XSheet >
+    Generate Report includes), Logs (recording the status pop-ups), and Login
+    (the server's password and inactivity time-out; see auth.py)."""
     with ui.dialog() as dlg, titled_card('Preferences', classes='w-[540px] max-w-full', body_classes='gap-2'):
         with ui.tabs().classes('w-full').props('dense align=left no-caps') as tabs:
+            xsheet_tab = ui.tab('XSheet')
+            sketchpad_tab = ui.tab('Sketchpad')
             format_tab = ui.tab('Format')
             recent_tab = ui.tab('Recent Files')
-            xsheet_tab = ui.tab('XSheet')
             report_tab = ui.tab('Report')
             logs_tab = ui.tab('Logs')
             login_tab = ui.tab('Login')
-        with ui.tab_panels(tabs, value=format_tab).classes('w-full'):
+        with ui.tab_panels(tabs, value=xsheet_tab).classes('w-full'):
             with ui.tab_panel(format_tab).classes('px-0 gap-2'):
                 ui.label('Used by XML > Format').classes('text-sm text-gray-500')
                 prefs = format_prefs()
@@ -890,6 +924,23 @@ def show_preferences_dialog():
                 ui.label('XSheet > Export XSheet').classes('text-sm text-gray-500')
                 sketch_box = ui.checkbox('Include the Sketchpad sketch, drawn over the exposure sheet',
                                          value=export_sketch_pref()).props('dense')
+            with ui.tab_panel(sketchpad_tab).classes('px-0 gap-2'):
+                ui.label('Text strings typed on the Sketchpad from now on (strings already placed keep theirs). '
+                         'Export XSheet prints them the same way.').classes('text-sm text-gray-500')
+                font_select = ui.select(SKETCHPAD_FONTS, value=sketch_font_pref(), label='Type').classes('w-64')
+                font_size_input = ui.number('Size (pixels)', value=sketch_font_size_pref(), min=MIN_SKETCH_FONT_SIZE,
+                                            max=MAX_SKETCH_FONT_SIZE, step=1, precision=0).classes('w-40')
+                sample = ui.label('The quick brown fox').classes('mt-1') \
+                    .style(f'font-family: {sketch_font_pref()}; font-size: {min(sketch_font_size_pref(), 48)}px')
+
+                def show_sample():
+                    try:
+                        size = min(max(int(font_size_input.value), MIN_SKETCH_FONT_SIZE), 48)
+                    except (TypeError, ValueError):
+                        size = DEFAULT_SKETCH_FONT_SIZE
+                    sample.style(f'font-family: {font_select.value}; font-size: {size}px')
+                font_select.on_value_change(show_sample)
+                font_size_input.on_value_change(show_sample)
             with ui.tab_panel(logs_tab).classes('px-0 gap-2'):
                 ui.label('Status pop-ups are always shown; this also keeps a record of them, each with its '
                          'date and time.').classes('text-sm text-gray-500')
@@ -991,6 +1042,7 @@ def show_preferences_dialog():
             set_xsheet_style_pref(style_radio.value)
             set_report_options(picked_sections, raw_box.value)
             set_export_sketch_pref(sketch_box.value)
+            set_sketch_text_prefs(font_select.value, font_size_input.value)
             set_popup_log_enabled(log_box.value)
             set_popup_log_time(time_radio.value, zone_select.value if time_radio.value == 'custom' else None)
             try:
@@ -3630,7 +3682,14 @@ def _xsheet_runs(display: list[dict]) -> set[tuple[int, int]]:
 
 # The sketchpad's shapes, as the Shape chooser lists them: key -> (name, icon).
 SKETCHPAD_SHAPES = {'spline': ('Spline', 'edit'), 'polyline': ('Polyline', 'polyline'),
-                    'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked')}
+                    'rect': ('Rectangle', 'crop_square'), 'circle': ('Circle', 'radio_button_unchecked'),
+                    'text': ('Text', 'title')}
+# the typefaces of Sketchpad text (Preferences > Sketchpad): generic SVG families -> names; the PDF
+# uses its Helvetica, Times and Courier for them (see export_pdf._draw_sketch())
+SKETCHPAD_FONTS = {'sans-serif': 'Sans-serif (Helvetica)', 'serif': 'Serif (Times)', 'monospace': 'Monospace (Courier)'}
+DEFAULT_SKETCH_FONT = 'sans-serif'
+DEFAULT_SKETCH_FONT_SIZE = 24  # pixels
+MIN_SKETCH_FONT_SIZE, MAX_SKETCH_FONT_SIZE = 6, 200
 SKETCHPAD_COLOR = '#e11d48'  # the pen's colour to start with
 
 
@@ -3732,7 +3791,7 @@ def restore_sketch_draft(draft: dict | None) -> None:
     if not svg:
         return
     sess = session()
-    sess.sketch = {'count': len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg)), 'svg': svg}
+    sess.sketch = {'count': len(re.findall(r'<(?:path|polyline|rect|circle|text)\b', svg)), 'svg': svg}
     sess.sketch_modified = True
     set_filename_label()
     remember_document()
@@ -3873,7 +3932,7 @@ def load_sketch_beside(document: Path) -> None:
     except Exception as exc:
         ui.notify(f'Failed to read the sketch {source}: {exc}', color='warning')
         return
-    count = len(re.findall(r'<(?:path|polyline|rect|circle)\b', svg))
+    count = len(re.findall(r'<(?:path|polyline|rect|circle|text)\b', svg))
     session().sketch = {'count': count, 'svg': svg}
     ui.run_javascript(f'window.mlwSketchpad && mlwSketchpad.loadSVG({json.dumps(svg)})')
     refresh_svg_editor()
@@ -4090,6 +4149,7 @@ def _build_sketchpad_toolbar(sess) -> None:
             ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
             ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the sketchpad')
     buttons['tool:draw'].classes(add='mlw-tool-on')
+    apply_sketch_text_prefs()
     ui.run_javascript(f'window.mlwSketchpad && (mlwSketchpad.setShape("spline"), mlwSketchpad.setColor({json.dumps(SKETCHPAD_COLOR)}), '
                       f'mlwSketchpad.setWidth({SKETCHPAD_WIDTH}))')
     toolbar.set_visibility(sess.sketchpad_active)
@@ -5482,7 +5542,8 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // spline: its anchors, and tangents: per anchor [inX, inY, outX, outY], its two direction handles
     // relative to it (their direction sets the curve's slope there, their length -- the magnitude --
     // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
-    const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4,  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
+    const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4, font: 'sans-serif', fontSize: 24,  /* text: see setTextStyle() */
+                 /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
                 selected: -1, node: null, history: [], label: null,  // node: [shape, anchor] whose arms show
                 poly: null};  // the polyline being drawn: its last point follows the pointer
     const hosts = new Set();
@@ -5535,10 +5596,28 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
         return e;
     }
+    // Text: a string at points[0] (its top-left), with its own typeface (font:
+    // sans-serif, serif or monospace) and size in pixels, from Preferences >
+    // Sketchpad when it was typed; its colour is the fill. The brush doesn't size it.
+    const fontSize = (s) => s.size || 24;
+    const FONTS = ['sans-serif', 'serif', 'monospace'];
+    const fontOf = (s) => FONTS.includes(s.font) ? s.font : 'sans-serif';
+    let measurer = null;
+    const textBox = (s) => {
+        measurer = measurer || document.createElement('canvas').getContext('2d');
+        measurer.font = `${fontSize(s)}px ${fontOf(s)}`;
+        return {x: s.points[0][0], y: s.points[0][1], w: Math.max(measurer.measureText(s.text || '').width, 4), h: fontSize(s) * 1.2};
+    };
     const radius = (s) => Math.hypot(s.points[1][0] - s.points[0][0], s.points[1][1] - s.points[0][1]);
     // the shape's SVG element, with the given presentation attributes
     function shapeEl(s, attrs) {
         const [[x1, y1], [x2, y2] = [x1, y1]] = s.points;
+        if (s.type === 'text') {
+            const t = el('text', {x: round(x1), y: round(y1 + fontSize(s) * 0.85), 'font-size': fontSize(s),
+                                  'font-family': fontOf(s), ...attrs});
+            t.textContent = s.text;
+            return t;
+        }
         if (s.type === 'polyline')
             return el('polyline', {points: s.points.map(([x, y]) => `${round(x)},${round(y)}`).join(' '), ...attrs});
         if (s.type === 'rect')
@@ -5548,6 +5627,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         return el('path', {d: splinePath(s), ...attrs});
     }
     function strokeAttrs(s) {
+        if (s.type === 'text') return {fill: s.color};
         return {fill: 'none', stroke: s.color, 'stroke-width': s.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
     }
     // where a selected shape's handles go: a spline's anchors, a polyline's
@@ -5595,12 +5675,16 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         svg = g;
         st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {...strokeAttrs(s), 'data-shape': i})));
         if (plain || !st.active || st.tool !== 'select') return;
-        st.shapes.forEach((s, i) => svg.appendChild(shapeEl(s, {
+        const boxEl = (s, attrs) => { const b = textBox(s); return el('rect', {x: b.x - 2, y: b.y - 2, width: b.w + 4, height: b.h + 4, ...attrs}); };
+        st.shapes.forEach((s, i) => svg.appendChild(s.type === 'text' ? boxEl(s, {
+            fill: 'transparent', 'pointer-events': 'all', 'data-shape': i,
+            class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'}) : shapeEl(s, {
             fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14), 'stroke-linecap': 'round',
             'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
         const s = st.shapes[st.selected];
         if (!s) return;
-        svg.insertBefore(shapeEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': s.width + 8,
+        svg.insertBefore(s.type === 'text' ? boxEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.6, 'stroke-width': 2,
+            'pointer-events': 'none'}) : shapeEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': s.width + 8,
             'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none'}), svg.firstChild);
         if (s.type === 'spline' && s.points.length > 1) {
             // the selected anchor's direction handles: an arm to a knob each side
@@ -5687,6 +5771,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const r = radius(s), [cx, cy] = p[0];
             return {closed: true, points: Array.from({length: 48}, (_, k) => [cx + r * Math.cos(k * Math.PI / 24), cy + r * Math.sin(k * Math.PI / 24)])};
         }
+        if (s.type === 'text') return {closed: false, points: []};
         if (s.type !== 'spline' || p.length < 2) return {closed: false, points: p.length === 1 ? [p[0], p[0]] : p};
         const t = tangentsOf(s), out = [p[0]];
         for (let i = 0; i < p.length - 1; i++) {
@@ -5721,6 +5806,44 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             st.history.pop();
         }
         rebuildAll();
+    }
+    // Typing a text string: an input over the sketch at the string's place.
+    // Enter or a click elsewhere keeps it, Escape drops it; an empty string
+    // is no string (an existing one is deleted).
+    let typing = null;  // {input, index (null: a new string), at}
+    function finishText(keep = true) {
+        const t = typing;
+        if (!t) return;
+        typing = null;
+        const text = t.input.value.trim();
+        t.input.remove();
+        const s = t.index === null ? null : st.shapes[t.index];
+        if (!keep || (t.index === null && !text) || (s && s.text === text)) return;
+        remember();
+        if (t.index === null) { st.shapes.push({type: 'text', color: st.color, size: st.fontSize, font: st.font, points: [t.at], text}); }
+        else if (!text) { st.shapes.splice(t.index, 1); st.selected = -1; st.node = null; }
+        else s.text = text;
+        rebuildAll();
+    }
+    function editText(host, index, x, y) {
+        finishText();
+        const s = index === null ? {text: '', color: st.color, size: st.fontSize, font: st.font} : st.shapes[index];
+        const [sx, sy] = scrollOf(host), size = fontSize(s);
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = s.text;
+        input.placeholder = 'Text';
+        Object.assign(input.style, {position: 'absolute', left: `${x - sx - 3}px`, top: `${y - sy - 3}px`, zIndex: 10,
+            font: `${size}px ${fontOf(s)}`, color: s.color, background: 'rgba(255,255,255,0.85)', border: '1px dashed #5898d4',
+            padding: '2px', outline: 'none', minWidth: '120px', lineHeight: 1.1, boxSizing: 'content-box'});
+        ['pointerdown', 'pointerup', 'keydown', 'keyup', 'wheel'].forEach(n => input.addEventListener(n, (e) => e.stopPropagation()));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); finishText(); }
+            else if (e.key === 'Escape') { e.preventDefault(); finishText(false); }
+        });
+        host.appendChild(input);
+        typing = {input, index, at: [x, y]};
+        setTimeout(() => { input.focus(); input.select(); }, 0);
     }
     function rebuildAll() {
         for (const h of [...hosts]) {
@@ -5759,9 +5882,16 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (doc.querySelector('parsererror')) return null;
         const num = (e, a) => parseFloat(e.getAttribute(a)) || 0;
         const shapes = [];
-        doc.querySelectorAll('path, polyline, rect, circle').forEach(e => {
+        doc.querySelectorAll('path, polyline, rect, circle, text').forEach(e => {
             const style = {color: e.getAttribute('stroke') || '#000000', width: num(e, 'stroke-width') || 1};
             const tag = e.tagName.toLowerCase();
+            if (tag === 'text') {
+                const size = num(e, 'font-size') || 16, text = e.textContent.trim();
+                const font = (e.getAttribute('font-family') || '').trim();
+                if (text) shapes.push({type: 'text', color: e.getAttribute('fill') || '#000000', size, font: FONTS.includes(font) ? font : 'sans-serif',
+                                       points: [[num(e, 'x'), num(e, 'y') - size * 0.85]], text});
+                return;
+            }
             if (tag === 'rect') {
                 const x = num(e, 'x'), y = num(e, 'y');
                 shapes.push({type: 'rect', ...style, points: [[x, y], [x + num(e, 'width'), y + num(e, 'height')]]});
@@ -5830,8 +5960,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         host.addEventListener('pointerdown', (e) => {
             if (!st.active || e.button > 0) return;
             e.preventDefault();
+            if (typing) { finishText(); return; }  // a click away from the string being typed keeps it
             host.setPointerCapture(e.pointerId);
             const [x, y] = at(e);
+            if (st.tool === 'draw' && st.shape === 'text') { editText(host, null, x, y); return; }
             if (st.tool === 'draw' && st.shape === 'polyline') {
                 // Polyline: each click adds a point, a double-click (or Enter) ends it. (A
                 // double-click is told here, from the time and distance since the last click:
@@ -5872,9 +6004,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 st.node = [i, +t.dataset.point];  // a spline's anchor: show its arms
                 rebuildAll();
             } else if (t.classList.contains('mlw-hit')) {
+                const was = st.selected === i;
                 if (st.selected !== i || st.node) { st.selected = i; st.node = null; rebuildAll(); }
                 remember();
-                drag = {kind: 'move', shape: i, from: [x, y], moved: false};
+                drag = {kind: 'move', shape: i, from: [x, y], moved: false, again: was && st.shapes[i].type === 'text'};
             } else if (st.selected !== -1) {
                 st.selected = -1;
                 st.node = null;
@@ -5941,10 +6074,12 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                     if (tiny) { st.shapes.pop(); st.history.pop(); }  // a click, not a drag: nothing drawn
                 }
             } else if (!drag.moved) st.history.pop();  // a click to select (a shape, or an anchor): nothing to undo
+            const edit = drag.kind === 'move' && !drag.moved && drag.again ? drag.shape : null;  // a click on a selected string: edit it
             drag = null;
             st.label = null;
             rebuildAll();
             sheetGeometry(host);  // for an export from the XML tab (see sheetShapes())
+            if (edit !== null) { const [x, y] = st.shapes[edit].points[0]; editText(host, edit, x, y); }
         };
         host.addEventListener('pointerup', end);
         host.addEventListener('pointercancel', end);
@@ -5972,10 +6107,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         .observe(document.body, {childList: true, subtree: true});
     document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
-        setActive(on) { finishPoly(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setActive(on) { finishPoly(); finishText(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
         // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
-        setTool(tool) { finishPoly(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
-        setShape(shape) { st.shape = ['polyline', 'rect', 'circle'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
+        setTool(tool) { finishPoly(); finishText(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setShape(shape) { st.shape = ['polyline', 'rect', 'circle', 'text'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
         // the pen's colour / width, and the selected shape's
         setColor(color) {
             st.color = color;
@@ -5985,7 +6120,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         setWidth(width) {
             st.width = width;
             const s = st.shapes[st.selected];
-            if (s && s.width !== width) { remember(); s.width = width; rebuildAll(); }
+            if (s && s.type !== 'text' && s.width !== width) { remember(); s.width = width; rebuildAll(); }
         },
         deleteSelected() {
             if (!st.shapes[st.selected]) return false;
@@ -6016,6 +6151,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return true;
         },
         undo() {
+            if (typing) { finishText(false); return true; }
             if (st.poly) { finishPoly(false); return true; }  // drawing a polyline: Undo drops it
             if (!st.history.length) return false;
             st.shapes = st.history.pop();
@@ -6029,7 +6165,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         loadSVG(text, unsaved = false) {
             const shapes = fromSVG(text);
             if (!shapes) return false;
-            finishPoly(false);
+            finishPoly(false); finishText(false);
             st.shapes = shapes; st.history = []; st.selected = -1; st.node = null; st.label = null;
             saved = unsaved ? null : JSON.stringify(shapes);
             rebuildAll();
@@ -6045,7 +6181,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const shapes = fromSVG(text);
             if (!shapes) return 'invalid';
             if (JSON.stringify(shapes) === JSON.stringify(st.shapes)) return 'same';
-            finishPoly(false);
+            finishPoly(false); finishText(false);
             if (Date.now() - editorEdit > 1500) remember();
             editorEdit = Date.now();
             st.shapes = shapes; st.selected = -1; st.node = null; st.label = null;
@@ -6054,9 +6190,11 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return 'ok';
         },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { saved = '[]'; st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
-        clear() { finishPoly(); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
+        clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
+        // the typeface and size (pixels) of the strings typed from now on (Preferences > Sketchpad)
+        setTextStyle(font, size) { st.font = FONTS.includes(font) ? font : 'sans-serif'; st.fontSize = Math.max(+size || 24, 1); },
         setPenColor(color) { st.color = color; },
         setPenWidth(width) { st.width = width; },
         // For the colour and brush choosers: where the undo history stood when
@@ -6095,6 +6233,10 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 columns: geo.columns.map(([l, w]) => [round3(l - geo.left), round3(w)]),
                 rows: geo.rows.map(([, h, a, b]) => [a, b, round3(h)]),
                 shapes: st.shapes.map(s => {
+                    if (s.type === 'text') {
+                        return {color: s.color, width: 0, closed: false, text: s.text, size: fontSize(s), font: fontOf(s),
+                                span: round3(textBox(s).w), points: [toSheet(s.points[0], geo)]};
+                    }
                     const {closed, points} = outline(s);
                     return {color: s.color, width: s.width, closed, points: points.map(pt => toSheet(pt, geo))};
                 }),
