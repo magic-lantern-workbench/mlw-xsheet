@@ -91,6 +91,13 @@ class Session:
         # Suppress editor change handler during programmatic updates
         self.suppress_editor_change = False
         # Undo/redo stacks and last value
+        # Undo/redo is global, across the XSheet, XML and SVG tabs (see global_undo()): the
+        # journal lists the changes made, oldest first -- each {'domain': 'doc' (the document's text,
+        # one step of undo_stack) or 'sketch' (one step of the Sketchpad's history), 'tab', 'what'}
+        self.journal = []
+        self.journal_future = []   # undone, to redo: the next one last
+        self.sketch_depth = 0      # the Sketchpad's steps to undo and to redo, as last reported
+        self.sketch_redo = 0
         self.undo_stack = []
         self.redo_stack = []
         self.last_editor_value = ''
@@ -3877,6 +3884,121 @@ def sketch_path_for(document: Path | str) -> Path:
     return Path(document).with_suffix('.svg')
 
 
+# ---- Undo / Redo, global across the XSheet, XML and SVG tabs ----
+#
+# The document's text (edited on the XML tab, or from the XSheet tab) and the
+# Sketchpad's sketch (drawn on the XSheet tab, or edited as SVG on the SVG tab)
+# each keep their own steps of undo: sess.undo_stack, and the sketchpad's history.
+# The journal puts those steps in the order they were made, so Undo takes back
+# whichever change was made last, whichever tab that was, and Redo puts back
+# whichever was undone last. If that change was made on a tab other than the one
+# showing, a warning says what was done (it's not an error).
+
+def clear_journal() -> None:
+    """A document was opened or started: nothing to undo or redo."""
+    sess = session()
+    sess.journal.clear()
+    sess.journal_future.clear()
+    sess.sketch_depth = sess.sketch_redo = 0
+
+
+def record_doc_edit() -> None:
+    """The document's text changed (a step was added to undo_stack): journal
+    it, as made on the tab showing -- XML, or XSheet -- and forget what could be redone."""
+    sess = session()
+    on_xsheet = sess.main_tab == 'XSheet'
+    sess.journal.append({'domain': 'doc', 'tab': 'XSheet' if on_xsheet else 'XML',
+                         'what': 'an XSheet edit' if on_xsheet else 'an XML edit'})
+    sess.journal_future.clear()
+    if sess.sketch_redo:
+        sess.sketch_redo = 0
+        ui.run_javascript('window.mlwSketchpad && mlwSketchpad.clearRedo()')
+
+
+def reconcile_sketch_history(depth: int, redo: int, source: str | None) -> None:
+    """The Sketchpad reported how many steps it can undo (`depth`) and redo
+    (`redo`): journal the new steps, or -- if it undid some itself, from its
+    Undo button, or dropped some -- take them off the journal (the undone ones
+    can be redone from the journal's future). `source` is 'editor' for a change
+    made in the SVG tab's editor."""
+    sess = session()
+    change = depth - sess.sketch_depth
+    if change > 0:
+        sess.journal.extend({'domain': 'sketch', 'tab': 'SVG' if source == 'editor' else 'XSheet',
+                             'what': 'an SVG edit' if source == 'editor' else 'a Sketchpad change'}
+                            for _ in range(change))
+        sess.journal_future.clear()
+        sess.redo_stack.clear()
+    elif change < 0:
+        taken = []
+        for i in range(len(sess.journal) - 1, -1, -1):
+            if len(taken) == -change:
+                break
+            if sess.journal[i]['domain'] == 'sketch':
+                taken.append(sess.journal.pop(i))
+        undone = max(redo - sess.sketch_redo, 0)  # (it keeps what it undid to redo; not what it dropped)
+        sess.journal_future.extend(taken[:undone][::-1])
+    if redo < sum(1 for entry in sess.journal_future if entry['domain'] == 'sketch'):
+        sess.journal_future[:] = [entry for entry in sess.journal_future if entry['domain'] != 'sketch']
+    sess.sketch_depth, sess.sketch_redo = depth, redo
+
+
+def _apply_doc_step(undo: bool) -> bool:
+    """Take back (or put back) the document's last text change."""
+    sess = session()
+    stack, other = (sess.undo_stack, sess.redo_stack) if undo else (sess.redo_stack, sess.undo_stack)
+    if not stack:
+        return False
+    value = stack.pop()
+    other.append(sess.last_editor_value)
+    sess.suppress_editor_change = True
+    sess.editor.value = value
+    sess.suppress_editor_change = False
+    sess.last_editor_value = value
+    sess.current_file['modified'] = (value != sess.current_file.get('saved_content', ''))
+    set_filename_label()
+    remember_document()
+    return True
+
+
+async def _step_history(undo: bool) -> None:
+    sess = session()
+    word = 'undo' if undo else 'redo'
+    try:  # the sketch reports a moment after a change: ask it now, so the journal is up to date
+        depth, redo = await ui.run_javascript('return window.mlwSketchpad ? mlwSketchpad.depths() : [0, 0]')
+        reconcile_sketch_history(int(depth), int(redo), None)
+    except Exception:
+        pass
+    source, target = (sess.journal, sess.journal_future) if undo else (sess.journal_future, sess.journal)
+    if not source:
+        ui.notify(f'Nothing to {word}', color='info')
+        return
+    entry = source.pop()
+    if entry['domain'] == 'doc':
+        done = _apply_doc_step(undo)
+    else:
+        sess.sketch_depth += -1 if undo else 1  # as the sketchpad will report it: nothing new to journal
+        sess.sketch_redo += 1 if undo else -1
+        done = bool(await ui.run_javascript(f'return mlwSketchpad.{word}()'))
+    if not done:
+        ui.notify(f'Nothing to {word}', color='info')
+        return
+    target.append(entry)
+    if entry['tab'] != sess.main_tab:
+        ui.notify(f"{'Undid' if undo else 'Redid'} {entry['what']}, made on the {entry['tab']} tab "
+                  f"(you're on the {sess.main_tab} tab)", color='warning')
+
+
+async def global_undo() -> None:
+    """Edit > Undo, Ctrl+Z: take back the last change made, on any of the tabs."""
+    await _step_history(True)
+
+
+async def global_redo() -> None:
+    """Edit > Redo, Ctrl+Y: put back the last change undone."""
+    await _step_history(False)
+
+
 def handle_sketch_changed(e) -> None:
     """The browser's sketch changed (see mlwSketchpad's changed()): keep
     its SVG, for the next Save or Save As, and whether it's unsaved -- which
@@ -3886,6 +4008,8 @@ def handle_sketch_changed(e) -> None:
     args = e.args if isinstance(e.args, dict) else {}
     sess.sketch = {'count': int(args.get('count') or 0), 'svg': str(args.get('svg') or '')}
     sess.sketch_modified = bool(args.get('dirty')) and sess.document_open
+    if 'depth' in args:
+        reconcile_sketch_history(int(args['depth']), int(args.get('redo') or 0), args.get('source'))
     if args.get('source') != 'editor':  # (the editor's own change: left as it's being typed)
         if sess.main_tab == 'SVG':
             refresh_svg_editor()
@@ -4737,8 +4861,10 @@ def _load_document(path: str | None, text: str, saved_content: str):
     # initialize undo/redo stacks
     sess.undo_stack.clear()
     sess.redo_stack.clear()
+    clear_journal()
     if sess.current_file['modified']:
         sess.undo_stack.append(saved_content)
+        sess.journal.append({'domain': 'doc', 'tab': 'XML', 'what': 'the changes restored from the draft'})
     sess.last_editor_value = text
     # programmatic update — suppress change handler so initial load doesn't mark as modified
     sess.suppress_editor_change = True
@@ -4959,6 +5085,7 @@ def new_document():
         text = new_document_text()
         _load_document(None, text, '')
         session().undo_stack.clear()  # nothing to undo back to: it starts as it is
+        clear_journal()
         set_validation_status('')
         clear_validation_panel()
         remember_document()
@@ -4969,12 +5096,13 @@ def new_document():
 def _set_editor_text(new_text: str):
     """Programmatically replace the editor contents (used by Find & Replace),
     keeping undo/redo and modified-state tracking consistent -- same pattern
-    as do_undo/do_redo."""
+    as global_undo() and global_redo()."""
     sess = session()
     if new_text == sess.last_editor_value:
         return
     sess.undo_stack.append(sess.last_editor_value)
     sess.redo_stack.clear()
+    record_doc_edit()
     sess.suppress_editor_change = True
     sess.editor.value = new_text
     sess.suppress_editor_change = False
@@ -5740,13 +5868,14 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
     const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4, font: 'sans-serif', fontSize: 24,  /* text: see setTextStyle() */
                  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
-                selected: -1, node: null, history: [], label: null,  // node: [shape, anchor] whose arms show
+                selected: -1, node: null, history: [], future: [], label: null,  // node: [shape, anchor] whose arms show
                 poly: null};  // the polyline being drawn: its last point follows the pointer
     const hosts = new Set();
     const round = (v) => Math.round(v * 10) / 10;
     const copy = (shapes) => shapes.map(s => ({...s, points: s.points.map(p => [...p]),
                                                ...(s.tangents ? {tangents: s.tangents.map(t => [...t])} : {})}));
-    const remember = () => { st.history.push(copy(st.shapes)); if (st.history.length > 200) st.history.shift(); };
+    // (a new change drops what could be redone)
+    const remember = () => { st.history.push(copy(st.shapes)); if (st.history.length > 200) st.history.shift(); st.future.length = 0; };
 
     // Ramer-Douglas-Peucker: the few points that keep the drawn line's shape
     function simplify(points, tolerance) {
@@ -6057,14 +6186,19 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // the document shows as changed and Close asks to save it.
     // 'source': 'editor' for a change made in the SVG tab's editor (see
     // applySVG()), which the server then leaves as it is typed.
-    let sent = '[]', saved = '[]', sendTimer = null, origin = null;
+    let sent = '[]', sentDepth = '', saved = '[]', sendTimer = null, origin = null;
     function changed(force = false) {
         clearTimeout(sendTimer);
         sendTimer = setTimeout(() => {
             const now = JSON.stringify(st.shapes);
-            if (now === sent && !force) return;
+            // 'depth' and 'redo': how many steps can be undone and redone, for the
+            // server's global Undo/Redo (see reconcile_sketch_history())
+            const depth = `${st.history.length}/${st.future.length}`;
+            if (now === sent && depth === sentDepth && !force) return;
             sent = now;
-            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved, source: origin});
+            sentDepth = depth;
+            emitEvent('mlw_sketch_changed', {count: st.shapes.length, svg: api.toSVG(), dirty: now !== saved, source: origin,
+                                             depth: st.history.length, redo: st.future.length});
             origin = null;
         }, force ? 0 : 300);
     }
@@ -6293,6 +6427,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             rebuildAll();
         } else finishPoly(e.key === 'Enter');
     }, true);
+    // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z): the server's global Undo / Redo (see global_undo()),
+    // across the XSheet, XML and SVG tabs -- caught before an editor's own undo can act.
+    // (Plain input boxes, in dialogs, keep their own.)
+    window.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        const key = e.key.toLowerCase();
+        if (key !== 'z' && key !== 'y') return;
+        if (e.target.closest && e.target.closest('input, textarea, select')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        emitEvent(key === 'y' || e.shiftKey ? 'mlw_redo' : 'mlw_undo', {});
+    }, true);
     document.addEventListener('keydown', (e) => {
         if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
         if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
@@ -6350,11 +6496,25 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (typing) { finishText(false); return true; }
             if (st.poly) { finishPoly(false); return true; }  // drawing a polyline: Undo drops it
             if (!st.history.length) return false;
+            st.future.push(copy(st.shapes));
             st.shapes = st.history.pop();
             if (!st.shapes[st.selected]) st.selected = -1;
             rebuildAll();
             return true;
         },
+        redo() {
+            if (st.poly) finishPoly(false);
+            if (!st.future.length) return false;
+            st.history.push(copy(st.shapes));
+            st.shapes = st.future.pop();
+            if (!st.shapes[st.selected]) st.selected = -1;
+            rebuildAll();
+            return true;
+        },
+        // how many steps can be undone and redone (the server's Undo/Redo
+        // asks, as the sketch's report to it comes a moment after a change)
+        depths() { return [st.history.length, st.future.length]; },
+        clearRedo() { st.future.length = 0; changed(); },
         // a document opened with a sketch saved beside it (see fromSVG()): that
         // sketch, and nothing to undo
         // (unsaved: a sketch from a draft, not yet saved beside the document)
@@ -6362,7 +6522,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const shapes = fromSVG(text);
             if (!shapes) return false;
             finishPoly(false); finishText(false);
-            st.shapes = shapes; st.history = []; st.selected = -1; st.node = null; st.label = null;
+            st.shapes = shapes; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null;
             saved = unsaved ? null : JSON.stringify(shapes);
             rebuildAll();
             return true;
@@ -6386,7 +6546,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             return 'ok';
         },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
+        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
         clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
         // the typeface and size (pixels) of the strings typed from now on (Preferences > Sketchpad)
@@ -6401,10 +6561,11 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (st.history.length <= n) return;
             st.shapes = st.history[n];
             st.history.length = n;
+            st.future.length = 0;
             if (!st.shapes[st.selected]) st.selected = -1;
             rebuildAll();
         },
-        squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; },
+        squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; st.future.length = 0; },
         tool() { return st.tool; },
         shape() { return st.shape; },
         selected() { return st.selected; },
@@ -6835,8 +6996,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
-                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: do_undo())
-                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: do_redo())
+                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo())
+                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo())
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
                 # these act on the grid, so they are disabled on the XML tab and
@@ -6991,6 +7152,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                             sess.undo_stack.append(sess.last_editor_value)
                             # clear redo stack on new edit
                             sess.redo_stack.clear()
+                            record_doc_edit()
                             sess.last_editor_value = new_val
                         # mark document modified and update label
                         sess.current_file['modified'] = (new_val != sess.current_file.get('saved_content', ''))
@@ -7010,34 +7172,6 @@ window.mlwSelectRange = function(elementId, from, to) {
                         if hasattr(ui, comp):
                             sess.editor = getattr(ui, comp)(value='', language='xml', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                             break
-                    # add Edit menu undo/redo after editor creation
-                    def do_undo(_=None):
-                        if not sess.undo_stack:
-                            ui.notify('Nothing to undo', color='info')
-                            return
-                        prev = sess.undo_stack.pop()
-                        sess.redo_stack.append(sess.last_editor_value)
-                        sess.suppress_editor_change = True
-                        sess.editor.value = prev
-                        sess.suppress_editor_change = False
-                        sess.last_editor_value = prev
-                        sess.current_file['modified'] = (prev != sess.current_file.get('saved_content', ''))
-                        set_filename_label()
-                        remember_document()
-
-                    def do_redo(_=None):
-                        if not sess.redo_stack:
-                            ui.notify('Nothing to redo', color='info')
-                            return
-                        nxt = sess.redo_stack.pop()
-                        sess.undo_stack.append(sess.last_editor_value)
-                        sess.suppress_editor_change = True
-                        sess.editor.value = nxt
-                        sess.suppress_editor_change = False
-                        sess.last_editor_value = nxt
-                        sess.current_file['modified'] = (nxt != sess.current_file.get('saved_content', ''))
-                        set_filename_label()
-                        remember_document()
                     if sess.editor is None:
                         # fallback to textarea
                         sess.editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
@@ -7113,6 +7247,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             sess.xsheet_grid.on('cellValueChanged', edit_xsheet_notes)  # the Notes column is editable
             sess.xsheet_grid.on('cellDoubleClicked', handle_xsheet_cell_double_clicked)  # Camera / Audio / Dialogue dialogs
             ui.on('mlw_xsheet_toggle', handle_xsheet_run_toggle)  # collapse icons in the frame column
+            ui.on('mlw_undo', lambda _: global_undo())  # Ctrl+Z (see global_undo())
+            ui.on('mlw_redo', lambda _: global_redo())
             ui.on('mlw_sketch_changed', handle_sketch_changed)  # the sketch, for Save (see save_sketch_beside())
             # XSheet > Sketchpad: the sketchpad over everything above, and
             # its tools while it's on (see toggle_sketchpad() and mlwSketchpad)
@@ -7155,11 +7291,8 @@ window.mlwSelectRange = function(elementId, from, to) {
         # it fired on both keydown and keyup -- both fixed below.
         if not e.action.keydown:
             return
-        if e.key == 'z' and e.modifiers.ctrl and sess.main_tab != 'SVG':  # (the SVG editor undoes its own)
-            do_undo()
-        elif e.key == 'y' and e.modifiers.ctrl and sess.main_tab != 'SVG':
-            do_redo()
-        elif e.modifiers.ctrl and e.modifiers.alt and e.key in ('PageUp', 'PageDown'):
+        # (Ctrl+Z and Ctrl+Y are caught in the browser: see mlw_undo and mlw_redo)
+        if e.modifiers.ctrl and e.modifiers.alt and e.key in ('PageUp', 'PageDown'):
             move_frame_group(-1 if e.key == 'PageUp' else 1)  # to the start of the previous / next second
         elif e.modifiers.ctrl and e.modifiers.alt and isinstance(e.key.number, int):
             names = shown_tabs()  # Ctrl+Alt+1, 2, 3: the tabs showing, by position
