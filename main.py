@@ -120,6 +120,7 @@ class Session:
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
         self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
+        self.delete_frame_item = None  # Edit > Delete Frame: enabled on the XSheet tab
         self.svg_tab = None        # the SVG tab, shown only while the sketchpad is on (see toggle_sketchpad())
         self.xml_tab = None        # the XML tab, hidden when the XML editor is turned off
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: enabled on the XSheet tab, with the sketchpad off
@@ -2473,6 +2474,103 @@ def add_frames_in_text(text: str, at: int, count: int, layers: list[dict[str, st
     return new_text
 
 
+def delete_frames_in_text(text: str, at: int, count: int,
+                          restate: list[dict[str, str]] | None = None) -> str:
+    """Delete `count` frames starting at frame `at`, rows and all: their
+    <Frame> elements (with a "Frame N" comment banner before each) go, and
+    every later frame moves `count` frames earlier -- <Frame number>, "Frame N"
+    banners and EndFrame, and the startFrame / endFrame / frame attributes of
+    <AudioRef>, <CameraMove>, camera <Keyframe> and <Review>. A move or cue that
+    spanned deleted frames is cut short (one wholly inside them shrinks to a
+    single frame), and a keyframe or review on a deleted frame moves to the
+    frame that takes its place. `restate` (layer attributes) is written into the
+    frame now at `at`, so later frames that were holding a drawing set in the
+    deleted ones still hold it. Works on the text, so formatting and comments
+    are kept; the inverse of shift_frames_in_text()."""
+    import re
+    first_gone, last_gone = at, at + count - 1
+
+    # 1. the deleted <Frame> elements, last first so positions stay valid
+    frame_re = re.compile(r'<((?:[\w.-]+:)?)Frame\s[^>]*?\bnumber\s*=\s*["\'](\d+)["\'][^>]*>')
+    for m in reversed([m for m in frame_re.finditer(text) if first_gone <= int(m.group(2)) <= last_gone]):
+        end = m.end()
+        if not m.group(0).endswith('/>'):
+            close = re.compile(r'</' + re.escape(m.group(1)) + r'Frame\s*>').search(text, m.end())
+            if not close:
+                continue
+            end = close.end()
+        start = m.start()
+        line_start = text.rfind('\n', 0, start) + 1
+        if not text[line_start:start].strip():
+            start = line_start
+        # the banner before it: the comments just above, if one says "Frame N"
+        comments, pos = [], start
+        while True:
+            q = len(text[:pos].rstrip())
+            if not text[:q].endswith('-->'):
+                break
+            c = text.rfind('<!--', 0, q)
+            if c == -1:
+                break
+            comments.append(text[c:q])
+            pos = c
+        if comments and any(re.search(r'\bFrame\s+' + m.group(2) + r'\b', c) for c in comments):
+            start = text.rfind('\n', 0, pos) + 1 if not text[text.rfind('\n', 0, pos) + 1:pos].strip() else pos
+        # and the blank lines after it, so the gap before it stays the only one
+        rest = len(text) - len(text[end:].lstrip(' \t\r\n'))
+        end = text.rfind('\n', 0, rest) + 1 if rest > end else end
+        text = text[:start] + text[end:]
+
+    # 2. later frames move up; ranges and points are cut or moved
+    def point(n: int) -> int:  # a keyframe or review: a deleted frame's goes to the one that replaces it
+        return n - count if n > last_gone else (first_gone if n >= first_gone else n)
+
+    def fix_tag(m: re.Match) -> str:
+        tag = m.group(0)
+        if re.match(r'<(?:[\w.-]+:)?Frame[\s/>]', tag):
+            return re.sub(r'(\bnumber\s*=\s*["\'])(\d+)',
+                          lambda a: a.group(1) + str(int(a.group(2)) - count if int(a.group(2)) > last_gone else int(a.group(2))), tag)
+        values = {}
+
+        def sub(kind):
+            def f(a):
+                n = int(a.group(2))
+                if kind == 'endFrame':
+                    new = n - count if n > last_gone else (first_gone - 1 if n >= first_gone else n)
+                else:
+                    new = point(n)
+                values[kind] = new
+                return a.group(1) + str(new)
+            return f
+        for kind in ('startFrame', 'endFrame', 'frame'):
+            tag = re.sub(r'(\b' + kind + r'\s*=\s*["\'])(\d+)', sub(kind), tag)
+        if 'startFrame' in values and 'endFrame' in values and values['endFrame'] < values['startFrame']:
+            tag = re.sub(r'(\bendFrame\s*=\s*["\'])\d+', lambda a: a.group(1) + str(values['startFrame']), tag)
+        return tag
+
+    def fix_banner(m: re.Match) -> str:
+        number, space = m.group(2), m.group(3)
+        new = str(int(number) - count) if int(number) > last_gone else number
+        return m.group(1) + new + ' ' * max(1, len(number) + len(space) - len(new)) + m.group(4)
+
+    text = re.sub(r'<[A-Za-z][^<>]*>', fix_tag, text)
+    text = re.sub(r'(<!--\s*Frame\s+)(\d+)(\s*)(-->)', fix_banner, text)
+    info = read_production_info(text) or {}
+    end = info.get('EndFrame', '')
+    if end.isdigit():
+        new_end = int(end) - count if int(end) > last_gone else (first_gone - 1 if int(end) >= first_gone else int(end))
+        start_frame = info.get('StartFrame', '')
+        if start_frame.isdigit():
+            new_end = max(new_end, int(start_frame))
+        if new_end != int(end):
+            text, _missing = update_production_in_text(text, {'EndFrame': str(new_end)})
+    for attrs in restate or []:
+        result = add_layer_in_text(text, at, attrs)
+        if result is not None:
+            text = result[0]
+    return text
+
+
 def rename_layer_in_text(text: str, old: str, new: str) -> tuple[str, int, int]:
     """Rename animation layer `old` to `new` in ExposureSheet XML text: the
     `id` attribute of every <Layer> element, and `xsheetLayer` on OTIO
@@ -3850,6 +3948,13 @@ def update_xsheet_view_items(on_xsheet_tab: bool | None = None) -> None:
         item.set_enabled(on_xsheet_tab and not sess.sketchpad_active)
 
 
+def update_delete_frame_item(on_xsheet_tab: bool | None = None) -> None:
+    """Edit > Delete Frame can be chosen only on the XSheet tab."""
+    sess = session()
+    if sess.delete_frame_item is not None:
+        sess.delete_frame_item.set_enabled(sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab)
+
+
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     """XSheet > Sketchpad can be chosen only on the XSheet tab, and only
     once a document is open (opened, new, or a restored draft)."""
@@ -4799,6 +4904,86 @@ def show_add_frame_dialog() -> None:
         with ui.row().classes('w-full justify-end gap-2 mt-2'):
             ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
             ui.button('Add', on_click=add).props('size=sm')
+    dlg.open()
+
+
+def show_delete_frame_dialog() -> None:
+    """Edit > Delete Frame (the XSheet tab): delete frames from the sheet,
+    starting at the selected one -- the rows go, and the later frames move up
+    (see delete_frames_in_text()). Undo with Ctrl+Z."""
+    import re
+    import xml.etree.ElementTree as ET
+    sess = session()
+    text = _editor_text()
+    layer_ids, rows, message = parse_exposure_sheet(text)
+    if not rows:
+        ui.notify('Open an ExposureSheet document first' if not text.strip()
+                  else f'Delete Frame needs an ExposureSheet document. {message}', color='warning')
+        return
+    root = ET.fromstring(text)
+    layer_ids = layer_ids or []
+    first, last = rows[0]['Frame'], rows[-1]['Frame']
+    selected = re.match(r'\d+', str(sess.xsheet_current_frame or ''))
+    start_default = min(max(int(selected.group()), first), last) if selected else first
+
+    with ui.dialog() as dlg, titled_card('Delete Frame', classes='w-[420px] max-w-full', body_classes='gap-2'):
+        ui.label('Deletes frames from the sheet: their rows go, not just their drawings, and the later frames move '
+                 'up to close the gap (so do camera moves, audio cues and reviews). Undo with Ctrl+Z.') \
+            .classes('text-caption text-grey')
+        start_input = ui.number('Starting frame', value=start_default, min=first, max=last, step=1, format='%d') \
+            .classes('w-full')
+        count_input = ui.number('Number of frames to delete', value=1, min=1, step=1, format='%d').classes('w-full') \
+            .props('autofocus')
+        status = ui.label(f'The sheet has frames {first}–{last}.').classes('text-sm')
+
+        async def delete(_=None):
+            def whole(value):
+                return value is not None and float(value) == int(value)
+            if not whole(start_input.value) or not first <= int(start_input.value) <= last:
+                ui.notify(f'Starting frame must be a whole number from {first} to {last}', color='warning')
+                return
+            at = int(start_input.value)
+            if not whole(count_input.value) or int(count_input.value) < 1:
+                ui.notify('Number of frames must be a whole number, 1 or more', color='warning')
+                return
+            count = int(count_input.value)
+            if at + count - 1 > last:
+                ui.notify(f'Only {last - at + 1} frame(s) from frame {at} to the end of the sheet', color='warning')
+                return
+            if count >= last - first + 1:
+                ui.notify('A sheet needs at least one frame: not every frame can be deleted', color='warning')
+                return
+            # Later frames that were holding a drawing set in the deleted ones
+            # keep it: restate the layers whose drawing would otherwise change.
+            before = _frame_layer_state(root, layer_ids, at)
+            held = _frame_layer_state(root, layer_ids, at + count + 1)
+            next_frame = next((el for el in root.iter() if el.tag.split('}')[-1] == 'Frame'
+                               and el.get('number') == str(at + count)), None)
+            listed = {el.get('id') for el in next_frame.iter() if el.tag.split('}')[-1] == 'Layer'} \
+                if next_frame is not None else set()
+            restate = [attrs for lid, attrs in held.items() if lid not in listed and attrs != before.get(lid)] \
+                if at + count <= last else []
+            new_text = delete_frames_in_text(_editor_text(), at, count, restate)
+            dlg.close()
+            new_last = last - count
+            sess.xsheet_current_frame = min(at, new_last)
+            _set_editor_text(new_text)  # undoable; marks modified; rebuilds the tree and grid
+            span = f'frame {at}' if count == 1 else f'frames {at}–{at + count - 1}'
+            ui.notify(f'Deleted {span}' + ('' if at + count > last else f'; later frames moved up by {count}'),
+                      color='positive')
+            new_layer_ids, new_rows, _message = parse_exposure_sheet(new_text)
+            display = _xsheet_display_rows(sess.xsheet_style, new_layer_ids or [], new_rows or [])
+            index = next((i for i, row in enumerate(display)
+                          if str(row['Frame']).split('–')[0] == str(min(at, new_last))), None)
+            if index is not None and sess.xsheet_grid is not None:
+                import asyncio
+                await asyncio.sleep(0.15)  # let the grid take the new rows first
+                sess.xsheet_grid.run_grid_method('ensureIndexVisible', index, 'middle')
+
+        count_input.on('keydown.enter', delete)
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancel', on_click=dlg.close).props('outline size=sm')
+            ui.button('Delete', on_click=delete).props('color=negative size=sm')
     dlg.open()
 
 
@@ -6992,6 +7177,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
                 ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog())
+                # deletes rows of the sheet: available on the XSheet tab only (see update_delete_frame_item())
+                sess.delete_frame_item = ui.menu_item('Delete Frame', on_click=lambda _: show_delete_frame_dialog())
                 ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
@@ -7090,6 +7277,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         sess.main_tab = showing
         update_xml_menu_items()  # most of the XML menu acts on the XML editor
         update_xsheet_view_items(showing == 'XSheet')
+        update_delete_frame_item(showing == 'XSheet')
         update_sketchpad_item(showing == 'XSheet')
         try:
             if leaving == 'XML':
