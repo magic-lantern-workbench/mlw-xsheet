@@ -204,9 +204,12 @@ switching browsers starts fresh settings.
   In the `XML` menu, everything but the **XML Editor** check box is only enabled while the **XML**
   tab is active — its commands (Validate, Select Schema, …) act on the editor, so they're disabled
   while looking at the XSheet or SVG tab.
-- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, `XML`
-  (Editor + Hierarchy tree) and `SVG` (the Sketchpad sketch's `.svg`, in an editor; see [SVG tab](#svg-tab)).
-  `Ctrl+Alt+1`/`Ctrl+Alt+2`/`Ctrl+Alt+3` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
+- **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens; then `SVG`
+  (the Sketchpad sketch's `.svg`, in an editor; see [SVG tab](#svg-tab)), which is there only while
+  the Sketchpad is on; then `XML` (Editor + Hierarchy tree), unless the XML Editor is turned off in
+  the XML menu. `Ctrl+Alt+1`, `Ctrl+Alt+2` and `Ctrl+Alt+3` switch to the first, second and third
+  tab showing, so they follow the tabs as they come and go (each tab's tooltip gives its shortcut;
+  see [Keyboard shortcuts](#keyboard-shortcuts)).
 - **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
   collapsible tree mirroring the document's element structure.
 - **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
@@ -259,7 +262,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 
 | Item | What it does |
 |---|---|
-| XML Editor | A check-box item at the top of the menu, checked by default (saved per user). Unchecked, the **XML** tab is hidden (and `Ctrl+Alt+2` does nothing); if the XML tab was showing, the XSheet tab is shown instead. It changes only what's shown: the document is still held in the editor, so editing on the XSheet tab updates it, and Save writes the `.xml` exactly as before. Check it again to bring the tab back. |
+| XML Editor | A check-box item at the top of the menu, checked by default (saved per user). Unchecked, the **XML** tab is hidden (and has no `Ctrl+Alt` shortcut); if the XML tab was showing, the XSheet tab is shown instead. It changes only what's shown: the document is still held in the editor, so editing on the XSheet tab updates it, and Save writes the `.xml` exactly as before. Check it again to bring the tab back. |
 | Validate (well-formed) | Quick syntax check; result shown in the footer. |
 | Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in the Validation Results panel below the editor (which scrolls into view automatically on failure), each entry clickable to jump to it. |
 | Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |
@@ -477,6 +480,9 @@ layer already uses, and names containing `"` `'` `<` `>` or `&` are refused. The
 
 ### SVG tab
 
+The tab is shown only while **XSheet > Sketchpad** is on, next to the XSheet tab and before XML; turning the
+Sketchpad off hides it. The sketch itself is kept and saved as ever.
+
 **Sketchpad SVG**, an editor showing the Sketchpad sketch as its `.svg` file has it (see the Sketchpad row of the
 [XSheet menu](#xsheet-menu)) — the comments naming the document and giving its `<Production>`
 info, then the SVG, an element to a line — kept in step both ways. Edit it and the sketch
@@ -494,9 +500,9 @@ no document open, the editor is empty and can't be edited.
 
 - `Ctrl+Z` — Undo
 - `Ctrl+Y` — Redo
-- `Ctrl+Alt+1` — Switch to the XSheet tab
-- `Ctrl+Alt+2` — Switch to the XML tab
-- `Ctrl+Alt+3` — Switch to the SVG tab
+- `Ctrl+Alt+1` — Switch to the XSheet tab (always the first)
+- `Ctrl+Alt+2` — Switch to the second tab (SVG while the Sketchpad is on, otherwise XML)
+- `Ctrl+Alt+3` — Switch to the third tab (XML, while the Sketchpad is on and the XML Editor is too)
 
 (On the SVG tab, `Ctrl+Z` and `Ctrl+Y` undo and redo in the SVG editor itself.)
 

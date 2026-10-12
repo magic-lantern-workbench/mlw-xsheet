@@ -112,6 +112,8 @@ class Session:
         self.xml_menu_button = None
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
+        self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
+        self.svg_tab = None        # the SVG tab, shown only while the sketchpad is on (see toggle_sketchpad())
         self.xml_tab = None        # the XML tab, hidden when the XML editor is turned off
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: enabled on the XSheet tab, with the sketchpad off
         self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
@@ -3963,6 +3965,11 @@ def toggle_sketchpad(active: bool | None = None) -> None:
     if sess.sketchpad_menu_icon is not None:
         sess.sketchpad_menu_icon.name = 'check_box' if sess.sketchpad_active else 'check_box_outline_blank'
     update_xsheet_view_items()
+    if sess.svg_tab is not None:  # the SVG tab is there only while the sketchpad is on
+        sess.svg_tab.set_visibility(sess.sketchpad_active)
+        if not sess.sketchpad_active and sess.main_tabs is not None and sess.main_tab == 'SVG':
+            sess.main_tabs.value = 'XSheet'
+        update_tab_shortcuts()
     if sess.sketchpad_toolbar is not None:
         sess.sketchpad_toolbar.set_visibility(sess.sketchpad_active)
     ui.run_javascript(f'window.mlwSketchpad && window.mlwSketchpad.setActive({json.dumps(sess.sketchpad_active)})')
@@ -4228,6 +4235,22 @@ def update_xml_menu_items() -> None:
         item.set_enabled(sess.main_tab == 'XML')
 
 
+def shown_tabs() -> list[str]:
+    """The main tabs showing, left to right: XSheet, then SVG (while the
+    sketchpad is on), then XML (unless the XML editor is turned off)."""
+    sess = session()
+    return ['XSheet'] + (['SVG'] if sess.sketchpad_active else []) + (['XML'] if xml_editor_pref() else [])
+
+
+def update_tab_shortcuts() -> None:
+    """Ctrl+Alt+1, 2, 3 switch to the tabs showing, by position (see shown_tabs()):
+    the tabs' tooltips say which."""
+    names = shown_tabs()
+    for name, tip in session().tab_tooltips.items():
+        if name in names:
+            tip.text = f'Ctrl+Alt+{names.index(name) + 1}'
+
+
 def toggle_xml_editor(enabled: bool | None = None) -> None:
     """XML > XML Editor: show or hide the XML tab. Only the view changes: the
     editor still holds the document, so edits made on the XSheet tab update
@@ -4240,6 +4263,7 @@ def toggle_xml_editor(enabled: bool | None = None) -> None:
         sess.xml_menu_icon.name = 'check_box' if enabled else 'check_box_outline_blank'
     if sess.xml_tab is not None:
         sess.xml_tab.set_visibility(enabled)
+    update_tab_shortcuts()
     if not enabled and sess.main_tabs is not None and sess.main_tab == 'XML':
         sess.main_tabs.value = 'XSheet'
     update_xml_menu_items()
@@ -6797,11 +6821,17 @@ window.mlwSelectRange = function(elementId, from, to) {
 
     with ui.tabs(on_change=on_main_tab_change).classes('w-full mlw-folder-tabs').props('align=left') as main_tabs:
         sess.main_tabs = main_tabs
-        # XSheet first; the shortcuts follow the tabs' positions
-        xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
-        xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
-        sess.xml_tab = xml_tab
-        svg_tab = ui.tab('SVG').tooltip('Ctrl+Alt+3')  # the Sketchpad sketch's .svg
+        # XSheet first, then SVG (the Sketchpad sketch's .svg, while the sketchpad is on), then
+        # XML (unless it's turned off); the shortcuts follow the positions of those showing
+        # (see update_tab_shortcuts())
+        xsheet_tab = ui.tab('XSheet')
+        svg_tab = ui.tab('SVG')
+        xml_tab = ui.tab('XML')
+        sess.xml_tab, sess.svg_tab = xml_tab, svg_tab
+        for name, tab in (('XSheet', xsheet_tab), ('SVG', svg_tab), ('XML', xml_tab)):
+            with tab:
+                sess.tab_tooltips[name] = ui.tooltip('')
+        svg_tab.set_visibility(sess.sketchpad_active)  # shown only while the sketchpad is on
 
     # The XSheet tab is showing when the page opens; most of the XML menu acts on the
     # editor, so it starts disabled until the XML tab is chosen. The XML tab is
@@ -6992,13 +7022,10 @@ window.mlwSelectRange = function(elementId, from, to) {
             do_undo()
         elif e.key == 'y' and e.modifiers.ctrl and sess.main_tab != 'SVG':
             do_redo()
-        elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'XSheet'
-        elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
-            if xml_editor_pref():
-                main_tabs.value = 'XML'
-        elif e.key.number == 3 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'SVG'
+        elif e.modifiers.ctrl and e.modifiers.alt and isinstance(e.key.number, int):
+            names = shown_tabs()  # Ctrl+Alt+1, 2, 3: the tabs showing, by position
+            if 1 <= e.key.number <= len(names):
+                main_tabs.value = names[e.key.number - 1]
     ui.keyboard(on_key=handle_keyboard)
 
 
