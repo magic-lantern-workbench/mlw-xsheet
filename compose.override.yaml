@@ -11,3 +11,13 @@ services:
       - .:/app
     environment:
       MLW_RELOAD: "1"
+    # Also join the platform stack's network, so the app can reach its Keycloak
+    # server (mlw-keycloak:8080; see MLW_KEYCLOAK_URL in .env).
+    networks:
+      - default
+      - mlw-platform
+
+networks:
+  mlw-platform:
+    name: mlw-platform_default
+    external: true
