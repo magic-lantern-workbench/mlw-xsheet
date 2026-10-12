@@ -201,8 +201,9 @@ switching browsers starts fresh settings.
 
 - **Header** — `File`, `Edit`, `XSheet`, `XML` and `About` dropdown menus (About has the app info, with the license in a scrollable tab, and the document's Reviews) on the
   left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
-  The `XML` menu is only enabled while the **XML** tab is active — its commands (Validate,
-  Select Schema, …) act on the editor, so they're disabled while looking at the XSheet or SVG tab.
+  In the `XML` menu, everything but the **XML Editor** check box is only enabled while the **XML**
+  tab is active — its commands (Validate, Select Schema, …) act on the editor, so they're disabled
+  while looking at the XSheet or SVG tab.
 - **Tabs** — `XSheet` (the Exposure Sheet grid), which is showing when the app opens, `XML`
   (Editor + Hierarchy tree) and `SVG` (the Sketchpad sketch's `.svg`, in an editor; see [SVG tab](#svg-tab)).
   `Ctrl+Alt+1`/`Ctrl+Alt+2`/`Ctrl+Alt+3` switch between them (see [Keyboard shortcuts](#keyboard-shortcuts)).
@@ -258,6 +259,7 @@ Both PDFs show the export date and a UTC creation timestamp under the title on p
 
 | Item | What it does |
 |---|---|
+| XML Editor | A check-box item at the top of the menu, checked by default (saved per user). Unchecked, the **XML** tab is hidden (and `Ctrl+Alt+2` does nothing); if the XML tab was showing, the XSheet tab is shown instead. It changes only what's shown: the document is still held in the editor, so editing on the XSheet tab updates it, and Save writes the `.xml` exactly as before. Check it again to bring the tab back. |
 | Validate (well-formed) | Quick syntax check; result shown in the footer. |
 | Validate against Schema | Validate against an XSD, resolved automatically (see below); errors open in the Validation Results panel below the editor (which scrolls into view automatically on failure), each entry clickable to jump to it. |
 | Clear Validation | Empty and collapse the Validation Results panel, and clear the validation status in the footer. |

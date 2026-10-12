@@ -110,6 +110,9 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
+        self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
+        self.xml_menu_icon = None  # the check box of XML > XML Editor
+        self.xml_tab = None        # the XML tab, hidden when the XML editor is turned off
         self.xsheet_view_items = []  # XSheet > Collapse / Expand Frames: enabled on the XSheet tab, with the sketchpad off
         self.sketchpad_active = False  # XSheet > Sketchpad: sketching on the SVG sketchpad (see toggle_sketchpad())
         self.sketchpad_menu_icon = None
@@ -197,6 +200,9 @@ def session() -> Session:
 #                     SKETCHPAD_FONTS; default sans-serif); set in File >
 #                     Preferences > Sketchpad.
 #   'sketch_font_size': their size, in pixels (default 24; 6-200); same place.
+#   'xml_editor':     whether the XML tab is shown (default: yes); set by the
+#                     XML > XML Editor check box. Hiding the tab changes only the
+#                     view: the document is still edited, and saved, as before.
 #   'popup_log':      whether this user's status pop-ups (ui.notify) are
 #                     recorded in their log file (default: yes); set in File >
 #                     Preferences > Logs. See the "Pop-up log" section below.
@@ -466,6 +472,10 @@ def export_sketch_pref() -> bool:
 
 def set_export_sketch_pref(include: bool) -> None:
     user_storage()['export_sketch'] = bool(include)
+
+
+def xml_editor_pref() -> bool:
+    return bool(user_storage().get('xml_editor', True))
 
 
 def sketch_font_pref() -> str:
@@ -4210,6 +4220,31 @@ def _document_asset_ids(text: str) -> list[str]:
     return [el.get('id') for el in root.iter() if el.tag.split('}')[-1] == 'Asset' and el.get('id')]
 
 
+def update_xml_menu_items() -> None:
+    """The XML menu's items act on the XML editor, so they can be chosen only
+    on the XML tab. (XML > XML Editor, the check box, always can.)"""
+    sess = session()
+    for item in sess.xml_menu_items:
+        item.set_enabled(sess.main_tab == 'XML')
+
+
+def toggle_xml_editor(enabled: bool | None = None) -> None:
+    """XML > XML Editor: show or hide the XML tab. Only the view changes: the
+    editor still holds the document, so edits made on the XSheet tab update
+    it, and Save writes it, as ever. Turning it off while the XML tab is
+    showing goes to the XSheet tab."""
+    sess = session()
+    enabled = (not xml_editor_pref()) if enabled is None else bool(enabled)
+    user_storage()['xml_editor'] = enabled
+    if sess.xml_menu_icon is not None:
+        sess.xml_menu_icon.name = 'check_box' if enabled else 'check_box_outline_blank'
+    if sess.xml_tab is not None:
+        sess.xml_tab.set_visibility(enabled)
+    if not enabled and sess.main_tabs is not None and sess.main_tab == 'XML':
+        sess.main_tabs.value = 'XSheet'
+    update_xml_menu_items()
+
+
 def xml_tab_active() -> bool:
     tabs = session().main_tabs
     value = tabs.value if tabs is not None else None
@@ -6666,14 +6701,25 @@ window.mlwSelectRange = function(elementId, from, to) {
             # the editor's content.
             sess.xml_menu_button = ui.dropdown_button('XML', auto_close=True).props('flat color=white')
             with sess.xml_menu_button:
-                ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml())
-                ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema())
-                ui.menu_item('Clear Validation', on_click=lambda _: clear_validation())
+                # a check box shows whether the XML tab is shown (see toggle_xml_editor())
+                with ui.menu_item(on_click=lambda _: toggle_xml_editor()):
+                    with ui.item_section():
+                        ui.label('XML Editor')
+                    with ui.item_section().props('side'):  # the check box, at the right
+                        sess.xml_menu_icon = ui.icon('check_box', size='xs')
                 ui.separator()
-                ui.menu_item('Select Schema…', on_click=lambda _: choose_schema())
-                ui.menu_item('Clear Schema', on_click=lambda _: clear_schema())
+                sess.xml_menu_items = [
+                    ui.menu_item('Validate (well-formed)', on_click=lambda _: validate_xml()),
+                    ui.menu_item('Validate against Schema', on_click=lambda _: validate_against_schema()),
+                    ui.menu_item('Clear Validation', on_click=lambda _: clear_validation()),
+                ]
                 ui.separator()
-                ui.menu_item('Format', on_click=lambda _: format_xml())
+                sess.xml_menu_items += [
+                    ui.menu_item('Select Schema…', on_click=lambda _: choose_schema()),
+                    ui.menu_item('Clear Schema', on_click=lambda _: clear_schema()),
+                ]
+                ui.separator()
+                sess.xml_menu_items.append(ui.menu_item('Format', on_click=lambda _: format_xml()))
             # About menu: the app's About dialog, and the document's reviews
             with ui.dropdown_button('About', auto_close=True).props('flat color=white'):
                 ui.menu_item('About', on_click=lambda _: show_about_dialog())
@@ -6720,8 +6766,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         # the tab being left, and the one shown now (XSheet, XML or SVG)
         leaving, showing = sess.main_tab, str(new_value)
         sess.main_tab = showing
-        if sess.xml_menu_button is not None:  # the XML menu acts on the XML editor
-            sess.xml_menu_button.enable() if showing == 'XML' else sess.xml_menu_button.disable()
+        update_xml_menu_items()  # most of the XML menu acts on the XML editor
         update_xsheet_view_items(showing == 'XSheet')
         update_sketchpad_item(showing == 'XSheet')
         try:
@@ -6755,11 +6800,13 @@ window.mlwSelectRange = function(elementId, from, to) {
         # XSheet first; the shortcuts follow the tabs' positions
         xsheet_tab = ui.tab('XSheet').tooltip('Ctrl+Alt+1')
         xml_tab = ui.tab('XML').tooltip('Ctrl+Alt+2')
+        sess.xml_tab = xml_tab
         svg_tab = ui.tab('SVG').tooltip('Ctrl+Alt+3')  # the Sketchpad sketch's .svg
 
-    # The XSheet tab is showing when the page opens; the XML menu acts on the
-    # editor, so it starts disabled until the XML tab is chosen.
-    sess.xml_menu_button.disable()
+    # The XSheet tab is showing when the page opens; most of the XML menu acts on the
+    # editor, so it starts disabled until the XML tab is chosen. The XML tab is
+    # hidden if this user turned the XML editor off.
+    toggle_xml_editor(xml_editor_pref())
     with ui.tab_panels(main_tabs, value=xsheet_tab).classes('w-full'):
         with ui.tab_panel(xml_tab).classes('gap-1'):  # little space between the editor and Validation Results
             with ui.row().classes('gap-4 w-full flex-nowrap'):
@@ -6948,7 +6995,8 @@ window.mlwSelectRange = function(elementId, from, to) {
         elif e.key.number == 1 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'XSheet'
         elif e.key.number == 2 and e.modifiers.ctrl and e.modifiers.alt:
-            main_tabs.value = 'XML'
+            if xml_editor_pref():
+                main_tabs.value = 'XML'
         elif e.key.number == 3 and e.modifiers.ctrl and e.modifiers.alt:
             main_tabs.value = 'SVG'
     ui.keyboard(on_key=handle_keyboard)
