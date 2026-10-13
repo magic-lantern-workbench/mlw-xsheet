@@ -1897,7 +1897,7 @@ def show_about_dialog():
         with ui.tab_panels(tabs, value=about_tab).classes('w-full'):
             with ui.tab_panel(about_tab).classes('px-0 gap-4'):
                 ui.label('Author: Wizzer Works')
-                ui.label('Version: 1.4.0')
+                ui.label('Version: 1.5.0')
                 with ui.row().classes('items-center gap-1'):
                     ui.label('Please visit')
                     ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
