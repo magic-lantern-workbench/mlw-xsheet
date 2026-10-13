@@ -52,6 +52,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+VIEWER_ROLE = 'XSheet Viewer'   # read-only access in the app
+EDITOR_ROLE = 'XSheet Editor'   # full access
+
 
 class KeycloakError(Exception):
     pass
@@ -151,10 +154,10 @@ def ensure_admin_client(kc: Admin, realm: str, client_id: str) -> str:
     return secret['value']
 
 
-def ensure_role(kc: Admin, realm: str, role: str) -> None:
+def ensure_role(kc: Admin, realm: str, role: str, description: str = 'mlw-xsheet administrator') -> None:
     status, _ = kc.get(f'/admin/realms/{realm}/roles/{urllib.parse.quote(role)}')
     if status == 404:
-        kc.post(f'/admin/realms/{realm}/roles', {'name': role, 'description': 'mlw-xsheet administrator'})
+        kc.post(f'/admin/realms/{realm}/roles', {'name': role, 'description': description})
         print(f'created realm role {role}')
     else:
         print(f'realm role {role} exists')
@@ -198,6 +201,7 @@ def main(argv=None) -> int:
     ap.add_argument('--user', help='also create this user')
     ap.add_argument('--user-password', help='its password (else KEYCLOAK_USER_PASSWORD, else asked for)')
     ap.add_argument('--user-permanent', action='store_true', help="don't make the user change the password at first login")
+    ap.add_argument('--user-role', choices=[VIEWER_ROLE, EDITOR_ROLE], help='give the user this role (read-only or full access)')
     ap.add_argument('--user-admin', action='store_true', help='give the user the administrator role')
     ap.add_argument('--app-url', help='the address the mlw-xsheet container uses for Keycloak, for the .env lines '
                                       '(default: --url)')
@@ -214,10 +218,12 @@ def main(argv=None) -> int:
         ensure_realm(kc, args.realm)
         ensure_client(kc, args.realm, args.client_id)
         ensure_role(kc, args.realm, args.admin_role)
+        ensure_role(kc, args.realm, VIEWER_ROLE, 'mlw-xsheet read-only access')
+        ensure_role(kc, args.realm, EDITOR_ROLE, 'mlw-xsheet full access')
         admin_secret = None if args.no_admin_client else ensure_admin_client(kc, args.realm, args.admin_client_id)
         if args.user:
             ensure_user(kc, args.realm, args.user, user_password, not args.user_permanent,
-                        args.admin_role if args.user_admin else None)
+                        args.admin_role if args.user_admin else args.user_role)
     except KeycloakError as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 1

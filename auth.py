@@ -43,6 +43,11 @@ Keycloak settings come from the environment:
   MLW_KEYCLOAK_CLIENT_SECRET: the client's secret, if it's a confidential client.
   MLW_KEYCLOAK_ADMIN_ROLE:    the realm (or client) role that makes someone an
                               administrator of this server; default "admin".
+  MLW_KEYCLOAK_VIEWER_ROLE:   the role that limits a user to read-only access: they
+                              can open and look at documents, but not change the XML
+                              or the Sketchpad; default "XSheet Viewer".
+  MLW_KEYCLOAK_EDITOR_ROLE:   the role that allows everything; default "XSheet Editor".
+                              (Editors and administrators outrank the viewer role.)
   MLW_KEYCLOAK_VERIFY_TLS:    "0" to accept a self-signed certificate.
   MLW_KEYCLOAK_TIMEOUT:       seconds to wait for Keycloak; default 5.
   MLW_KEYCLOAK_ADMIN_CLIENT_ID / MLW_KEYCLOAK_ADMIN_CLIENT_SECRET:
@@ -106,6 +111,8 @@ ADMIN_ROLE = (os.environ.get('MLW_KEYCLOAK_ADMIN_ROLE') or 'admin').strip()
 KEYCLOAK_VERIFY_TLS = (os.environ.get('MLW_KEYCLOAK_VERIFY_TLS') or '1').strip().lower() not in ('0', 'false', 'no')
 ADMIN_CLIENT_ID = (os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_ID') or 'mlw-xsheet-admin').strip()
 ADMIN_CLIENT_SECRET = os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_SECRET') or ''
+VIEWER_ROLE = (os.environ.get('MLW_KEYCLOAK_VIEWER_ROLE') or 'XSheet Viewer').strip()
+EDITOR_ROLE = (os.environ.get('MLW_KEYCLOAK_EDITOR_ROLE') or 'XSheet Editor').strip()
 NOT_SET_UP = 'Account is not fully set up'  # Keycloak's answer to the right password, with an action still required
 try:
     KEYCLOAK_TIMEOUT = float(os.environ.get('MLW_KEYCLOAK_TIMEOUT') or 5)
@@ -158,6 +165,15 @@ def current_profile() -> dict:
 def is_admin() -> bool:
     """Whether the logged-in user may change server-wide settings."""
     return ADMIN_ROLE in current_roles()
+
+
+def is_read_only() -> bool:
+    """Whether the logged-in user may only look: they have the viewer role
+    (default "XSheet Viewer") and neither the editor role ("XSheet Editor") nor
+    the administrator role. Anyone else -- the built-in account, an editor, or a
+    user with neither role -- may change documents and sketches."""
+    roles = current_roles()
+    return VIEWER_ROLE in roles and EDITOR_ROLE not in roles and ADMIN_ROLE not in roles
 
 
 def is_local_account() -> bool:

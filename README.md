@@ -145,13 +145,15 @@ which provides any number of users and their roles. Set it up with these environ
 | `MLW_KEYCLOAK_CLIENT_ID` | A client in that realm with **Direct access grants** enabled; default `mlw-xsheet`. |
 | `MLW_KEYCLOAK_CLIENT_SECRET` | The client's secret, if it is a confidential client. |
 | `MLW_KEYCLOAK_ADMIN_ROLE` | The realm or client role that makes a user an administrator; default `admin`. |
+| `MLW_KEYCLOAK_VIEWER_ROLE` | The role that limits a user to read-only access (see [Roles](#roles)); default `XSheet Viewer`. |
+| `MLW_KEYCLOAK_EDITOR_ROLE` | The role that allows everything; default `XSheet Editor`. |
 | `MLW_KEYCLOAK_VERIFY_TLS` | `0` to accept a self-signed certificate. |
 | `MLW_KEYCLOAK_TIMEOUT` | Seconds to wait for Keycloak; default 5. |
 | `MLW_KEYCLOAK_ADMIN_CLIENT_ID` | The client whose service account sets new passwords (see [Changing a required password](#changing-a-required-password)); default `mlw-xsheet-admin`. |
 | `MLW_KEYCLOAK_ADMIN_CLIENT_SECRET` | That client's secret, printed by `tools/keycloak_setup.py`. Empty turns the Change Password dialog off. |
 
 **Setting up Keycloak.** `tools/keycloak_setup.py` creates what the app needs in the server: the
-realm, a public client (`mlw-xsheet`) with Direct access grants, the `admin` realm role, a
+realm, a public client (`mlw-xsheet`) with Direct access grants, the `admin`, `XSheet Viewer` and `XSheet Editor` realm roles, a
 confidential client (`mlw-xsheet-admin`) for password changes, and optionally a first user. It uses only the Python standard library and can be run again safely;
 anything that already exists is left alone.
 
@@ -168,14 +170,25 @@ python3 tools/keycloak_setup.py --app-url http://mlw-keycloak:8080
 ```
 
 Other options: `--realm`, `--client-id`, `--admin-role`, `--user-password` (or
-`KEYCLOAK_USER_PASSWORD`), `--user-permanent`, `--admin-client-id`, `--no-admin-client` (don't create
+`KEYCLOAK_USER_PASSWORD`), `--user-permanent`, `--user-role` (`XSheet Viewer` or `XSheet Editor`, for the new user), `--admin-client-id`, `--no-admin-client` (don't create
 the password-change client). It ends by printing the `MLW_KEYCLOAK_*` lines to
 put in `.env` (copy `.env.example`). The container must be able to reach Keycloak: in
 development, `compose.override.yaml` joins the `mlw-platform_default` network, so the URL there
 is `http://mlw-keycloak:8080`, not `localhost:8180`.
 
-Users with the administrator role may change the idle time-out in Preferences. Other roles are
-recorded and shown in **Preferences > Login**.
+#### Roles
+
+- **`XSheet Viewer`** — read-only. The user can open and look at documents (all tabs, Find, Reviews
+  list, exports, Generate Report), but cannot change the XML or the Sketchpad: New, Save, Save As,
+  Add/Delete Frame and Layer, Undo/Redo, Format, Find & Replace and the Sketchpad are disabled or refused; the XML and
+  SVG editors are read-only; the Notes cells, dialogue, audio, camera, production, layer-name and
+  review editors do not open. Profile shows *Access: Read-only (viewer)*.
+- **`XSheet Editor`** — can do everything. So can the administrator role (`admin`), the built-in
+  fallback account, and a user with neither of the two roles. If a user has both Viewer and Editor
+  (or `admin`), they can edit.
+
+Users with the administrator role may change the idle time-out in Preferences. Roles are
+shown in **Preferences > Login** and in Profile.
 
 **Fallback account.** If Keycloak is off or can't be reached, the built-in account still works:
 user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).

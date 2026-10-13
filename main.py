@@ -117,6 +117,7 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
+        self.edit_items = []   # menu items that change the document: disabled for a read-only user
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
         self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
@@ -867,6 +868,8 @@ def format_xml():
     """Pretty-print the editor's XML/XSD contents in place, using the current
     format preferences. Routed through _set_editor_text() so it participates in
     undo/redo and flips the modified ('*') indicator like any other edit."""
+    if deny_read_only('format the document'):
+        return
     text = _editor_text()
     if not text.strip():
         ui.notify('Nothing to format', color='warning')
@@ -1775,7 +1778,7 @@ def show_reviews_dialog() -> None:
                 table.on('rowClick', go_to)
                 table.on('edit_review', lambda e: show_review_editor(e.args, content.refresh))
             with ui.row().classes('w-full items-center mt-2'):
-                if is_sheet and reviews is not None:
+                if is_sheet and reviews is not None and not auth.is_read_only():
                     ui.button('Add Review', icon='add', on_click=lambda: show_review_editor(None, content.refresh)) \
                         .props('outline size=sm')
                 ui.space()
@@ -1789,6 +1792,8 @@ def show_review_editor(review: dict | None, on_saved) -> None:
     with Delete for an existing one. Changes are one ordinary (undoable)
     edit that keeps the document schema-valid; on_saved() then refreshes the
     Reviews list."""
+    if deny_read_only('edit reviews'):
+        return
     import re
     import xml.etree.ElementTree as ET
     text = _editor_text()
@@ -1926,6 +1931,7 @@ def show_profile_dialog():
     if info['login_time']:
         rows.append(('Signed in at', time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(info['login_time']))))
     rows.append(('Administrator', 'Yes' if auth.is_admin() else 'No'))
+    rows.append(('Access', 'Read-only (viewer)' if auth.is_read_only() else 'Can edit'))
     with ui.dialog() as profile_dialog, \
             titled_card('Profile', classes='w-[520px] max-w-full', body_classes='gap-2'):
         with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
@@ -2947,6 +2953,8 @@ def _prompt_edit_production(focus: str | None = None) -> None:
     """Edit the Production info shown above the XSheet grid. Nothing changes
     until the user confirms the listed changes; then the XML is updated as
     an ordinary (undoable) edit."""
+    if deny_read_only('edit the production info'):
+        return
     info = read_production_info(_editor_text())
     if info is None:
         return
@@ -3098,7 +3106,7 @@ def rebuild_xsheet_from_current():
         {'field': 'Camera', 'headerName': 'Camera', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
-        {'field': 'Notes', 'headerName': 'Notes', 'width': 220, **NOTES_EDITING},
+        {'field': 'Notes', 'headerName': 'Notes', 'width': 220, **notes_editing()},
     ]
     grid.options['columnDefs'] = column_defs
     grid.options['rowData'] = _xsheet_display_rows('classic', layer_ids or [], rows)
@@ -3117,6 +3125,20 @@ NOTES_EDITING = {
     'cellEditorParams': {'maxLength': 2000, 'rows': 5, 'cols': 50},
     'headerTooltip': "Double-click a frame's cell to edit its notes",
 }
+
+
+def notes_editing() -> dict:
+    """NOTES_EDITING for the Notes column -- or, for a read-only user, a column that can't be edited."""
+    return {} if auth.is_read_only() else NOTES_EDITING
+
+
+def deny_read_only(what: str = 'change the document') -> bool:
+    """True (after saying so) if the signed-in user is limited to read-only access
+    (the XSheet Viewer role, see auth.is_read_only()) and so may not `what`."""
+    if not auth.is_read_only():
+        return False
+    ui.notify(f'Your role ({auth.VIEWER_ROLE}) is read-only: you cannot {what}.', color='warning')
+    return True
 
 def _xsheet_column_default(col_id: str) -> str | None:
     """The layer a layer column's pencil heading renames (see
@@ -3154,7 +3176,7 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
     wrapped = {'wrapText': True, 'autoHeight': True, 'cellClass': 'mlw-trad-wrap'}
     column_defs = [
         {'field': 'Notes', 'colId': 'action', 'headerName': 'Action/Description', 'width': 320, **wrapped,
-         **NOTES_EDITING},
+         **notes_editing()},
         first_frame_col,
         {'field': 'AudioTrack', 'colId': 'audio', 'headerName': 'Audio', 'width': 160, **centered},
         {'field': 'Dialogue', 'colId': 'dialogue', 'headerName': 'Dialogue', 'width': 190},
@@ -3564,6 +3586,8 @@ def edit_xsheet_notes(e) -> None:
     A frame that has no <Frame> of its own (a hold) gets one, restating
     the drawings it was holding, so the sheet still shows the same thing.
     The grid is updated in place, so it keeps its scroll position."""
+    if deny_read_only('edit notes'):
+        return
     args = e.args or {}
     if args.get('colId') not in ('Notes', 'action'):
         return
@@ -3661,6 +3685,8 @@ def show_dialogue_dialog(frame: int) -> None:
     it's holding (see add_holding_frame_in_text()). Saved as one ordinary
     (undoable) edit that keeps the document schema-valid; the grid updates
     in place."""
+    if deny_read_only('edit dialogue'):
+        return
     import xml.etree.ElementTree as ET
     text = _editor_text()
     try:
@@ -3754,6 +3780,8 @@ def show_audio_cue_dialog(frame: int, effects: bool | None) -> None:
     track's own parameters (which every cue on the track shares). Saved as
     one ordinary (undoable) edit that keeps the document schema-valid; the
     grid updates in place."""
+    if deny_read_only('edit audio cues'):
+        return
     import re
     import xml.etree.ElementTree as ET
     text = _editor_text()
@@ -3938,6 +3966,8 @@ def show_camera_move_dialog(frame: int) -> None:
     that range, and the camera's own name and projection. Saved as one
     ordinary (undoable) edit that keeps the document schema-valid; the
     grid updates in place."""
+    if deny_read_only('edit camera moves'):
+        return
     import re
     import xml.etree.ElementTree as ET
     text = _editor_text()
@@ -4152,7 +4182,7 @@ def update_delete_frame_item(on_xsheet_tab: bool | None = None) -> None:
     sess = session()
     for item in (sess.delete_frame_item, sess.delete_layer_item):
         if item is not None:
-            item.set_enabled(sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab)
+            item.set_enabled((sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab) and not auth.is_read_only())
 
 
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
@@ -4162,7 +4192,7 @@ def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     if on_xsheet_tab is None:
         on_xsheet_tab = sess.main_tab == 'XSheet'
     if sess.sketchpad_item is not None:
-        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open)
+        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open and not auth.is_read_only())
 
 
 def reset_sketchpad() -> None:
@@ -4267,6 +4297,8 @@ def _apply_doc_step(undo: bool) -> bool:
 
 
 async def _step_history(undo: bool) -> None:
+    if deny_read_only('undo or redo'):
+        return
     sess = session()
     word = 'undo' if undo else 'redo'
     try:  # the sketch reports a moment after a change: ask it now, so the journal is up to date
@@ -4418,7 +4450,7 @@ def refresh_svg_editor() -> None:
         sess.suppress_svg_editor_change = True
         sess.svg_editor.value = text
         sess.suppress_svg_editor_change = False
-    sess.svg_editor.set_enabled(sess.document_open)
+    sess.svg_editor.set_enabled(sess.document_open and not auth.is_read_only())
     if sess.svg_status is not None:
         sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.'
                                  if sess.document_open else 'Open a document to see its sketch here.')
@@ -4430,7 +4462,7 @@ async def on_svg_editor_change(e) -> None:
     (see mlwSketchpad.applySVG()), unless it isn't well-formed yet -- then
     the sketch stays as it was, and a note says why."""
     sess = session()
-    if sess.suppress_svg_editor_change or not sess.document_open:
+    if auth.is_read_only() or sess.suppress_svg_editor_change or not sess.document_open:
         return
     text = e.value if hasattr(e, 'value') else ''
     try:
@@ -4492,6 +4524,8 @@ def toggle_sketchpad(active: bool | None = None) -> None:
     off, the sketchpad is hidden and
     ignores the pointer, so nothing can be drawn and the grid works as
     usual. The sketch is kept, and shows again when it's turned back on."""
+    if active is not False and deny_read_only('use the Sketchpad'):
+        return
     sess = session()
     sess.sketchpad_active = (not sess.sketchpad_active) if active is None else bool(active)
     if sess.sketchpad_active and not sess.document_open:
@@ -4772,7 +4806,7 @@ def update_xml_menu_items() -> None:
     on the XML tab. (XML > XML Editor, the check box, always can.)"""
     sess = session()
     for item in sess.xml_menu_items:
-        item.set_enabled(sess.main_tab == 'XML')
+        item.set_enabled(sess.main_tab == 'XML' and not (auth.is_read_only() and item in sess.edit_items))
 
 
 def close_find_dialogs(showing: str) -> None:
@@ -4858,6 +4892,8 @@ def show_add_layer_dialog() -> None:
     """Edit > Add Layer: add a new animation layer (a <Layer> in one frame's
     <Layers>), with placeholder values to fill in. Its column then appears
     in the XSheet grid from that frame on."""
+    if deny_read_only('add layers'):
+        return
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
     if rows is None:
@@ -4987,6 +5023,8 @@ def show_add_frame_dialog() -> None:
     (the default) or inserted before any frame, moving the later frames
     along (see add_frames_in_text()). The first new frame gets a <Frame>
     with the values filled in here; the rest hold it."""
+    if deny_read_only('add frames'):
+        return
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
     if not rows:
@@ -5128,6 +5166,8 @@ def show_delete_frame_dialog() -> None:
     """Edit > Delete Frame (the XSheet tab): delete frames from the sheet,
     starting at the selected one -- the rows go, and the later frames move up
     (see delete_frames_in_text()). Undo with Ctrl+Z."""
+    if deny_read_only('delete frames'):
+        return
     import re
     import xml.etree.ElementTree as ET
     sess = session()
@@ -5230,6 +5270,8 @@ def show_delete_layer_dialog() -> None:
     -- a layer, or one of the other data columns (notes, dialogue, audio,
     camera moves, ...) -- from the document (see delete_column_in_text()).
     The column last clicked is offered; the dialog can choose any other."""
+    if deny_read_only('delete layers'):
+        return
     sess = session()
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
@@ -5277,6 +5319,8 @@ def _prompt_rename_layer(old: str) -> None:
     """Rename an animation layer in the open document, from its column
     heading in the traditional sheet. The edit goes through the editor like
     any other, so it marks the document modified and can be undone."""
+    if deny_read_only('rename layers'):
+        return
     with ui.dialog() as dlg, titled_card('Rename Layer', classes='w-[360px] max-w-full', body_classes='gap-2'):
         ui.label('Renames the layer on every frame of the document (and in the OTIO track map). '
                  'Undo with Ctrl+Z.').classes('text-caption text-grey')
@@ -5552,6 +5596,8 @@ def new_document():
     editor -- after offering to save the current one if it has unsaved
     changes. Nothing is written to disk until Save or Save As; until then it
     shows as untitled.xml, and is kept as a draft like any unsaved work."""
+    if deny_read_only('start a new document'):
+        return
     def start():
         text = new_document_text()
         _load_document(None, text, '')
@@ -5568,6 +5614,8 @@ def _set_editor_text(new_text: str):
     """Programmatically replace the editor contents (used by Find & Replace),
     keeping undo/redo and modified-state tracking consistent -- same pattern
     as global_undo() and global_redo()."""
+    if deny_read_only('change the document'):
+        return
     sess = session()
     if new_text == sess.last_editor_value:
         return
@@ -5687,6 +5735,8 @@ def show_find_dialog():
         highlight_current()
 
     def do_replace():
+        if deny_read_only('replace text'):
+            return
         sync_tab()
         if not (0 <= state['index'] < len(state['matches'])):
             do_find(1)
@@ -5704,6 +5754,8 @@ def show_find_dialog():
         refresh_matches(anchor_pos=m.start() + len(replacement))
 
     def do_replace_all():
+        if deny_read_only('replace text'):
+            return
         sync_tab()
         pattern = build_pattern()
         if pattern is None:
@@ -5756,6 +5808,8 @@ def save_file(on_saved=None):
     the file on disk no longer matches what this session last opened or
     saved -- someone else saved over it in the meantime -- ask before
     overwriting their changes."""
+    if deny_read_only('save the document'):
+        return
     sess = session()
     if not sess.current_file['path']:
         save_as(on_saved=on_saved)
@@ -5826,6 +5880,8 @@ def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
 def save_as(on_saved=None):
     """Save the editor to a newly chosen file, then call on_saved() if the
     save went through (not if the dialog or an overwrite prompt is cancelled)."""
+    if deny_read_only('save the document'):
+        return
     sess = session()
     def file_selected_callback(files):
         if not files:
@@ -7490,7 +7546,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto overflow-y-hidden'):
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
-                ui.menu_item('New', on_click=lambda _: new_document())
+                sess.edit_items.append(ui.menu_item('New', on_click=lambda _: new_document()))
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 # Submenu of this user's recently opened files. The File
                 # dropdown auto-closes on any click inside it, so stop this
@@ -7502,8 +7558,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                     sess.recent_menu = ui.menu().props('anchor="top end" self="top start" auto-close')
                     sess.recent_menu.on('before-show', lambda _: rebuild_recent_menu())
                 rebuild_recent_menu()
-                ui.menu_item('Save', on_click=lambda _: save_file())
-                ui.menu_item('Save As', on_click=lambda _: save_as())
+                sess.edit_items.append(ui.menu_item('Save', on_click=lambda _: save_file()))
+                sess.edit_items.append(ui.menu_item('Save As', on_click=lambda _: save_as()))
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)
@@ -7517,16 +7573,16 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
-                ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog())
+                sess.edit_items.append(ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog()))
                 # deletes rows of the sheet: available on the XSheet tab only (see update_delete_frame_item())
                 sess.delete_frame_item = ui.menu_item('Delete Frame', on_click=lambda _: show_delete_frame_dialog())
-                ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
+                sess.edit_items.append(ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog()))
                 sess.delete_layer_item = ui.menu_item('Delete Layer', on_click=lambda _: show_delete_layer_dialog())
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
-                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo())
-                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo())
+                sess.edit_items.append(ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo()))
+                sess.edit_items.append(ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo()))
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
                 # these act on the grid, so they are disabled on the XML tab and
@@ -7571,6 +7627,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ]
                 ui.separator()
                 sess.xml_menu_items.append(ui.menu_item('Format', on_click=lambda _: format_xml()))
+                sess.edit_items.append(sess.xml_menu_items[-1])
             # About menu: the app's About dialog, and the document's reviews
             with ui.dropdown_button('About', auto_close=True).props('flat color=white'):
                 ui.menu_item('About', on_click=lambda _: show_about_dialog())
@@ -7584,6 +7641,10 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.menu().props('anchor="bottom right" self="top right"'):
                 ui.menu_item('Profile', on_click=lambda _: show_profile_dialog())
                 ui.menu_item('Logout', on_click=lambda _: log_out_with_check())
+
+    if auth.is_read_only():  # the XSheet Viewer role: look, but don't change the XML or the Sketchpad
+        for item in sess.edit_items:
+            item.set_enabled(False)
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
@@ -7708,6 +7769,9 @@ window.mlwSelectRange = function(elementId, from, to) {
                         # fallback to textarea
                         sess.editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                         ui.notify('CodeMirror component not found; using plain textarea', color='warning')
+
+                if auth.is_read_only():
+                    sess.editor.set_enabled(False)  # the XSheet Viewer role: read-only
 
                 # create a right-side column for XML hierarchy as a sibling in the same row
                 # tree selection handler: highlight the line where the selected node
