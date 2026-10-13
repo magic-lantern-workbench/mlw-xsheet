@@ -4743,7 +4743,7 @@ def _build_sketchpad_toolbar(sess) -> None:
             show_width(SKETCHPAD_WIDTH)
             ui.separator().props('vertical')
             ui.button(icon='delete', on_click=delete_selected).props('flat dense size=sm') \
-                .tooltip('Delete the selected shape (or press Delete)')
+                .tooltip('Delete the selected shape or shapes (or press Delete)')
             ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
             ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the sketchpad')
     buttons['tool:draw'].classes(add='mlw-tool-on')
@@ -6437,7 +6437,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
     const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4, font: 'sans-serif', fontSize: 24,  /* text: see setTextStyle() */
                  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
-                selected: -1, node: null, history: [], future: [], label: null,  // node: [shape, anchor] whose arms show
+                selected: -1, group: [], marquee: null, node: null, history: [], future: [], label: null,  // node: [shape, anchor] whose arms show
                 poly: null};  // the polyline being drawn: its last point follows the pointer
     const hosts = new Set();
     const round = (v) => Math.round(v * 10) / 10;
@@ -6582,9 +6582,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         const boxEl = (s, attrs) => { const b = textBox(s); return el('rect', {x: b.x - 2, y: b.y - 2, width: b.w + 4, height: b.h + 4, ...attrs}); };
         st.shapes.forEach((s, i) => svg.appendChild(s.type === 'text' ? boxEl(s, {
             fill: 'transparent', 'pointer-events': 'all', 'data-shape': i,
-            class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'}) : shapeEl(s, {
+            class: i === st.selected || st.group.includes(i) ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'}) : shapeEl(s, {
             fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14), 'stroke-linecap': 'round',
-            'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+            'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected || st.group.includes(i) ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+        // several shapes selected by dragging across them: each highlighted, with no handles
+        st.group.forEach(gi => { const gs = st.shapes[gi]; if (gs) svg.insertBefore(gs.type === 'text' ? boxEl(gs, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.6, 'stroke-width': 2,
+            'pointer-events': 'none'}) : shapeEl(gs, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': gs.width + 8,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none'}), svg.firstChild); });
+        if (st.marquee) {  // the selection rectangle being dragged
+            const [mx1, my1, mx2, my2] = st.marquee;
+            svg.appendChild(el('rect', {x: Math.min(mx1, mx2), y: Math.min(my1, my2), width: Math.abs(mx2 - mx1), height: Math.abs(my2 - my1),
+                fill: 'rgba(88,152,212,0.12)', stroke: '#2b5d8a', 'stroke-width': 1, 'stroke-dasharray': '4 3', 'pointer-events': 'none'}));
+        }
         const s = st.shapes[st.selected];
         if (!s) return;
         svg.insertBefore(s.type === 'text' ? boxEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.6, 'stroke-width': 2,
@@ -6725,7 +6734,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (!keep || (t.index === null && !text) || (s && s.text === text)) return;
         remember();
         if (t.index === null) { st.shapes.push({type: 'text', color: st.color, size: st.fontSize, font: st.font, points: [t.at], text}); }
-        else if (!text) { st.shapes.splice(t.index, 1); st.selected = -1; st.node = null; }
+        else if (!text) { st.shapes.splice(t.index, 1); st.selected = -1; st.group = []; st.node = null; }
         else s.text = text;
         rebuildAll();
     }
@@ -6852,6 +6861,27 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         });
         return shapes;
     }
+    // The shapes a dragged rectangle (x1, y1, x2, y2: the sheet's coordinates) crosses: any point of
+    // a shape's line within it (allowing for the line's width), or a string's box overlapping it.
+    function shapesCrossed(host, [ax, ay, bx, by]) {
+        const r = [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
+        const g = svgOf(host).querySelector(':scope > g.mlw-sheet');
+        const found = [];
+        st.shapes.forEach((s, i) => {
+            if (s.type === 'text') {
+                const b = textBox(s);
+                if (b.x <= r[2] && b.x + b.w >= r[0] && b.y <= r[3] && b.y + b.h >= r[1]) found.push(i);
+                return;
+            }
+            const e = g && g.querySelector(`:scope > [data-shape="${i}"]:not(.mlw-hit)`);
+            if (!e || !e.getTotalLength) return;
+            const pad = (s.width || 4) / 2, len = e.getTotalLength();
+            const inside = (d) => { const q = e.getPointAtLength(d); return q.x >= r[0] - pad && q.x <= r[2] + pad && q.y >= r[1] - pad && q.y <= r[3] + pad; };
+            for (let d = 0; d < len; d += 3) if (inside(d)) { found.push(i); return; }
+            if (inside(len)) found.push(i);
+        });
+        return found;
+    }
     function attach(host) {
         if (host._mlwSketchpad) {  // back on the page (its tab shown again): drawn afresh
             if (!hosts.has(host)) { hosts.add(host); rebuildAll(); }
@@ -6925,14 +6955,26 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 st.node = [i, +t.dataset.point];  // a spline's anchor: show its arms
                 rebuildAll();
             } else if (t.classList.contains('mlw-hit')) {
+                if (e.shiftKey) {  // Shift+click adds a shape to the selection, or takes it out
+                    const now = st.group.length ? st.group.slice() : (st.shapes[st.selected] ? [st.selected] : []);
+                    const pos = now.indexOf(i);
+                    if (pos >= 0) now.splice(pos, 1); else now.push(i);
+                    st.node = null;
+                    st.selected = now.length === 1 ? now[0] : -1;
+                    st.group = now.length > 1 ? now : [];
+                    rebuildAll();
+                    return;
+                }
+                const inGroup = st.group.includes(i);  // one of several selected: they all move together
                 const was = st.selected === i;
-                if (st.selected !== i || st.node) { st.selected = i; st.node = null; rebuildAll(); }
+                if (!inGroup && (st.selected !== i || st.node || st.group.length)) { st.selected = i; st.group = []; st.node = null; rebuildAll(); }
                 remember();
-                drag = {kind: 'move', shape: i, from: [x, y], moved: false, again: was && st.shapes[i].type === 'text'};
-            } else if (st.selected !== -1) {
-                st.selected = -1;
-                st.node = null;
-                rebuildAll();
+                drag = {kind: 'move', shape: i, shapes: inGroup ? st.group.slice() : [i], from: [x, y], moved: false,
+                        again: was && st.shapes[i].type === 'text'};
+            } else {
+                // empty space: drag a rectangle across the shapes to select them (a click just deselects)
+                if (!e.shiftKey && (st.selected !== -1 || st.group.length)) { st.selected = -1; st.group = []; st.node = null; rebuildAll(); }
+                drag = {kind: 'marquee', from: [x, y], moved: false, add: e.shiftKey ? (st.group.length ? st.group.slice() : (st.shapes[st.selected] ? [st.selected] : [])) : []};
             }
         });
         host.addEventListener('pointermove', (e) => {
@@ -6975,10 +7017,15 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 drag.moved = true;
                 dragHandle(st.shapes[drag.shape], drag.point, x, y);
                 rebuildAll();
+            } else if (drag.kind === 'marquee') {
+                if (!drag.moved && Math.hypot(x - drag.from[0], y - drag.from[1]) < 4) return;
+                drag.moved = true;
+                st.marquee = [drag.from[0], drag.from[1], x, y];
+                rebuildAll();
             } else {
                 const dx = x - drag.from[0], dy = y - drag.from[1];
                 if (!dx && !dy) return;
-                st.shapes[drag.shape].points.forEach(p => { p[0] += dx; p[1] += dy; });
+                drag.shapes.forEach(si => st.shapes[si].points.forEach(p => { p[0] += dx; p[1] += dy; }));
                 drag.from = [x, y];
                 drag.moved = true;
                 rebuildAll();
@@ -6994,6 +7041,15 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                     const tiny = s.type === 'rect' ? Math.abs(x2 - x1) < 2 && Math.abs(y2 - y1) < 2 : radius(s) < 2;
                     if (tiny) { st.shapes.pop(); st.history.pop(); }  // a click, not a drag: nothing drawn
                 }
+            } else if (drag.kind === 'marquee') {
+                if (drag.moved) {
+                    const found = shapesCrossed(host, st.marquee);
+                    const all = [...new Set([...drag.add, ...found])].sort((a, b) => a - b);
+                    st.selected = all.length === 1 ? all[0] : -1;
+                    st.group = all.length > 1 ? all : [];
+                    st.node = null;
+                }
+                st.marquee = null;
             } else if (!drag.moved) st.history.pop();  // a click to select (a shape, or an anchor): nothing to undo
             const edit = drag.kind === 'move' && !drag.moved && drag.again ? drag.shape : null;  // a click on a selected string: edit it
             drag = null;
@@ -7032,7 +7088,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     }, true);
     document.addEventListener('keydown', (e) => {
         if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
-        if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
+        if (!st.active || (st.selected === -1 && !st.group.length) || !['Delete', 'Backspace'].includes(e.key)) return;
         e.preventDefault();
         if (!api.deleteNode()) api.deleteSelected();  // a spline's selected anchor, or else the shape
     });
@@ -7040,26 +7096,34 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         .observe(document.body, {childList: true, subtree: true});
     document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
-        setActive(on) { finishPoly(); finishText(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setActive(on) { finishPoly(); finishText(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; st.group = []; rebuildAll(); },
         // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
-        setTool(tool) { finishPoly(); finishText(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setTool(tool) { finishPoly(); finishText(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; st.group = []; rebuildAll(); },
         setShape(shape) { st.shape = ['polyline', 'rect', 'circle', 'text'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
         // the pen's colour / width, and the selected shape's
         setColor(color) {
             st.color = color;
-            const s = st.shapes[st.selected];
-            if (s && s.color !== color) { remember(); s.color = color; rebuildAll(); }
+            const chosen = (st.group.length ? st.group : [st.selected]).map(i => st.shapes[i]).filter(s => s && s.color !== color);
+            if (chosen.length) { remember(); chosen.forEach(s => { s.color = color; }); rebuildAll(); }
         },
         setWidth(width) {
             st.width = width;
-            const s = st.shapes[st.selected];
-            if (s && s.type !== 'text' && s.width !== width) { remember(); s.width = width; rebuildAll(); }
+            const chosen = (st.group.length ? st.group : [st.selected]).map(i => st.shapes[i]).filter(s => s && s.type !== 'text' && s.width !== width);
+            if (chosen.length) { remember(); chosen.forEach(s => { s.width = width; }); rebuildAll(); }
         },
         deleteSelected() {
+            if (st.group.length) {  // several selected: all go
+                remember();
+                const gone = new Set(st.group);
+                st.shapes = st.shapes.filter((_, i) => !gone.has(i));
+                st.selected = -1; st.group = []; st.node = null;
+                rebuildAll();
+                return true;
+            }
             if (!st.shapes[st.selected]) return false;
             remember();
             st.shapes.splice(st.selected, 1);
-            st.selected = -1;
+            st.selected = -1; st.group = [];
             st.node = null;
             rebuildAll();
             return true;
@@ -7089,7 +7153,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (!st.history.length) return false;
             st.future.push(copy(st.shapes));
             st.shapes = st.history.pop();
-            if (!st.shapes[st.selected]) st.selected = -1;
+            if (!st.shapes[st.selected]) st.selected = -1; st.group = [];
             rebuildAll();
             return true;
         },
@@ -7098,7 +7162,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (!st.future.length) return false;
             st.history.push(copy(st.shapes));
             st.shapes = st.future.pop();
-            if (!st.shapes[st.selected]) st.selected = -1;
+            if (!st.shapes[st.selected]) st.selected = -1; st.group = [];
             rebuildAll();
             return true;
         },
@@ -7113,7 +7177,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const shapes = fromSVG(text);
             if (!shapes) return false;
             finishPoly(false); finishText(false);
-            st.shapes = shapes; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null;
+            st.shapes = shapes; st.history = []; st.future = []; st.selected = -1; st.group = []; st.node = null; st.label = null;
             saved = unsaved ? null : JSON.stringify(shapes);
             rebuildAll();
             return true;
@@ -7131,14 +7195,14 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             finishPoly(false); finishText(false);
             if (Date.now() - editorEdit > 1500) remember();
             editorEdit = Date.now();
-            st.shapes = shapes; st.selected = -1; st.node = null; st.label = null;
+            st.shapes = shapes; st.selected = -1; st.group = []; st.node = null; st.label = null;
             origin = 'editor';
             rebuildAll();
             return 'ok';
         },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
-        clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.future = []; st.selected = -1; st.group = []; st.node = null; st.label = null; rebuildAll(); },
+        clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.group = []; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
         // the typeface and size (pixels) of the strings typed from now on (Preferences > Sketchpad)
         setTextStyle(font, size) { st.font = FONTS.includes(font) ? font : 'sans-serif'; st.fontSize = Math.max(+size || 24, 1); },
@@ -7153,13 +7217,13 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             st.shapes = st.history[n];
             st.history.length = n;
             st.future.length = 0;
-            if (!st.shapes[st.selected]) st.selected = -1;
+            if (!st.shapes[st.selected]) st.selected = -1; st.group = [];
             rebuildAll();
         },
         squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; st.future.length = 0; },
         tool() { return st.tool; },
         shape() { return st.shape; },
-        selected() { return st.selected; },
+        selected() { return st.group.length ? st.group[0] : st.selected; },
         shapes() { return copy(st.shapes); },
         shapeCount() { return st.shapes.length; },
         splines() { return copy(st.shapes); },        // earlier names, kept
