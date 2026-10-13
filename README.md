@@ -179,7 +179,10 @@ hash, in `NICEGUI_STORAGE_PATH`. While Keycloak is reachable it decides every lo
 Keycloak password is not retried against the built-in account.
 
 - Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
-  opens a menu with **Logout**, which logs them all out and returns to the login page. If the
+  opens a menu with **Profile** and **Logout**. **Profile** shows who is signed in: for a Keycloak user
+  their name, e-mail, realm, Keycloak ID, sign-in time, administrator status, realm roles and client
+  roles (as of login, so a change made in Keycloak appears after the next login); for the built-in
+  account, its user name and administrator role. **Logout** logs them all out and returns to the login page. If the
   document has unsaved changes (to its text or its Sketchpad sketch), Logout first asks whether
   to save them: **Yes** saves them (the sketch too) and logs out; **No** logs out without them —
   they're lost, as closing the document would lose them, and the next login reopens the
@@ -241,7 +244,7 @@ switching browsers starts fresh settings.
 ### Layout
 
 - **Header** — `File`, `Edit`, `XSheet`, `XML` and `About` dropdown menus (About has the app info, with the license in a scrollable tab, and the document's Reviews) on the
-  left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
+  left; a user icon on the right whose menu has **Profile** and **Logout** (hover over it to see who's logged in).
   In the `XML` menu, everything but the **XML Editor** check box is only enabled while the **XML**
   tab is active — its commands (Validate, Select Schema, …) act on the editor, so they're disabled
   while looking at the XSheet or SVG tab.
