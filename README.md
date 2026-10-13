@@ -137,6 +137,9 @@ docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R
 
 ### Logging in
 
+For a fuller description of the Keycloak integration and of what each role allows, see
+[`doc/User-Role_Management.docx`](doc/User-Role_Management.docx).
+
 The app asks you to log in first. Users sign in against a **Keycloak** server (realm **`mlw`**),
 which provides any number of users and their roles. Set it up with these environment variables
 (in `.env`, which `compose.yaml` passes through):
@@ -181,6 +184,8 @@ development, `compose.override.yaml` joins the `mlw-platform_default` network, s
 is `http://mlw-keycloak:8080`, not `localhost:8180`.
 
 #### Roles
+
+(Described in full, with a table of what each role can do, in [`doc/User-Role_Management.docx`](doc/User-Role_Management.docx).)
 
 - **`XSheet Viewer`** — read-only. The user can open and look at documents (all tabs, Find, Reviews
   list, exports, Generate Report), but cannot change the XML or the Sketchpad: New, Save, Save As,
@@ -707,5 +712,5 @@ export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Gene
 xml/              XSD schemas defining the ExposureSheet document format, and the schema architecture document (.docx)
 examples/         Sample .xml / .xsd / .json documents
 tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA, Keycloak setup
-doc/              XDTS file format reference and XML validation notes
+doc/              XDTS file format reference, XML validation notes, release notes, and the User and Role Management guide
 ```
