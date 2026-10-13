@@ -58,7 +58,7 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
 - **PDF export** — a full document report (**Generate Report**) or just the Exposure Sheet
   grid as a table (**Export XSheet**); see [XSheet menu](#xsheet-menu) below.
 - **XDTS JSON export** — converts the current ExposureSheet document to an XDTS-Extended JSON
-  timesheet (see [`tools/`](tools/) for the reverse direction and the older/legacy XDTS format).
+  timesheet (see [Converting to and from XDTS](#converting-to-and-from-xdts) for the reverse direction and the older/legacy XDTS format).
 - **File management** — Open/Save/Save As with a local file browser, an unsaved-changes prompt
   on Close, and a modified indicator (`*`) in the filename label.
 
@@ -145,8 +145,31 @@ For a fuller description of the Keycloak integration and of what each role allow
 [`doc/User-Role_Management.docx`](doc/User-Role_Management.docx).
 
 The app asks you to log in first. Users sign in against a **Keycloak** server (realm **`mlw`**),
-which provides any number of users and their roles. Set it up with these environment variables
-(in `.env`, which `compose.yaml` passes through):
+which provides any number of users and their roles; there is no longer a single shared account.
+
+**How logging in works**
+
+1. The login page takes a user name and password and passes them to Keycloak's token endpoint for
+   the realm (the OpenID Connect *direct access grant*, through the public client `mlw-xsheet`).
+   The password is not kept.
+2. Keycloak's answer decides what happens:
+
+   | Keycloak says | Result |
+   |---|---|
+   | The user name and password are right | The user is logged in, with the name and roles Keycloak reports. |
+   | They are wrong | The login is refused, after a short delay. This is final: the built-in account is **not** tried while Keycloak is answering. |
+   | Right password, but a required action is pending (a temporary password, or *Update Password*) | The **Change Password** dialog opens (see [Changing a required password](#changing-a-required-password)). |
+   | No answer: Keycloak is off (`MLW_KEYCLOAK_URL` empty), unreachable, or times out | The built-in fallback account (`admin`) can log in (see **Fallback account** below). |
+
+3. The user's roles (realm roles and client roles) come with the login and decide what the app lets
+   them do: **XSheet Viewer** is read-only, **XSheet Reviewer** adds reviews and the Sketchpad,
+   **XSheet Editor** (or `admin`) can do everything, and the administrator role may also change the
+   idle time-out (see [Roles](#roles)). They are read once, at login, so a change made in
+   Keycloak applies from the user's next login.
+4. The login lasts until **Logout** or the idle time-out. The user's name is used for the Profile
+   dialog, the pop-up log, and as the default reviewer of new reviews.
+
+Set Keycloak up with these environment variables (in `.env`, which `compose.yaml` passes through):
 
 | Variable | Meaning |
 |---|---|
@@ -643,6 +666,68 @@ the combined chord isn't claimed by either.)
 |---|---|
 | About | Show the app name, author, version, and a link to more information, with the license in a scrollable tab. |
 | Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. Click a review to go to it: on the XSheet tab, the grid scrolls to its frame and selects it (the run's row, if the frame is in a collapsed run); on the XML tab, the editor scrolls to its `<Review>` element and the Hierarchy tree selects it. Click a review's ✏️ to edit its ID, frame, reviewer, status and comment, or **Delete** it; **Add Review** adds one, prefilled with the next free `RV###` ID, the frame selected in the XSheet, you as the reviewer, and **Pending**. IDs must be valid XML names and not already used by another review, audio track or asset (they share one ID space). The first review adds `<Reviews>` after `<Timeline>`, and deleting the last one removes it, as the schema requires. Each change is one ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against the schema, and the list and the grid's Tech. Notes update straight away. Add Review is available to the **XSheet Reviewer** and **XSheet Editor** roles; a Reviewer can edit or delete only their own reviews (the **Reviewer** field is fixed to their user name), and an **XSheet Viewer** can only read the list (see [Roles](#roles)). |
+
+## Converting to and from XDTS
+
+XDTS is the timesheet format of OpenToonz-style tools. An ExposureSheet can be converted to XDTS
+JSON and back, so that work started in one tool can continue in the other. **File > Export > Export
+XDTS** does the forward conversion from the app, writing an *XDTS-Extended* JSON timesheet; the
+`tools/` folder has command-line converters for both directions and for two XDTS flavours:
+
+| Flavour | ExposureSheet to XDTS | XDTS to ExposureSheet | JSON Schema |
+|---|---|---|---|
+| **XDTS-Extended** (the one the app exports) | `tools/xsheet_to_xdts_extended.py` | `tools/xdts_extended_to_xsheet.py` | `tools/xdts-extended.schema.json` |
+| **Legacy XDTS** (fieldId / track / value) | `tools/xsheet_to_xdts.py` | `tools/xdts_to_xsheet.py` | `tools/xdts-20261206.json` |
+
+```
+python3 tools/xsheet_to_xdts_extended.py examples/xsheet-exposure.xml -o scene.xdts.json --validate
+python3 tools/xdts_extended_to_xsheet.py scene.xdts.json -o scene.xml --project-id SHOW001 --validate
+python3 tools/xsheet_to_xdts.py examples/xsheet-exposure.xml -o scene.legacy.json --validate
+python3 tools/xdts_to_xsheet.py scene.legacy.json -o scene.xml --validate
+```
+
+Each converter writes next to its input unless `-o` is given, and `--validate` checks the result:
+the JSON against its schema, the XML against `xml/xsheet-core.xsd`. `--indent N` sets the JSON
+indentation (0 for compact), and the legacy exporter's `--xdts-version {5,10}` sets the `version`
+field it writes (10 by default).
+
+**ExposureSheet to XDTS-Extended** (`xsheet_to_xdts_extended.py`, also used by the app):
+
+- **Layers** — each `<Layer>` becomes an entry in `layers`, bottom to top by `zOrder`, with its
+  `type` (`character`, `background` or `effects`) read from its asset's category. The timeline only
+  records frames where something changes, so each layer becomes a list of exposure runs
+  `{frame, cell, exposure}`: a cel is held from the frame it appears until it changes or drops out.
+- **Notes** — each frame's `<Notes>` becomes `marks` (`TYPE: note`, several joined by `; `).
+- **Camera and audio** — camera keyframes become `camera` entries (position, zoom, rotation, tilt),
+  and each `<AudioRef>` an `audio` entry with its file and length in frames.
+- **Production** — `SceneID`, `ShotID` and `FrameRate` become `scene`, `cut` and `frameRate`.
+- **Not carried** — dialogue, camera moves, ProjectID, SequenceID, Title, reviews, version control
+  and the OTIO mapping have no place in the extended schema, and are dropped.
+
+**XDTS-Extended to ExposureSheet** (`xdts_extended_to_xsheet.py`) reverses that: each layer becomes
+a `<Layer>` with a generated asset, each mark a frame's `<Notes>`, each audio entry a real audio
+track and `<AudioRef>`, and camera entries `<Keyframe>`s. A cel that looks like a 3D scene file
+(`.usd`, `.abc`, `.fbx` …) becomes a 3D layer. What XDTS-Extended cannot hold is filled with clearly
+labelled placeholders so the result is still schema-valid: `--project-id` and `--sequence-id`
+(default `UNKNOWN`), `--scene-id`, `--shot-id`, `--title`, `--camera-name` and `--frame-rate`
+override them, and a comment at the top of the file lists what was synthesized.
+
+**Legacy XDTS** works the same way but with a looser fit. Going to XDTS (`xsheet_to_xdts.py`), the
+`cut` and `scene` header fields must be 1–4 digits, so the trailing digits of ShotID and SceneID are
+used; each layer becomes a track of the *Cell* field (only cel changes are written, a layer dropping
+out as a null cell); dialogue goes in the *Dialog* field as `[phoneme, text]`; and camera moves go in
+the *Camerawork* field as text. Audio, notes, reviews, version control and numeric camera keyframes are
+dropped. Coming back (`xdts_to_xsheet.py`), tracks become layers, dialog entries `<Dialogue>`, and
+camerawork text `<CameraMove>`s; the sections XDTS lacks (project and sequence IDs, frame rate
+(`--frame-rate`, default 24), audio tracks, reviews, version history, one camera keyframe) are
+filled with placeholders. A file with several timetables is converted one XML file per table into the
+`-o` directory, or a single one with `--index N`.
+
+Because the formats differ, a round trip through XDTS does not reproduce the original ExposureSheet:
+what XDTS cannot hold is lost on the way out, and placeholders stand in for it on the way back. Use
+the converters to exchange the exposure data (layers, cels, timing, notes, camera and audio cues), and
+keep the ExposureSheet XML as the master. (The OCA converters below, by contrast, keep the extra data
+in OCA's metadata and restore it.)
 
 ## Converting to and from Open Cel Animation (OCA)
 
