@@ -145,10 +145,12 @@ which provides any number of users and their roles. Set it up with these environ
 | `MLW_KEYCLOAK_ADMIN_ROLE` | The realm or client role that makes a user an administrator; default `admin`. |
 | `MLW_KEYCLOAK_VERIFY_TLS` | `0` to accept a self-signed certificate. |
 | `MLW_KEYCLOAK_TIMEOUT` | Seconds to wait for Keycloak; default 5. |
+| `MLW_KEYCLOAK_ADMIN_CLIENT_ID` | The client whose service account sets new passwords (see [Changing a required password](#changing-a-required-password)); default `mlw-xsheet-admin`. |
+| `MLW_KEYCLOAK_ADMIN_CLIENT_SECRET` | That client's secret, printed by `tools/keycloak_setup.py`. Empty turns the Change Password dialog off. |
 
 **Setting up Keycloak.** `tools/keycloak_setup.py` creates what the app needs in the server: the
-realm, a public client (`mlw-xsheet`) with Direct access grants, and the `admin` realm role, and
-optionally a first user. It uses only the Python standard library and can be run again safely;
+realm, a public client (`mlw-xsheet`) with Direct access grants, the `admin` realm role, a
+confidential client (`mlw-xsheet-admin`) for password changes, and optionally a first user. It uses only the Python standard library and can be run again safely;
 anything that already exists is left alone.
 
 ```sh
@@ -164,7 +166,8 @@ python3 tools/keycloak_setup.py --app-url http://mlw-keycloak:8080
 ```
 
 Other options: `--realm`, `--client-id`, `--admin-role`, `--user-password` (or
-`KEYCLOAK_USER_PASSWORD`), `--user-permanent`. It ends by printing the `MLW_KEYCLOAK_*` lines to
+`KEYCLOAK_USER_PASSWORD`), `--user-permanent`, `--admin-client-id`, `--no-admin-client` (don't create
+the password-change client). It ends by printing the `MLW_KEYCLOAK_*` lines to
 put in `.env` (copy `.env.example`). The container must be able to reach Keycloak: in
 development, `compose.override.yaml` joins the `mlw-platform_default` network, so the URL there
 is `http://mlw-keycloak:8080`, not `localhost:8180`.
@@ -193,6 +196,23 @@ Keycloak password is not retried against the built-in account.
   there's no one to ask then, your unsaved changes are kept as a draft and come back when you log
   in again.
 - A wrong password is rejected after a short delay, to slow down guessing.
+
+#### Changing a required password
+
+Keycloak can require a user to choose a new password before their next login (a temporary password,
+or the *Update Password* required action). When the right password is entered for such a user, the
+login page opens a **Change Password** dialog instead of refusing the login. The user enters the new
+password twice (it must differ from the current one); **Cancel** leaves them logged out. The app
+checks the current password again and sets the new one in Keycloak, as a permanent password,
+clears the required action, and logs the user in. Keycloak's password policy applies, and a
+rejection is shown in the dialog.
+
+This needs `MLW_KEYCLOAK_ADMIN_CLIENT_SECRET`: the app sets the password through the
+`mlw-xsheet-admin` client, a confidential client whose service account may only manage users (nobody
+can log in with it). `tools/keycloak_setup.py` creates it and prints the secret. It only ever changes
+the password of a user who has the required action pending. Without the secret, the user is told
+to change their password in Keycloak. If the account needs something else first (such as a missing
+e-mail address), the login says that has to be done in Keycloak.
 
 ### File access
 
