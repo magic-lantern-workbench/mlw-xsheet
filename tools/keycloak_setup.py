@@ -25,8 +25,10 @@
 #
 
 """Set up a Keycloak server for mlw-xsheet's login (see auth.py): the realm,
-a public client with Direct access grants, the administrator role, and
-optionally a first user. It can be run again safely: whatever already exists
+a public client with Direct access grants, the administrator role, a
+confidential client (mlw-xsheet-admin) whose service account may manage
+users, so a user Keycloak requires to change their password can do so when
+logging in, and optionally a first user. It can be run again safely: whatever already exists
 is left as it is.
 
     python3 tools/keycloak_setup.py --url http://localhost:8180 --admin-user admin
@@ -122,6 +124,33 @@ def ensure_client(kc: Admin, realm: str, client_id: str) -> None:
     print(f'created client {client_id} (public, direct access grants)')
 
 
+def ensure_admin_client(kc: Admin, realm: str, client_id: str) -> str:
+    """The confidential client whose service account lets the app set a new password for a user
+    Keycloak requires to change theirs. It may only manage users (and no one can log in with it).
+    Returns its secret."""
+    _, found = kc.get(f'/admin/realms/{realm}/clients?clientId={urllib.parse.quote(client_id)}')
+    if found:
+        uuid = found[0]['id']
+        print(f'client {client_id} exists (not changed)')
+    else:
+        kc.post(f'/admin/realms/{realm}/clients', {
+            'clientId': client_id, 'name': 'MLW XSheet Viewer (password changes)', 'enabled': True,
+            'protocol': 'openid-connect', 'publicClient': False, 'serviceAccountsEnabled': True,
+            'directAccessGrantsEnabled': False, 'standardFlowEnabled': False, 'implicitFlowEnabled': False})
+        _, found = kc.get(f'/admin/realms/{realm}/clients?clientId={urllib.parse.quote(client_id)}')
+        uuid = found[0]['id']
+        _, account = kc.get(f'/admin/realms/{realm}/clients/{uuid}/service-account-user')
+        _, mgmt = kc.get(f'/admin/realms/{realm}/clients?clientId=realm-management')
+        roles = []
+        for name in ('manage-users', 'view-users', 'query-users'):
+            _, role = kc.get(f"/admin/realms/{realm}/clients/{mgmt[0]['id']}/roles/{name}")
+            roles.append(role)
+        kc.post(f"/admin/realms/{realm}/users/{account['id']}/role-mappings/clients/{mgmt[0]['id']}", roles)
+        print(f'created client {client_id} (service account that can manage users)')
+    _, secret = kc.get(f'/admin/realms/{realm}/clients/{uuid}/client-secret')
+    return secret['value']
+
+
 def ensure_role(kc: Admin, realm: str, role: str) -> None:
     status, _ = kc.get(f'/admin/realms/{realm}/roles/{urllib.parse.quote(role)}')
     if status == 404:
@@ -161,6 +190,11 @@ def main(argv=None) -> int:
     ap.add_argument('--realm', default='mlw', help='realm to use or create (default %(default)s)')
     ap.add_argument('--client-id', default='mlw-xsheet', help='client to create (default %(default)s)')
     ap.add_argument('--admin-role', default='admin', help='administrator role to create (default %(default)s)')
+    ap.add_argument('--admin-client-id', default='mlw-xsheet-admin',
+                    help='client for password changes (default %(default)s)')
+    ap.add_argument('--no-admin-client', action='store_true',
+                    help="don't create that client (users Keycloak requires to change their password then "
+                         "have to do it in Keycloak)")
     ap.add_argument('--user', help='also create this user')
     ap.add_argument('--user-password', help='its password (else KEYCLOAK_USER_PASSWORD, else asked for)')
     ap.add_argument('--user-permanent', action='store_true', help="don't make the user change the password at first login")
@@ -180,6 +214,7 @@ def main(argv=None) -> int:
         ensure_realm(kc, args.realm)
         ensure_client(kc, args.realm, args.client_id)
         ensure_role(kc, args.realm, args.admin_role)
+        admin_secret = None if args.no_admin_client else ensure_admin_client(kc, args.realm, args.admin_client_id)
         if args.user:
             ensure_user(kc, args.realm, args.user, user_password, not args.user_permanent,
                         args.admin_role if args.user_admin else None)
@@ -190,6 +225,10 @@ def main(argv=None) -> int:
     print(f'MLW_KEYCLOAK_URL={args.app_url or args.url}')
     print(f'MLW_KEYCLOAK_REALM={args.realm}')
     print(f'MLW_KEYCLOAK_CLIENT_ID={args.client_id}')
+    if admin_secret:
+        if args.admin_client_id != 'mlw-xsheet-admin':
+            print(f'MLW_KEYCLOAK_ADMIN_CLIENT_ID={args.admin_client_id}')
+        print(f'MLW_KEYCLOAK_ADMIN_CLIENT_SECRET={admin_secret}')
     if args.admin_role != 'admin':
         print(f'MLW_KEYCLOAK_ADMIN_ROLE={args.admin_role}')
     return 0

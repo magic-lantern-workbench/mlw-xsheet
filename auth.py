@@ -45,6 +45,13 @@ Keycloak settings come from the environment:
                               administrator of this server; default "admin".
   MLW_KEYCLOAK_VERIFY_TLS:    "0" to accept a self-signed certificate.
   MLW_KEYCLOAK_TIMEOUT:       seconds to wait for Keycloak; default 5.
+  MLW_KEYCLOAK_ADMIN_CLIENT_ID / MLW_KEYCLOAK_ADMIN_CLIENT_SECRET:
+                              a confidential client of the realm with a service
+                              account that may manage users (tools/keycloak_setup.py
+                              creates it; default id "mlw-xsheet-admin"). It lets a
+                              user whose password Keycloak requires them to change
+                              set the new one at login. Without the secret, such a
+                              user is told to change it in Keycloak.
 
 The built-in account (the fallback) is the one below.
 
@@ -97,6 +104,9 @@ KEYCLOAK_CLIENT_ID = (os.environ.get('MLW_KEYCLOAK_CLIENT_ID') or 'mlw-xsheet').
 KEYCLOAK_CLIENT_SECRET = os.environ.get('MLW_KEYCLOAK_CLIENT_SECRET') or ''
 ADMIN_ROLE = (os.environ.get('MLW_KEYCLOAK_ADMIN_ROLE') or 'admin').strip()
 KEYCLOAK_VERIFY_TLS = (os.environ.get('MLW_KEYCLOAK_VERIFY_TLS') or '1').strip().lower() not in ('0', 'false', 'no')
+ADMIN_CLIENT_ID = (os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_ID') or 'mlw-xsheet-admin').strip()
+ADMIN_CLIENT_SECRET = os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_SECRET') or ''
+NOT_SET_UP = 'Account is not fully set up'  # Keycloak's answer to the right password, with an action still required
 try:
     KEYCLOAK_TIMEOUT = float(os.environ.get('MLW_KEYCLOAK_TIMEOUT') or 5)
 except ValueError:
@@ -198,7 +208,8 @@ def _profile_from_claims(claims: dict) -> dict:
 async def keycloak_login(username: str, password: str) -> tuple:
     """Ask Keycloak to check a user name and password. Returns
     ('ok', {'username', 'roles'}), ('denied', None) when Keycloak says no, or
-    ('unreachable', None) when it can't be asked or gives no sensible answer."""
+    ('setup', None) when the password is right but Keycloak requires something of the user first (such as a
+    new password), or ('unreachable', None) when it can't be asked or gives no sensible answer."""
     url = f'{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token'
     data = {'grant_type': 'password', 'client_id': KEYCLOAK_CLIENT_ID, 'username': username,
             'password': password, 'scope': 'openid'}
@@ -215,8 +226,13 @@ async def keycloak_login(username: str, password: str) -> tuple:
             error = response.json().get('error', '')
         except Exception:
             error = ''
-        if error == 'invalid_grant':  # wrong user name or password
-            return 'denied', None
+        if error == 'invalid_grant':
+            try:
+                description = response.json().get('error_description', '')
+            except Exception:
+                description = ''
+            # (Keycloak checks the password before it looks at what the account still needs)
+            return ('setup' if description == NOT_SET_UP else 'denied'), None
         _record(f'Keycloak refused the request ({error or response.status_code}); check the client settings')
         return 'unreachable', None
     if response.status_code != 200:
@@ -230,8 +246,89 @@ async def keycloak_login(username: str, password: str) -> tuple:
                   'profile': _profile_from_claims(claims)}
 
 
+def password_change_available() -> bool:
+    return keycloak_enabled() and bool(ADMIN_CLIENT_SECRET)
+
+
+def _kc_url(path: str) -> str:
+    return f'{KEYCLOAK_URL}{path}'
+
+
+async def _admin_call(client, token, method, path, **kwargs):
+    return await client.request(method, _kc_url(f'/admin/realms/{KEYCLOAK_REALM}{path}'),
+                                headers={'Authorization': f'Bearer {token}'}, **kwargs)
+
+
+async def _service_token(client) -> str:
+    response = await client.post(
+        _kc_url(f'/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token'),
+        data={'grant_type': 'client_credentials', 'client_id': ADMIN_CLIENT_ID, 'client_secret': ADMIN_CLIENT_SECRET})
+    response.raise_for_status()
+    return response.json()['access_token']
+
+
+async def _find_user(client, token, username: str):
+    response = await _admin_call(client, token, 'GET', '/users', params={'username': username, 'exact': 'true'})
+    response.raise_for_status()
+    users = response.json()
+    return users[0] if users else None
+
+
+async def password_change_required(username: str) -> bool:
+    """Whether Keycloak holds an UPDATE_PASSWORD action for this user (only asked
+    after their password was accepted)."""
+    if not password_change_available():
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=KEYCLOAK_TIMEOUT, verify=KEYCLOAK_VERIFY_TLS) as client:
+            user = await _find_user(client, await _service_token(client), username)
+        return bool(user) and 'UPDATE_PASSWORD' in (user.get('requiredActions') or [])
+    except Exception as exc:
+        _record(f'Keycloak: could not check the required actions ({type(exc).__name__})')
+        return False
+
+
+async def change_password(username: str, current: str, new: str) -> str | None:
+    """Set a new password in Keycloak for a user it requires to change theirs.
+    Their current password is checked first, and only a user with the
+    UPDATE_PASSWORD action pending can be changed this way. Returns None when it
+    worked, else the reason it didn't."""
+    if not password_change_available():
+        return 'Changing the password here is not set up; change it in Keycloak'
+    outcome, _ = await keycloak_login(username, current)
+    if outcome == 'denied':
+        return 'The current password is incorrect'
+    if outcome == 'unreachable':
+        return 'Keycloak could not be reached'
+    try:
+        async with httpx.AsyncClient(timeout=KEYCLOAK_TIMEOUT, verify=KEYCLOAK_VERIFY_TLS) as client:
+            token = await _service_token(client)
+            user = await _find_user(client, token, username)
+            actions = (user or {}).get('requiredActions') or []
+            if not user or 'UPDATE_PASSWORD' not in actions:
+                return 'Keycloak does not require this user to change the password'
+            response = await _admin_call(client, token, 'PUT', f"/users/{user['id']}/reset-password",
+                                         json={'type': 'password', 'value': new, 'temporary': False})
+            if response.status_code == 400:  # e.g. the realm's password policy
+                try:
+                    detail = response.json().get('error_description') or response.json().get('errorMessage')
+                except Exception:
+                    detail = None
+                return detail or 'Keycloak did not accept the new password'
+            response.raise_for_status()
+            user['requiredActions'] = [a for a in actions if a != 'UPDATE_PASSWORD']
+            response = await _admin_call(client, token, 'PUT', f"/users/{user['id']}", json=user)
+            response.raise_for_status()
+    except Exception as exc:
+        _record(f'Keycloak: password change failed ({type(exc).__name__})')
+        return 'Keycloak could not change the password'
+    _record(f'Password changed in Keycloak for {username}')
+    return None
+
+
 async def authenticate(username: str, password: str) -> dict | None:
-    """Check a login. Returns {'username', 'roles', 'source'} or None.
+    """Check a login. Returns {'username', 'roles', 'source', 'profile'}, or None, or
+    {'update_password': True} when Keycloak accepted the password but requires a new one.
     Keycloak decides when it's reachable; the built-in account only when it isn't."""
     if keycloak_enabled():
         outcome, who = await keycloak_login(username, password)
@@ -239,6 +336,10 @@ async def authenticate(username: str, password: str) -> dict | None:
             return {**who, 'source': 'keycloak'}
         if outcome == 'denied':
             return None
+        if outcome == 'setup':
+            if await password_change_required(username):
+                return {'update_password': True}
+            return {'setup_required': True}
     if check_credentials(username, password):
         return {'username': _credential()['username'], 'roles': [ADMIN_ROLE], 'source': 'local', 'profile': {}}
     return None
@@ -338,18 +439,73 @@ def login_page(redirect_to: str = '/', reason: str = ''):
     if session_is_active(store):
         return RedirectResponse(_safe_redirect(redirect_to))
 
+    def sign_in(who):
+        store['username'] = who['username']
+        store['roles'] = who['roles']
+        store['profile'] = who['profile']
+        store['login_time'] = time.time()
+        store['auth_source'] = who['source']
+        store['authenticated'] = True
+        store['last_activity'] = time.time()
+        _record('Logged in')
+        ui.navigate.to(_safe_redirect(redirect_to))
+
+    def ask_for_new_password(name: str, current: str):
+        """The Change Password dialog, for a user Keycloak requires to change their password.
+        It can't be dismissed except with Cancel, which leaves them logged out."""
+        async def change(_=None):
+            if not new_pw.value:
+                message.text = 'Enter a new password'
+            elif new_pw.value != confirm_pw.value:
+                message.text = "The new passwords don't match"
+            elif new_pw.value == current:
+                message.text = 'Choose a password different from the current one'
+            else:
+                change_button.disable()
+                problem = await change_password(name, current, new_pw.value)
+                change_button.enable()
+                if problem:
+                    message.text = problem
+                    return
+                dialog.close()
+                who = await authenticate(name, new_pw.value)
+                if who and 'roles' in who:
+                    ui.notify('Password changed', color='positive')
+                    sign_in(who)
+                else:
+                    ui.notify('Password changed, but Keycloak requires more of your account before you can '
+                              'log in; finish that in Keycloak', color='warning')
+                return
+            new_pw.value = confirm_pw.value = ''
+
+        with ui.dialog().props('persistent') as dialog, \
+                titled_card('Change Password', classes='w-[360px] max-w-full', body_classes='gap-2'):
+            ui.label(f'Keycloak requires {name} to choose a new password before logging in.') \
+                .classes('text-sm text-gray-500')
+            new_pw = ui.input('New password', password=True, password_toggle_button=True).classes('w-full') \
+                .props('autofocus')
+            confirm_pw = ui.input('Confirm new password', password=True, password_toggle_button=True) \
+                .classes('w-full').on('keydown.enter', change)
+            message = ui.label('').classes('text-sm text-negative')
+            with ui.row().classes('w-full justify-end mt-2 gap-2'):
+                ui.button('Cancel', on_click=dialog.close).props('outline size=sm')
+                change_button = ui.button('Change Password', on_click=change).props('size=sm')
+        dialog.open()
+
     async def try_login(_=None):
-        who = await authenticate((username.value or '').strip(), password.value or '')
+        name = (username.value or '').strip()
+        who = await authenticate(name, password.value or '')
+        if who and who.get('update_password'):
+            current, password.value = password.value or '', ''
+            ask_for_new_password(name, current)
+            return
+        if who and who.get('setup_required'):
+            password.value = ''
+            ui.notify('Keycloak requires something more of this account before it can log in, '
+                      'and that can only be done in Keycloak', color='warning')
+            return
         if who:
-            store['username'] = who['username']
-            store['roles'] = who['roles']
-            store['profile'] = who['profile']
-            store['login_time'] = time.time()
-            store['auth_source'] = who['source']
-            store['authenticated'] = True
-            store['last_activity'] = time.time()
-            _record('Logged in')
-            ui.navigate.to(_safe_redirect(redirect_to))
+            sign_in(who)
             return
         await asyncio.sleep(1)  # slow down password guessing
         password.value = ''
