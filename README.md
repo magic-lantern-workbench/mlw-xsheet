@@ -42,6 +42,10 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
     at a glance (e.g. `Asset: id="BG001"` instead of three indistinguishable "Asset" nodes).
 - **Exposure Sheet grid** (XSheet tab) — one row per frame, one column per animation layer,
   plus Camera, Dialogue, Audio, and Notes. See [XSheet tab](#xsheet-tab) below for details.
+- **Sketchpad** — draw on the exposure sheet (XSheet > Sketchpad) with splines, polylines, rectangles,
+  circles and text. The Select tool edits a shape's points, or selects **several shapes at once** by
+  dragging a rectangle across them (Shift+click adds or removes one) and moves, recolours or deletes
+  them together; see the [XSheet menu](#xsheet-menu).
 - **Pretty-print / Format** — reformats the current XML/XSD with consistent indentation, with
   indent size and tabs-vs-spaces configurable in Preferences. Preserves comments (including
   ones before the root element) and namespace prefixes.
@@ -621,6 +625,7 @@ no document open, the editor is empty and can't be edited.
 - `Ctrl+Alt+1` — Switch to the XSheet tab (always the first)
 - `Ctrl+Alt+2` — Switch to the second tab (SVG while the Sketchpad is on, otherwise XML)
 - `Ctrl+Alt+3` — Switch to the third tab (XML, while the Sketchpad is on and the XML Editor is too)
+- `Shift`+click (Sketchpad, Select tool) — add a shape to the selection, or take it out; `Delete` removes the selected shapes
 - `Ctrl+Alt+Page Up` / `Ctrl+Alt+Page Down` — On the XSheet tab, select the first frame of the previous / next group of frames and scroll to it. Groups are the document's Frame Rate in frames, counted from the first frame (24 at 24 fps: 1–24, 25–48, …; from frame 30, Page Down goes to 49 and Page Up to 1). It stops at the first and last groups. Needs a Frame Rate in the Production info.
 
 (`Ctrl+Z` and `Ctrl+Y` are global — they undo and redo the last change on any tab, including the SVG tab, with a warning if it was made on another tab; in a plain text box in a dialog they undo that box's typing.)
