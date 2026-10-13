@@ -1903,6 +1903,54 @@ def show_about_dialog():
     about_dialog.open()
 
 
+def show_profile_dialog():
+    """Show the signed-in user's profile: who they are, how they signed in
+    (Keycloak, or the built-in account) and their roles."""
+    info = auth.current_profile()
+    profile = info['profile']
+    keycloak = info['source'] == 'keycloak'
+    rows = [('User name', info['username'])]
+    if keycloak:
+        full_name = profile.get('name') or ' '.join(
+            part for part in (profile.get('first_name'), profile.get('last_name')) if part)
+        email = profile.get('email') or ''
+        if email and profile.get('email_verified') is not None:
+            email += ' (verified)' if profile['email_verified'] else ' (not verified)'
+        rows += [('Name', full_name), ('E-mail', email),
+                 ('Signed in with', f"Keycloak, realm {profile.get('realm') or auth.KEYCLOAK_REALM}"),
+                 ('Client', profile.get('client') or auth.KEYCLOAK_CLIENT_ID),
+                 ('Keycloak ID', profile.get('id') or '')]
+    else:
+        rows.append(('Signed in with', 'The built-in administrative account'
+                     + ('' if not auth.keycloak_enabled() else ' (Keycloak was not used)')))
+    if info['login_time']:
+        rows.append(('Signed in at', time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(info['login_time']))))
+    rows.append(('Administrator', 'Yes' if auth.is_admin() else 'No'))
+    with ui.dialog() as profile_dialog, \
+            titled_card('Profile', classes='w-[520px] max-w-full', body_classes='gap-2'):
+        with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
+            for label, value in rows:
+                ui.label(label).classes('text-gray-500')
+                ui.label(value or '—').classes('break-all')
+            ui.label('Realm roles' if keycloak else 'Roles').classes('text-gray-500')
+            with ui.row().classes('gap-1'):
+                roles = profile.get('realm_roles', info['roles']) if keycloak else info['roles']
+                if roles:
+                    for role in roles:
+                        ui.badge(role, color='primary' if role == auth.ADMIN_ROLE else 'grey').props('outline')
+                else:
+                    ui.label('none')
+            client_roles = profile.get('client_roles') or {}
+            if client_roles:
+                ui.label('Client roles').classes('text-gray-500')
+                with ui.column().classes('gap-0'):
+                    for client, names in client_roles.items():
+                        ui.label(f"{client}: {', '.join(names)}")
+        with ui.row().classes('w-full justify-end mt-2'):
+            ui.button('Close', on_click=profile_dialog.close).props('outline size=sm')
+    profile_dialog.open()
+
+
 # --- helpers ---
 def find_xml_files():
     files = []
@@ -7534,6 +7582,7 @@ window.mlwSelectRange = function(elementId, from, to) {
             ui.tooltip(f'Logged in as {auth.current_username()}') \
                 .props('anchor="center left" self="center right" :offset="[8, 0]"')
             with ui.menu().props('anchor="bottom right" self="top right"'):
+                ui.menu_item('Profile', on_click=lambda _: show_profile_dialog())
                 ui.menu_item('Logout', on_click=lambda _: log_out_with_check())
 
     with ui.footer():

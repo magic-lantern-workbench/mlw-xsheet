@@ -60,6 +60,8 @@ Whether a browser is logged in is kept in its app.storage.user, so all of its
 tabs share one login:
   'authenticated':  True while logged in.
   'username':       who logged in (their Keycloak user name, or the built-in account's).
+  'profile':        what Keycloak told us about them (see _profile_from_claims()).
+  'login_time':     when they logged in (epoch seconds).
   'roles':          their roles (the built-in account has the administrator role).
   'auth_source':    'keycloak' or 'local' (the built-in account).
   'last_activity':  time (epoch seconds) of the latest keyboard/mouse/touch
@@ -135,6 +137,14 @@ def current_roles() -> list:
     return list(_store().get('roles') or [])
 
 
+def current_profile() -> dict:
+    """Who is signed in, for the Profile dialog: {'username', 'source', 'roles', 'profile', 'login_time'}."""
+    store = _store()
+    return {'username': current_username(), 'source': store.get('auth_source') or '',
+            'roles': current_roles(), 'profile': dict(store.get('profile') or {}),
+            'login_time': store.get('login_time')}
+
+
 def is_admin() -> bool:
     """Whether the logged-in user may change server-wide settings."""
     return ADMIN_ROLE in current_roles()
@@ -173,6 +183,18 @@ def _roles_from_claims(claims: dict) -> list:
     return sorted(set(roles))
 
 
+def _profile_from_claims(claims: dict) -> dict:
+    """The user details to show in the Profile dialog, from the access token's claims."""
+    realm = sorted((claims.get('realm_access') or {}).get('roles') or [])
+    clients = {name: sorted((info or {}).get('roles') or [])
+               for name, info in (claims.get('resource_access') or {}).items()}
+    return {'id': claims.get('sub') or '', 'name': claims.get('name') or '',
+            'first_name': claims.get('given_name') or '', 'last_name': claims.get('family_name') or '',
+            'email': claims.get('email') or '', 'email_verified': claims.get('email_verified'),
+            'realm_roles': realm, 'client_roles': {k: v for k, v in clients.items() if v},
+            'realm': KEYCLOAK_REALM, 'client': KEYCLOAK_CLIENT_ID}
+
+
 async def keycloak_login(username: str, password: str) -> tuple:
     """Ask Keycloak to check a user name and password. Returns
     ('ok', {'username', 'roles'}), ('denied', None) when Keycloak says no, or
@@ -204,7 +226,8 @@ async def keycloak_login(username: str, password: str) -> tuple:
         claims = _token_claims(response.json()['access_token'])
     except Exception:
         return 'unreachable', None
-    return 'ok', {'username': claims.get('preferred_username') or username, 'roles': _roles_from_claims(claims)}
+    return 'ok', {'username': claims.get('preferred_username') or username, 'roles': _roles_from_claims(claims),
+                  'profile': _profile_from_claims(claims)}
 
 
 async def authenticate(username: str, password: str) -> dict | None:
@@ -217,7 +240,7 @@ async def authenticate(username: str, password: str) -> dict | None:
         if outcome == 'denied':
             return None
     if check_credentials(username, password):
-        return {'username': _credential()['username'], 'roles': [ADMIN_ROLE], 'source': 'local'}
+        return {'username': _credential()['username'], 'roles': [ADMIN_ROLE], 'source': 'local', 'profile': {}}
     return None
 
 
@@ -320,6 +343,8 @@ def login_page(redirect_to: str = '/', reason: str = ''):
         if who:
             store['username'] = who['username']
             store['roles'] = who['roles']
+            store['profile'] = who['profile']
+            store['login_time'] = time.time()
             store['auth_source'] = who['source']
             store['authenticated'] = True
             store['last_activity'] = time.time()
