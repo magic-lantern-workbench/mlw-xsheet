@@ -12,7 +12,9 @@ production info, asset catalog, audio tracks, camera moves/keyframes, per-frame 
 timeline, review notes, revision history, and an OTIO track mapping. The document format is
 defined by a modular set of XML Schemas in [`xml/`](xml/) (`xsheet-core.xsd` plus
 `xsheet-assets.xsd`, `xsheet-audio.xsd`, `xsheet-camera.xsd`, `xsheet-review.xsd`,
-`xsheet-otio.xsd`, `xsheet-versioning.xsd`).
+`xsheet-otio.xsd`, `xsheet-versioning.xsd`). The design of the schema set — how the modules
+fit together, how references work, and a worked example with diagrams — is described in
+[`XSheet_XML-Schema_Architecture.docx`](xml/XSheet_XML-Schema_Architecture.docx).
 
 Since it's really just a schema-driven XML/XSD editor, it works for editing and validating any
 `.xml`/`.xsd` file, not only ExposureSheet documents.
@@ -677,7 +679,7 @@ app uses). An existing output file is only replaced with `--force`.
 ```
 main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, validation, Format, XDTS export
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
-xml/              XSD schemas defining the ExposureSheet document format
+xml/              XSD schemas defining the ExposureSheet document format, and the schema architecture document (.docx)
 examples/         Sample .xml / .xsd / .json documents
 tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA, Keycloak setup
 doc/              XDTS file format reference and XML validation notes
