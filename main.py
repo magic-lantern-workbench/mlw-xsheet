@@ -117,6 +117,7 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
+        self.review_items = []  # items a reviewer may use too (Save, Undo, ...): disabled only for a viewer
         self.edit_items = []   # menu items that change the document: disabled for a read-only user
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
@@ -1778,7 +1779,7 @@ def show_reviews_dialog() -> None:
                 table.on('rowClick', go_to)
                 table.on('edit_review', lambda e: show_review_editor(e.args, content.refresh))
             with ui.row().classes('w-full items-center mt-2'):
-                if is_sheet and reviews is not None and not auth.is_read_only():
+                if is_sheet and reviews is not None and auth.can_review():
                     ui.button('Add Review', icon='add', on_click=lambda: show_review_editor(None, content.refresh)) \
                         .props('outline size=sm')
                 ui.space()
@@ -1792,7 +1793,9 @@ def show_review_editor(review: dict | None, on_saved) -> None:
     with Delete for an existing one. Changes are one ordinary (undoable)
     edit that keeps the document schema-valid; on_saved() then refreshes the
     Reviews list."""
-    if deny_read_only('edit reviews'):
+    # a reviewer may add reviews, and edit or delete their own (those that name them as the reviewer)
+    own = review is None or (review['reviewer'] or '').strip() == (auth.current_username() or '').strip()
+    if deny_read_only('add reviews' if review is None else "edit or delete other reviewers' reviews", reviewer_ok=own):
         return
     import re
     import xml.etree.ElementTree as ET
@@ -1819,7 +1822,7 @@ def show_review_editor(review: dict | None, on_saved) -> None:
         dlg.close()
         sess.xsheet_refresh_in_place = True
         try:
-            _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+            _set_editor_text(new_text, reviewer_ok=True)  # undoable; marks modified; updates the tree, and the grid in place
         finally:
             sess.xsheet_refresh_in_place = False
         on_saved()
@@ -1832,6 +1835,8 @@ def show_review_editor(review: dict | None, on_saved) -> None:
             frame_input = ui.number('Frame', value=values['frame'] if isinstance(values['frame'], int) else None,
                                     min=1, step=1, format='%d').classes('w-24').props('dense')
             reviewer_input = ui.input('Reviewer', value=values['reviewer']).classes('flex-grow').props('dense')
+            if auth.access_level() == 'review':
+                reviewer_input.set_enabled(False)  # a reviewer's reviews are their own
             status_input = ui.select(REVIEW_STATUSES, value=values['status'] if values['status'] in REVIEW_STATUSES
                                      else 'Pending', label='Status').classes('w-32').props('dense')
         comment_input = ui.textarea('Comment', value=values['comment']).classes('w-full') \
@@ -1931,7 +1936,7 @@ def show_profile_dialog():
     if info['login_time']:
         rows.append(('Signed in at', time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(info['login_time']))))
     rows.append(('Administrator', 'Yes' if auth.is_admin() else 'No'))
-    rows.append(('Access', 'Read-only (viewer)' if auth.is_read_only() else 'Can edit'))
+    rows.append(('Access', {'view': 'Read-only (viewer)', 'review': 'Reviewer (reviews and Sketchpad)'}.get(auth.access_level(), 'Can edit')))
     with ui.dialog() as profile_dialog, \
             titled_card('Profile', classes='w-[520px] max-w-full', body_classes='gap-2'):
         with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
@@ -3132,12 +3137,16 @@ def notes_editing() -> dict:
     return {} if auth.is_read_only() else NOTES_EDITING
 
 
-def deny_read_only(what: str = 'change the document') -> bool:
-    """True (after saying so) if the signed-in user is limited to read-only access
-    (the XSheet Viewer role, see auth.is_read_only()) and so may not `what`."""
-    if not auth.is_read_only():
+def deny_read_only(what: str = 'change the document', reviewer_ok: bool = False) -> bool:
+    """True (after saying so) if the signed-in user may not `what`: they have only read-only
+    access (the XSheet Viewer role), or the XSheet Reviewer role and `what` is not
+    one of the things a reviewer may do (`reviewer_ok`: add reviews, use the Sketchpad,
+    save, undo). See auth.access_level()."""
+    level = auth.access_level()
+    if level == 'edit' or (level == 'review' and reviewer_ok):
         return False
-    ui.notify(f'Your role ({auth.VIEWER_ROLE}) is read-only: you cannot {what}.', color='warning')
+    role = auth.REVIEWER_ROLE if level == 'review' else auth.VIEWER_ROLE
+    ui.notify(f'Your role ({role}) is read-only: you cannot {what}.', color='warning')
     return True
 
 def _xsheet_column_default(col_id: str) -> str | None:
@@ -4192,7 +4201,7 @@ def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     if on_xsheet_tab is None:
         on_xsheet_tab = sess.main_tab == 'XSheet'
     if sess.sketchpad_item is not None:
-        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open and not auth.is_read_only())
+        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open and auth.can_review())
 
 
 def reset_sketchpad() -> None:
@@ -4297,7 +4306,7 @@ def _apply_doc_step(undo: bool) -> bool:
 
 
 async def _step_history(undo: bool) -> None:
-    if deny_read_only('undo or redo'):
+    if deny_read_only('undo or redo', reviewer_ok=True):
         return
     sess = session()
     word = 'undo' if undo else 'redo'
@@ -4450,7 +4459,7 @@ def refresh_svg_editor() -> None:
         sess.suppress_svg_editor_change = True
         sess.svg_editor.value = text
         sess.suppress_svg_editor_change = False
-    sess.svg_editor.set_enabled(sess.document_open and not auth.is_read_only())
+    sess.svg_editor.set_enabled(sess.document_open and auth.can_review())
     if sess.svg_status is not None:
         sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.'
                                  if sess.document_open else 'Open a document to see its sketch here.')
@@ -4462,7 +4471,7 @@ async def on_svg_editor_change(e) -> None:
     (see mlwSketchpad.applySVG()), unless it isn't well-formed yet -- then
     the sketch stays as it was, and a note says why."""
     sess = session()
-    if auth.is_read_only() or sess.suppress_svg_editor_change or not sess.document_open:
+    if not auth.can_review() or sess.suppress_svg_editor_change or not sess.document_open:
         return
     text = e.value if hasattr(e, 'value') else ''
     try:
@@ -4524,7 +4533,7 @@ def toggle_sketchpad(active: bool | None = None) -> None:
     off, the sketchpad is hidden and
     ignores the pointer, so nothing can be drawn and the grid works as
     usual. The sketch is kept, and shows again when it's turned back on."""
-    if active is not False and deny_read_only('use the Sketchpad'):
+    if active is not False and deny_read_only('use the Sketchpad', reviewer_ok=True):
         return
     sess = session()
     sess.sketchpad_active = (not sess.sketchpad_active) if active is None else bool(active)
@@ -5610,11 +5619,11 @@ def new_document():
     _then_with_check(start, 'Save changes before starting a new document?')
 
 
-def _set_editor_text(new_text: str):
+def _set_editor_text(new_text: str, reviewer_ok: bool = False):
     """Programmatically replace the editor contents (used by Find & Replace),
     keeping undo/redo and modified-state tracking consistent -- same pattern
     as global_undo() and global_redo()."""
-    if deny_read_only('change the document'):
+    if deny_read_only('change the document', reviewer_ok=reviewer_ok):
         return
     sess = session()
     if new_text == sess.last_editor_value:
@@ -5735,7 +5744,7 @@ def show_find_dialog():
         highlight_current()
 
     def do_replace():
-        if deny_read_only('replace text'):
+        if deny_read_only('replace text', reviewer_ok=on_svg()):
             return
         sync_tab()
         if not (0 <= state['index'] < len(state['matches'])):
@@ -5754,7 +5763,7 @@ def show_find_dialog():
         refresh_matches(anchor_pos=m.start() + len(replacement))
 
     def do_replace_all():
-        if deny_read_only('replace text'):
+        if deny_read_only('replace text', reviewer_ok=on_svg()):
             return
         sync_tab()
         pattern = build_pattern()
@@ -5808,7 +5817,7 @@ def save_file(on_saved=None):
     the file on disk no longer matches what this session last opened or
     saved -- someone else saved over it in the meantime -- ask before
     overwriting their changes."""
-    if deny_read_only('save the document'):
+    if deny_read_only('save the document', reviewer_ok=True):
         return
     sess = session()
     if not sess.current_file['path']:
@@ -5880,7 +5889,7 @@ def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
 def save_as(on_saved=None):
     """Save the editor to a newly chosen file, then call on_saved() if the
     save went through (not if the dialog or an overwrite prompt is cancelled)."""
-    if deny_read_only('save the document'):
+    if deny_read_only('save the document', reviewer_ok=True):
         return
     sess = session()
     def file_selected_callback(files):
@@ -7558,8 +7567,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                     sess.recent_menu = ui.menu().props('anchor="top end" self="top start" auto-close')
                     sess.recent_menu.on('before-show', lambda _: rebuild_recent_menu())
                 rebuild_recent_menu()
-                sess.edit_items.append(ui.menu_item('Save', on_click=lambda _: save_file()))
-                sess.edit_items.append(ui.menu_item('Save As', on_click=lambda _: save_as()))
+                sess.review_items.append(ui.menu_item('Save', on_click=lambda _: save_file()))
+                sess.review_items.append(ui.menu_item('Save As', on_click=lambda _: save_as()))
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)
@@ -7581,8 +7590,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
-                sess.edit_items.append(ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo()))
-                sess.edit_items.append(ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo()))
+                sess.review_items.append(ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo()))
+                sess.review_items.append(ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo()))
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
                 # these act on the grid, so they are disabled on the XML tab and
@@ -7642,8 +7651,11 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Profile', on_click=lambda _: show_profile_dialog())
                 ui.menu_item('Logout', on_click=lambda _: log_out_with_check())
 
-    if auth.is_read_only():  # the XSheet Viewer role: look, but don't change the XML or the Sketchpad
+    if auth.is_read_only():  # viewer and reviewer roles: don't change the XML (a reviewer may add reviews and sketch)
         for item in sess.edit_items:
+            item.set_enabled(False)
+    if not auth.can_review():
+        for item in sess.review_items:
             item.set_enabled(False)
 
     with ui.footer():

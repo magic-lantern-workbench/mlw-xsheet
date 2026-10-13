@@ -46,8 +46,12 @@ Keycloak settings come from the environment:
   MLW_KEYCLOAK_VIEWER_ROLE:   the role that limits a user to read-only access: they
                               can open and look at documents, but not change the XML
                               or the Sketchpad; default "XSheet Viewer".
+  MLW_KEYCLOAK_REVIEWER_ROLE: the role that is read-only like the viewer, but can also
+                              add reviews and use the Sketchpad (and Save them);
+                              default "XSheet Reviewer".
   MLW_KEYCLOAK_EDITOR_ROLE:   the role that allows everything; default "XSheet Editor".
-                              (Editors and administrators outrank the viewer role.)
+                              (Editors and administrators outrank the reviewer, and
+                              the reviewer outranks the viewer.)
   MLW_KEYCLOAK_VERIFY_TLS:    "0" to accept a self-signed certificate.
   MLW_KEYCLOAK_TIMEOUT:       seconds to wait for Keycloak; default 5.
   MLW_KEYCLOAK_ADMIN_CLIENT_ID / MLW_KEYCLOAK_ADMIN_CLIENT_SECRET:
@@ -113,6 +117,7 @@ ADMIN_CLIENT_ID = (os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_ID') or 'mlw-xsheet
 ADMIN_CLIENT_SECRET = os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_SECRET') or ''
 VIEWER_ROLE = (os.environ.get('MLW_KEYCLOAK_VIEWER_ROLE') or 'XSheet Viewer').strip()
 EDITOR_ROLE = (os.environ.get('MLW_KEYCLOAK_EDITOR_ROLE') or 'XSheet Editor').strip()
+REVIEWER_ROLE = (os.environ.get('MLW_KEYCLOAK_REVIEWER_ROLE') or 'XSheet Reviewer').strip()
 NOT_SET_UP = 'Account is not fully set up'  # Keycloak's answer to the right password, with an action still required
 try:
     KEYCLOAK_TIMEOUT = float(os.environ.get('MLW_KEYCLOAK_TIMEOUT') or 5)
@@ -167,13 +172,32 @@ def is_admin() -> bool:
     return ADMIN_ROLE in current_roles()
 
 
-def is_read_only() -> bool:
-    """Whether the logged-in user may only look: they have the viewer role
-    (default "XSheet Viewer") and neither the editor role ("XSheet Editor") nor
-    the administrator role. Anyone else -- the built-in account, an editor, or a
-    user with neither role -- may change documents and sketches."""
+def access_level() -> str:
+    """What the logged-in user may do: 'edit' (anything), 'review' (look, add
+    reviews and use the Sketchpad, but not change the rest of the XML) or 'view'
+    (only look). The editor and administrator roles outrank the reviewer role, and
+    that outranks the viewer role. The built-in account, and a user with none
+    of those roles, can edit."""
     roles = current_roles()
-    return VIEWER_ROLE in roles and EDITOR_ROLE not in roles and ADMIN_ROLE not in roles
+    if EDITOR_ROLE in roles or ADMIN_ROLE in roles:
+        return 'edit'
+    if REVIEWER_ROLE in roles:
+        return 'review'
+    if VIEWER_ROLE in roles:
+        return 'view'
+    return 'edit'
+
+
+def is_read_only() -> bool:
+    """Whether the logged-in user may not change the document's XML in general
+    (the viewer and reviewer roles; see can_review() for what a reviewer may do)."""
+    return access_level() != 'edit'
+
+
+def can_review() -> bool:
+    """Whether the logged-in user may add reviews and use the Sketchpad (and so
+    save them): a reviewer, or anyone who can edit."""
+    return access_level() != 'view'
 
 
 def is_local_account() -> bool:

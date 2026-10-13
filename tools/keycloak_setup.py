@@ -53,6 +53,7 @@ import urllib.parse
 import urllib.request
 
 VIEWER_ROLE = 'XSheet Viewer'   # read-only access in the app
+REVIEWER_ROLE = 'XSheet Reviewer'   # read-only, but may add reviews and use the Sketchpad
 EDITOR_ROLE = 'XSheet Editor'   # full access
 
 
@@ -201,7 +202,7 @@ def main(argv=None) -> int:
     ap.add_argument('--user', help='also create this user')
     ap.add_argument('--user-password', help='its password (else KEYCLOAK_USER_PASSWORD, else asked for)')
     ap.add_argument('--user-permanent', action='store_true', help="don't make the user change the password at first login")
-    ap.add_argument('--user-role', choices=[VIEWER_ROLE, EDITOR_ROLE], help='give the user this role (read-only or full access)')
+    ap.add_argument('--user-role', choices=[VIEWER_ROLE, REVIEWER_ROLE, EDITOR_ROLE], help='give the user this role (read-only, read-only plus reviews and the Sketchpad, or full access)')
     ap.add_argument('--user-admin', action='store_true', help='give the user the administrator role')
     ap.add_argument('--app-url', help='the address the mlw-xsheet container uses for Keycloak, for the .env lines '
                                       '(default: --url)')
@@ -219,6 +220,7 @@ def main(argv=None) -> int:
         ensure_client(kc, args.realm, args.client_id)
         ensure_role(kc, args.realm, args.admin_role)
         ensure_role(kc, args.realm, VIEWER_ROLE, 'mlw-xsheet read-only access')
+        ensure_role(kc, args.realm, REVIEWER_ROLE, 'mlw-xsheet read-only access, plus reviews and the Sketchpad')
         ensure_role(kc, args.realm, EDITOR_ROLE, 'mlw-xsheet full access')
         admin_secret = None if args.no_admin_client else ensure_admin_client(kc, args.realm, args.admin_client_id)
         if args.user:

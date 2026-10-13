@@ -27,8 +27,8 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
 ## Features
 
 - **Login with roles**: users sign in through Keycloak. A user with the **XSheet Viewer** role has
-  read-only access (nothing that changes the XML or the Sketchpad); one with **XSheet Editor** can
-  do everything. See [Roles](#roles).
+  read-only access (nothing that changes the XML or the Sketchpad); **XSheet Reviewer** adds the
+  ability to add reviews and use the Sketchpad; **XSheet Editor** can do everything. See [Roles](#roles).
 - **Two tabs**: **XSheet** (a traditional exposure-sheet grid rendered from the document) and
   **XML** (the text editor and Hierarchy tree). Your place in each — editor cursor
   line, XSheet scroll position — is remembered when you switch away and back.
@@ -149,6 +149,7 @@ which provides any number of users and their roles. Set it up with these environ
 | `MLW_KEYCLOAK_CLIENT_SECRET` | The client's secret, if it is a confidential client. |
 | `MLW_KEYCLOAK_ADMIN_ROLE` | The realm or client role that makes a user an administrator; default `admin`. |
 | `MLW_KEYCLOAK_VIEWER_ROLE` | The role that limits a user to read-only access (see [Roles](#roles)); default `XSheet Viewer`. |
+| `MLW_KEYCLOAK_REVIEWER_ROLE` | The role that is read-only like the viewer but can also add reviews and use the Sketchpad; default `XSheet Reviewer`. |
 | `MLW_KEYCLOAK_EDITOR_ROLE` | The role that allows everything; default `XSheet Editor`. |
 | `MLW_KEYCLOAK_VERIFY_TLS` | `0` to accept a self-signed certificate. |
 | `MLW_KEYCLOAK_TIMEOUT` | Seconds to wait for Keycloak; default 5. |
@@ -156,7 +157,7 @@ which provides any number of users and their roles. Set it up with these environ
 | `MLW_KEYCLOAK_ADMIN_CLIENT_SECRET` | That client's secret, printed by `tools/keycloak_setup.py`. Empty turns the Change Password dialog off. |
 
 **Setting up Keycloak.** `tools/keycloak_setup.py` creates what the app needs in the server: the
-realm, a public client (`mlw-xsheet`) with Direct access grants, the `admin`, `XSheet Viewer` and `XSheet Editor` realm roles, a
+realm, a public client (`mlw-xsheet`) with Direct access grants, the `admin`, `XSheet Viewer`, `XSheet Reviewer` and `XSheet Editor` realm roles, a
 confidential client (`mlw-xsheet-admin`) for password changes, and optionally a first user. It uses only the Python standard library and can be run again safely;
 anything that already exists is left alone.
 
@@ -173,7 +174,7 @@ python3 tools/keycloak_setup.py --app-url http://mlw-keycloak:8080
 ```
 
 Other options: `--realm`, `--client-id`, `--admin-role`, `--user-password` (or
-`KEYCLOAK_USER_PASSWORD`), `--user-permanent`, `--user-role` (`XSheet Viewer` or `XSheet Editor`, for the new user), `--admin-client-id`, `--no-admin-client` (don't create
+`KEYCLOAK_USER_PASSWORD`), `--user-permanent`, `--user-role` (`XSheet Viewer`, `XSheet Reviewer` or `XSheet Editor`, for the new user), `--admin-client-id`, `--no-admin-client` (don't create
 the password-change client). It ends by printing the `MLW_KEYCLOAK_*` lines to
 put in `.env` (copy `.env.example`). The container must be able to reach Keycloak: in
 development, `compose.override.yaml` joins the `mlw-platform_default` network, so the URL there
@@ -183,12 +184,20 @@ is `http://mlw-keycloak:8080`, not `localhost:8180`.
 
 - **`XSheet Viewer`** — read-only. The user can open and look at documents (all tabs, Find, Reviews
   list, exports, Generate Report), but cannot change the XML or the Sketchpad: New, Save, Save As,
-  Add/Delete Frame and Layer, Undo/Redo, Format, Find & Replace and the Sketchpad are disabled or refused; the XML and
+  Add/Delete Frame and Layer, Undo/Redo, Format, Find & Replace and the Sketchpad are disabled or refused (a Reviewer may use the Sketchpad, Save and Undo/Redo, below); the XML and
   SVG editors are read-only; the Notes cells, dialogue, audio, camera, production, layer-name and
   review editors do not open (the Reviews list still shows). Profile shows *Access: Read-only (viewer)*.
+- **`XSheet Reviewer`** — everything a Viewer can do, plus two things: **add reviews** (About >
+  Reviews > Add Review, which adds a `<Review>` to the XML) and **use the Sketchpad** (XSheet >
+  Sketchpad, the SVG tab's editor, and Find & Replace there). **Save**, **Save As**, **Undo** and
+  **Redo** are enabled so a reviewer can keep their reviews and sketch. Everything else that changes the
+  XML is still refused — the XML editor, Notes, dialogue, audio, camera, production, frames and
+  layers — and so is editing or deleting someone else's review. A reviewer can edit or delete their
+  own reviews (those whose reviewer is their user name), but not change the reviewer name. Profile shows
+  *Access: Reviewer*.
 - **`XSheet Editor`** — can do everything. So can the administrator role (`admin`), the built-in
-  fallback account, and a user with neither of the two roles. If a user has both Viewer and Editor
-  (or `admin`), they can edit.
+  fallback account, and a user with neither of the two roles. If a user has several of the
+  roles, the highest wins: Editor (or `admin`), then Reviewer, then Viewer.
 
 Users with the administrator role may change the idle time-out in Preferences. Roles are
 shown in **Preferences > Login** and in Profile.
