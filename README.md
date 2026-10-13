@@ -12,7 +12,9 @@ production info, asset catalog, audio tracks, camera moves/keyframes, per-frame 
 timeline, review notes, revision history, and an OTIO track mapping. The document format is
 defined by a modular set of XML Schemas in [`xml/`](xml/) (`xsheet-core.xsd` plus
 `xsheet-assets.xsd`, `xsheet-audio.xsd`, `xsheet-camera.xsd`, `xsheet-review.xsd`,
-`xsheet-otio.xsd`, `xsheet-versioning.xsd`).
+`xsheet-otio.xsd`, `xsheet-versioning.xsd`). The design of the schema set — how the modules
+fit together, how references work, and a worked example with diagrams — is described in
+[`XSheet_XML-Schema_Architecture.docx`](xml/XSheet_XML-Schema_Architecture.docx).
 
 Since it's really just a schema-driven XML/XSD editor, it works for editing and validating any
 `.xml`/`.xsd` file, not only ExposureSheet documents.
@@ -24,6 +26,9 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
 
 ## Features
 
+- **Login with roles**: users sign in through Keycloak. A user with the **XSheet Viewer** role has
+  read-only access (nothing that changes the XML or the Sketchpad); **XSheet Reviewer** adds the
+  ability to add reviews and use the Sketchpad; **XSheet Editor** can do everything. See [Roles](#roles).
 - **Two tabs**: **XSheet** (a traditional exposure-sheet grid rendered from the document) and
   **XML** (the text editor and Hierarchy tree). Your place in each — editor cursor
   line, XSheet scroll position — is remembered when you switch away and back.
@@ -37,6 +42,10 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
     at a glance (e.g. `Asset: id="BG001"` instead of three indistinguishable "Asset" nodes).
 - **Exposure Sheet grid** (XSheet tab) — one row per frame, one column per animation layer,
   plus Camera, Dialogue, Audio, and Notes. See [XSheet tab](#xsheet-tab) below for details.
+- **Sketchpad** — draw on the exposure sheet (XSheet > Sketchpad) with splines, polylines, rectangles,
+  circles and text. The Select tool edits a shape's points, or selects **several shapes at once** by
+  dragging a rectangle across them (Shift+click adds or removes one) and moves, recolours or deletes
+  them together; see the [XSheet menu](#xsheet-menu).
 - **Pretty-print / Format** — reformats the current XML/XSD with consistent indentation, with
   indent size and tabs-vs-spaces configurable in Preferences. Preserves comments (including
   ones before the root element) and namespace prefixes.
@@ -49,7 +58,7 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
 - **PDF export** — a full document report (**Generate Report**) or just the Exposure Sheet
   grid as a table (**Export XSheet**); see [XSheet menu](#xsheet-menu) below.
 - **XDTS JSON export** — converts the current ExposureSheet document to an XDTS-Extended JSON
-  timesheet (see [`tools/`](tools/) for the reverse direction and the older/legacy XDTS format).
+  timesheet (see [Converting to and from XDTS](#converting-to-and-from-xdts) for the reverse direction and the older/legacy XDTS format).
 - **File management** — Open/Save/Save As with a local file browser, an unsaved-changes prompt
   on Close, and a modified indicator (`*`) in the filename label.
 
@@ -132,13 +141,110 @@ docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R
 
 ### Logging in
 
-The app asks you to log in first. For now there's a single account for the whole server:
+For a fuller description of the Keycloak integration and of what each role allows, see
+[`doc/User-Role_Management.docx`](doc/User-Role_Management.docx).
+
+The app asks you to log in first. Users sign in against a **Keycloak** server (realm **`mlw`**),
+which provides any number of users and their roles; there is no longer a single shared account.
+
+**How logging in works**
+
+1. The login page takes a user name and password and passes them to Keycloak's token endpoint for
+   the realm (the OpenID Connect *direct access grant*, through the public client `mlw-xsheet`).
+   The password is not kept.
+2. Keycloak's answer decides what happens:
+
+   | Keycloak says | Result |
+   |---|---|
+   | The user name and password are right | The user is logged in, with the name and roles Keycloak reports. |
+   | They are wrong | The login is refused, after a short delay. This is final: the built-in account is **not** tried while Keycloak is answering. |
+   | Right password, but a required action is pending (a temporary password, or *Update Password*) | The **Change Password** dialog opens (see [Changing a required password](#changing-a-required-password)). |
+   | No answer: Keycloak is off (`MLW_KEYCLOAK_URL` empty), unreachable, or times out | The built-in fallback account (`admin`) can log in (see **Fallback account** below). |
+
+3. The user's roles (realm roles and client roles) come with the login and decide what the app lets
+   them do: **XSheet Viewer** is read-only, **XSheet Reviewer** adds reviews and the Sketchpad,
+   **XSheet Editor** (or `admin`) can do everything, and the administrator role may also change the
+   idle time-out (see [Roles](#roles)). They are read once, at login, so a change made in
+   Keycloak applies from the user's next login.
+4. The login lasts until **Logout** or the idle time-out. The user's name is used for the Profile
+   dialog, the pop-up log, and as the default reviewer of new reviews.
+
+Set Keycloak up with these environment variables (in `.env`, which `compose.yaml` passes through):
+
+| Variable | Meaning |
+|---|---|
+| `MLW_KEYCLOAK_URL` | The server's base URL, e.g. `https://sso.example.com`. Empty turns Keycloak off. |
+| `MLW_KEYCLOAK_REALM` | Realm; default `mlw`. |
+| `MLW_KEYCLOAK_CLIENT_ID` | A client in that realm with **Direct access grants** enabled; default `mlw-xsheet`. |
+| `MLW_KEYCLOAK_CLIENT_SECRET` | The client's secret, if it is a confidential client. |
+| `MLW_KEYCLOAK_ADMIN_ROLE` | The realm or client role that makes a user an administrator; default `admin`. |
+| `MLW_KEYCLOAK_VIEWER_ROLE` | The role that limits a user to read-only access (see [Roles](#roles)); default `XSheet Viewer`. |
+| `MLW_KEYCLOAK_REVIEWER_ROLE` | The role that is read-only like the viewer but can also add reviews and use the Sketchpad; default `XSheet Reviewer`. |
+| `MLW_KEYCLOAK_EDITOR_ROLE` | The role that allows everything; default `XSheet Editor`. |
+| `MLW_KEYCLOAK_VERIFY_TLS` | `0` to accept a self-signed certificate. |
+| `MLW_KEYCLOAK_TIMEOUT` | Seconds to wait for Keycloak; default 5. |
+| `MLW_KEYCLOAK_ADMIN_CLIENT_ID` | The client whose service account sets new passwords (see [Changing a required password](#changing-a-required-password)); default `mlw-xsheet-admin`. |
+| `MLW_KEYCLOAK_ADMIN_CLIENT_SECRET` | That client's secret, printed by `tools/keycloak_setup.py`. Empty turns the Change Password dialog off. |
+
+**Setting up Keycloak.** `tools/keycloak_setup.py` creates what the app needs in the server: the
+realm, a public client (`mlw-xsheet`) with Direct access grants, the `admin`, `XSheet Viewer`, `XSheet Reviewer` and `XSheet Editor` realm roles, a
+confidential client (`mlw-xsheet-admin`) for password changes, and optionally a first user. It uses only the Python standard library and can be run again safely;
+anything that already exists is left alone.
+
+```sh
+# Realm, client and role, using the Keycloak admin account (the password is asked for,
+# or taken from --admin-password or KEYCLOAK_ADMIN_PASSWORD):
+python3 tools/keycloak_setup.py --url http://localhost:8180 --admin-user admin
+
+# Also create an administrator (temporary password, changed at first login):
+python3 tools/keycloak_setup.py --user alice --user-admin
+
+# Tell it the address the container uses for Keycloak, for the .env lines it prints:
+python3 tools/keycloak_setup.py --app-url http://mlw-keycloak:8080
+```
+
+Other options: `--realm`, `--client-id`, `--admin-role`, `--user-password` (or
+`KEYCLOAK_USER_PASSWORD`), `--user-permanent`, `--user-role` (`XSheet Viewer`, `XSheet Reviewer` or `XSheet Editor`, for the new user), `--admin-client-id`, `--no-admin-client` (don't create
+the password-change client). It ends by printing the `MLW_KEYCLOAK_*` lines to
+put in `.env` (copy `.env.example`). The container must be able to reach Keycloak: in
+development, `compose.override.yaml` joins the `mlw-platform_default` network, so the URL there
+is `http://mlw-keycloak:8080`, not `localhost:8180`.
+
+#### Roles
+
+(Described in full, with a table of what each role can do, in [`doc/User-Role_Management.docx`](doc/User-Role_Management.docx).)
+
+- **`XSheet Viewer`** — read-only. The user can open and look at documents (all tabs, Find, Reviews
+  list, exports, Generate Report), but cannot change the XML or the Sketchpad: New, Save, Save As,
+  Add/Delete Frame and Layer, Undo/Redo, Format, Find & Replace and the Sketchpad are disabled or refused (a Reviewer may use the Sketchpad, Save and Undo/Redo, below); the XML and
+  SVG editors are read-only; the Notes cells, dialogue, audio, camera, production, layer-name and
+  review editors do not open (the Reviews list still shows). Profile shows *Access: Read-only (viewer)*.
+- **`XSheet Reviewer`** — everything a Viewer can do, plus two things: **add reviews** (About >
+  Reviews > Add Review, which adds a `<Review>` to the XML) and **use the Sketchpad** (XSheet >
+  Sketchpad, the SVG tab's editor, and Find & Replace there). **Save**, **Save As**, **Undo** and
+  **Redo** are enabled so a reviewer can keep their reviews and sketch. Everything else that changes the
+  XML is still refused — the XML editor, Notes, dialogue, audio, camera, production, frames and
+  layers — and so is editing or deleting someone else's review. A reviewer can edit or delete their
+  own reviews (those whose reviewer is their user name), but not change the reviewer name. Profile shows
+  *Access: Reviewer (reviews and Sketchpad)*.
+- **`XSheet Editor`** — can do everything. So can the administrator role (`admin`), the built-in
+  fallback account, and a user with neither of the two roles. If a user has several of the
+  roles, the highest wins: Editor (or `admin`), then Reviewer, then Viewer.
+
+Users with the administrator role may change the idle time-out in Preferences. Roles are
+shown in **Preferences > Login** and in Profile.
+
+**Fallback account.** If Keycloak is off or can't be reached, the built-in account still works:
 user name **`admin`**, password **`admin`** until you change it (**File > Preferences… > Login**).
 Change it before exposing the server to anyone else. The password is stored only as a salted
-hash, in `NICEGUI_STORAGE_PATH`.
+hash, in `NICEGUI_STORAGE_PATH`. While Keycloak is reachable it decides every login, so a wrong
+Keycloak password is not retried against the built-in account.
 
 - Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
-  opens a menu with **Logout**, which logs them all out and returns to the login page. If the
+  opens a menu with **Profile** and **Logout**. **Profile** shows who is signed in: for a Keycloak user
+  their name, e-mail, realm, Keycloak ID, sign-in time, administrator status, access (*Read-only (viewer)* or *Can edit*, see [Roles](#roles)), realm roles and client
+  roles (as of login, so a change made in Keycloak appears after the next login); for the built-in
+  account, its user name and administrator role. **Logout** logs them all out and returns to the login page. If the
   document has unsaved changes (to its text or its Sketchpad sketch), Logout first asks whether
   to save them: **Yes** saves them (the sketch too) and logs out; **No** logs out without them —
   they're lost, as closing the document would lose them, and the next login reopens the
@@ -149,6 +255,23 @@ hash, in `NICEGUI_STORAGE_PATH`.
   there's no one to ask then, your unsaved changes are kept as a draft and come back when you log
   in again.
 - A wrong password is rejected after a short delay, to slow down guessing.
+
+#### Changing a required password
+
+Keycloak can require a user to choose a new password before their next login (a temporary password,
+or the *Update Password* required action). When the right password is entered for such a user, the
+login page opens a **Change Password** dialog instead of refusing the login. The user enters the new
+password twice (it must differ from the current one); **Cancel** leaves them logged out. The app
+checks the current password again and sets the new one in Keycloak, as a permanent password,
+clears the required action, and logs the user in. Keycloak's password policy applies, and a
+rejection is shown in the dialog.
+
+This needs `MLW_KEYCLOAK_ADMIN_CLIENT_SECRET`: the app sets the password through the
+`mlw-xsheet-admin` client, a confidential client whose service account may only manage users (nobody
+can log in with it). `tools/keycloak_setup.py` creates it and prints the secret. It only ever changes
+the password of a user who has the required action pending. Without the secret, the user is told
+to change their password in Keycloak. If the account needs something else first (such as a missing
+e-mail address), the login says that has to be done in Keycloak.
 
 ### File access
 
@@ -200,7 +323,7 @@ switching browsers starts fresh settings.
 ### Layout
 
 - **Header** — `File`, `Edit`, `XSheet`, `XML` and `About` dropdown menus (About has the app info, with the license in a scrollable tab, and the document's Reviews) on the
-  left; a user icon on the right whose menu has **Logout** (hover over it to see who's logged in).
+  left; a user icon on the right whose menu has **Profile** and **Logout** (hover over it to see who's logged in).
   In the `XML` menu, everything but the **XML Editor** check box is only enabled while the **XML**
   tab is active — its commands (Validate, Select Schema, …) act on the editor, so they're disabled
   while looking at the XSheet or SVG tab.
@@ -267,7 +390,7 @@ XML or SVG tab.
 |---|---|
 | Collapse Frames | Collapse every run of identical rows (the ones with a ▼ arrow) in the current XSheet view at once. Like the individual arrows, it updates the grid in place without scrolling. |
 | Expand Frames | Expand every collapsed run, so every frame has its own row again. Also updates the grid in place. Both items act on the grid, so they're disabled while the XML tab is showing, and while the Sketchpad is on (the sketch is pinned to the sheet's rows, which they would move). |
-| Sketchpad | A check-box item that turns sketching on the **sketchpad** on and off: a transparent SVG drawing over the whole XSheet view (the heading, production line and grid), through which the sheet shows. It's available once a document is open (opened, new, or restored), and not on the XML tab. The sketch is pinned to the sheet, not the screen: it spans every frame and column, and scrolls with the grid, so a mark made on a frame stays on it. On, the sketchpad takes the mouse or pen, so the grid under it can't be clicked, but the mouse wheel over it still scrolls the grid (Shift+wheel scrolls across), and a toolbar appears at its top right. The **Shape** button shows the shape it draws; click it to choose from the shape chooser: **Spline** (✏️) — each stroke becomes an editable spline, the points drawn thinned to a few anchors and joined by a smooth curve (cubic Béziers) — **Polyline** (straight segments: click to place each point, with the next segment following the pointer; double-click or press Enter to end it, Backspace takes back the last point, and Escape drops it), **Rectangle** (▢, dragged from corner to corner) or **Circle** (◯, dragged from its centre out), or **Text** (🅣: click where the string should go, type it in the box that appears, and press Enter or click away to place it — Escape drops it. **Shift+Enter** starts a new line, so a string can have several lines (one line is 1.2 times its size down from the last); click a selected string again to edit it, and empty it to delete it). A text string takes the pen's colour (which can be changed on the selected string), and its type and size from **File > Preferences > Sketchpad** — Sans-serif, Serif or Monospace, at 6–200 pixels (24 to start with); the brush size doesn't affect it. A string keeps the type and size it was typed with when the preferences change later, and in the saved `.svg` (`font-family`, `font-size`); Export XSheet prints it in Helvetica, Times or Courier to match. It is saved in the sketch's `.svg` as a `<text>` element (a `<tspan>` to each line, if it has several), and printed by Export XSheet. With **Select** (↖), click a shape to select it: it's highlighted, with round handles — at a spline's anchors, a polyline's points, a rectangle's corners, or round a circle's edge — to drag to reshape it (a circle's change its radius); drag the shape itself to move it, and click elsewhere to deselect. Click one of a selected spline's anchors to select it (it fills in) and show its **tangents** (direction handles): an arm out to a small dot on each side, whose direction sets the curve's slope and angle through the anchor, and whose length — its **magnitude** — sets how far the curve holds that direction before turning (short for a tight bend, long for a wide sweep). Drag a dot to change both; a label shows its angle and length as you drag. The arm opposite turns to stay in line, keeping its own length, so the curve stays smooth; hold **Alt** to move one arm alone, for a sharp corner. A spline's first anchor has only an outgoing arm and its last only an incoming one, and moving an anchor carries its arms with it. The **colour** button (a small square in the current colour) opens a colour chooser — a palette of 256 colours in small squares, 16 rows of 16 (a row of greys from white to black, then 15 hues round the colour wheel, a row each, in 16 shades from light to dark), and Spectrum and Tune views for any other; the swatch you pick is ringed, as is the pen's colour when the chooser opens, until it closes — and the **brush** button (a dot that grows with the size) opens a brush chooser — a 1–24 px slider with a preview line, and quick sizes from 1 to 16 px (the pen starts at 4 px, in red). Both set the pen and restyle the selected shape, and apply a choice at once so you can see it; **Cancel** puts back what was there when the chooser opened (the pen's setting and the shape's), and **Done** keeps it, as a single Undo step. **Delete** (🗑, or the Delete key) removes the selected shape — but with one of a spline's anchors selected, the Delete (or Backspace) key removes just that anchor, the curve joining its neighbours, and selects the next one, so pressing it again removes that too (a spline of two anchors goes whole; click the curve, not an anchor, to delete the whole spline) — **Undo** takes back the last change (a new shape, reshape, tangent, move, restyle, delete or clear), and **Clear** removes every shape (after asking). Turn XSheet > Sketchpad off again to put it away. While it's on, Collapse Frames and Expand Frames are disabled. Off, the sketchpad and its sketch are hidden and it ignores the pointer, so nothing can be drawn and the grid works as usual; the sketch is kept, and shows again when the sketchpad is turned back on. The sketch belongs to the document: it survives switching to the XML tab and back and resizing the window, and **Save** and **Save As** save it beside the document, as SVG, in a file of the same name with `.svg` in place of `.xml` (`scene.xml` → `scene.svg`). The file starts with XML comments naming the document it belongs to (its path in the data folder) and giving that document's `<Production>` info (Project ID, Sequence ID, Scene ID, Shot ID, Title, Frame Rate, Start and End Frame, as its elements). **Open** loads that sketch back — every shape, with its colour, width and a spline's tangents — if the `.svg` is there; opening or closing a document turns the sketchpad off first. A document without a sketch gets no `.svg`; if its sketch is cleared, saving empties the `.svg` rather than leaving the old sketch to come back. Changing the sketch marks the document as changed, like editing its text: its name gets a `*`, and Close, New and Open ask whether to save it first (Yes saves the sketch too; No leaves the saved one as it was). Undoing back to the sketch as it was saved clears the mark. An unsaved sketch is kept in the document's draft, so a page reload brings it back, still unsaved. |
+| Sketchpad | A check-box item that turns sketching on the **sketchpad** on and off: a transparent SVG drawing over the whole XSheet view (the heading, production line and grid), through which the sheet shows. It's available once a document is open (opened, new, or restored), and not on the XML tab. The sketch is pinned to the sheet, not the screen: it spans every frame and column, and scrolls with the grid, so a mark made on a frame stays on it. On, the sketchpad takes the mouse or pen, so the grid under it can't be clicked, but the mouse wheel over it still scrolls the grid (Shift+wheel scrolls across), and a toolbar appears at its top right. The **Shape** button shows the shape it draws; click it to choose from the shape chooser: **Spline** (✏️) — each stroke becomes an editable spline, the points drawn thinned to a few anchors and joined by a smooth curve (cubic Béziers) — **Polyline** (straight segments: click to place each point, with the next segment following the pointer; double-click or press Enter to end it, Backspace takes back the last point, and Escape drops it), **Rectangle** (▢, dragged from corner to corner) or **Circle** (◯, dragged from its centre out), or **Text** (🅣: click where the string should go, type it in the box that appears, and press Enter or click away to place it — Escape drops it. **Shift+Enter** starts a new line, so a string can have several lines (one line is 1.2 times its size down from the last); click a selected string again to edit it, and empty it to delete it). A text string takes the pen's colour (which can be changed on the selected string), and its type and size from **File > Preferences > Sketchpad** — Sans-serif, Serif or Monospace, at 6–200 pixels (24 to start with); the brush size doesn't affect it. A string keeps the type and size it was typed with when the preferences change later, and in the saved `.svg` (`font-family`, `font-size`); Export XSheet prints it in Helvetica, Times or Courier to match. It is saved in the sketch's `.svg` as a `<text>` element (a `<tspan>` to each line, if it has several), and printed by Export XSheet. With **Select** (↖), click a shape to select it: it's highlighted, with round handles — at a spline's anchors, a polyline's points, a rectangle's corners, or round a circle's edge — to drag to reshape it (a circle's change its radius); drag the shape itself to move it, and click elsewhere to deselect. To select **several shapes**, drag a rectangle across them from empty space: every shape the rectangle crosses is highlighted (without handles), and **Shift+click** adds a shape to the selection or takes it out. Dragging any selected shape moves them all together, **Delete** removes them all, and the colour and brush buttons restyle them all, each as a single Undo step; click empty space to deselect. Click one of a selected spline's anchors to select it (it fills in) and show its **tangents** (direction handles): an arm out to a small dot on each side, whose direction sets the curve's slope and angle through the anchor, and whose length — its **magnitude** — sets how far the curve holds that direction before turning (short for a tight bend, long for a wide sweep). Drag a dot to change both; a label shows its angle and length as you drag. The arm opposite turns to stay in line, keeping its own length, so the curve stays smooth; hold **Alt** to move one arm alone, for a sharp corner. A spline's first anchor has only an outgoing arm and its last only an incoming one, and moving an anchor carries its arms with it. The **colour** button (a small square in the current colour) opens a colour chooser — a palette of 256 colours in small squares, 16 rows of 16 (a row of greys from white to black, then 15 hues round the colour wheel, a row each, in 16 shades from light to dark), and Spectrum and Tune views for any other; the swatch you pick is ringed, as is the pen's colour when the chooser opens, until it closes — and the **brush** button (a dot that grows with the size) opens a brush chooser — a 1–24 px slider with a preview line, and quick sizes from 1 to 16 px (the pen starts at 4 px, in red). Both set the pen and restyle the selected shape, and apply a choice at once so you can see it; **Cancel** puts back what was there when the chooser opened (the pen's setting and the shape's), and **Done** keeps it, as a single Undo step. **Delete** (🗑, or the Delete key) removes the selected shape — but with one of a spline's anchors selected, the Delete (or Backspace) key removes just that anchor, the curve joining its neighbours, and selects the next one, so pressing it again removes that too (a spline of two anchors goes whole; click the curve, not an anchor, to delete the whole spline) — **Undo** takes back the last change (a new shape, reshape, tangent, move, restyle, delete or clear), and **Clear** removes every shape (after asking). Turn XSheet > Sketchpad off again to put it away. While it's on, Collapse Frames and Expand Frames are disabled. Off, the sketchpad and its sketch are hidden and it ignores the pointer, so nothing can be drawn and the grid works as usual; the sketch is kept, and shows again when the sketchpad is turned back on. The sketch belongs to the document: it survives switching to the XML tab and back and resizing the window, and **Save** and **Save As** save it beside the document, as SVG, in a file of the same name with `.svg` in place of `.xml` (`scene.xml` → `scene.svg`). The file starts with XML comments naming the document it belongs to (its path in the data folder) and giving that document's `<Production>` info (Project ID, Sequence ID, Scene ID, Shot ID, Title, Frame Rate, Start and End Frame, as its elements). **Open** loads that sketch back — every shape, with its colour, width and a spline's tangents — if the `.svg` is there; opening or closing a document turns the sketchpad off first. A document without a sketch gets no `.svg`; if its sketch is cleared, saving empties the `.svg` rather than leaving the old sketch to come back. Changing the sketch marks the document as changed, like editing its text: its name gets a `*`, and Close, New and Open ask whether to save it first (Yes saves the sketch too; No leaves the saved one as it was). Undoing back to the sketch as it was saved clears the mark. An unsaved sketch is kept in the document's draft, so a page reload brings it back, still unsaved. The Sketchpad (and the SVG tab's editor) is available to the **XSheet Reviewer** and **XSheet Editor** roles, not to an **XSheet Viewer** (see [Roles](#roles)). |
 | Export XSheet | Render the Exposure Sheet grid as a paginated, landscape PDF in the style you're viewing (Traditional exposure sheet or Classic), and save it via a Save As-style dialog. Page 1 has the Production and VersionControl info; the grid starts on page 2 under the same header as the XSheet tab (frame and layer counts, and the Project ID, Sequence ID, Scene ID, Title and Frame Rate). Both styles have a heavier rule after each second, like the view; the traditional layout also matches the view's wrapped Action/Description and Tech. Notes, and alternating shading. Every frame is printed (collapsed runs are expanded). The Sketchpad's sketch, if there is one, is drawn over the grid (unless Preferences > Report says not to). The grid is then laid out as the XSheet tab shows it — its columns' widths and its rows' heights, all at one scale — so the sketch isn't distorted (a circle stays round) and each mark lands on the frames and cells it was drawn on; a mark crossing a page break carries on from one page to the next. Marks in the space beside the columns (the Classic view has room to the right) are kept: the page takes in as much of it as the sketch reaches. At that scale, text that doesn't fit a cell is cut short, as on screen, and the type is smaller when the grid is wide. The sketch is clipped to the grid's rows, so anything drawn over the heading or column titles isn't printed. Without a sketch the PDF is laid out as before. |
 | Generate Report | Render the whole document as a paginated PDF: Production and VersionControl on page 1, a clickable Table of Contents from page 2, every other top-level element as its own titled section, and the raw XML as an appendix. If the document doesn't pass validation, you're asked to confirm before it proceeds (the PDF then carries a warning banner). Which sections are included, and whether the raw XML appendix is added, is set in **File > Preferences… > Report**. |
 
@@ -368,11 +491,12 @@ change it.
   browser's** picks your browser's own zone. The server's time zone is the host's, from its
   `/etc/localtime` (which `compose.yaml` mounts into the container), unless `TZ` is set in
   `.env` (e.g. `TZ=America/Denver`).
-- **Login** — the server's single account (see [Logging in](#logging-in)):
-  - **Log out after this many idle minutes** — 1–1440, default 30.
-  - **Change password** — enter the current password and the new one twice. Leave all three
-    blank to keep the password. If something's wrong, nothing is saved and the dialog stays
-    open.
+- **Login** — who is signed in, with their roles (see [Logging in](#logging-in)):
+  - **Log out after this many idle minutes** — 1–1440, default 30; applies to everyone, and only
+    administrators can change it.
+  - **Change password** — for the built-in account only (Keycloak users manage their password in
+    Keycloak): enter the current password and the new one twice. Leave all three blank to keep
+    the password. If something's wrong, nothing is saved and the dialog stays open.
 
 ### Hierarchy tree
 
@@ -524,6 +648,7 @@ no document open, the editor is empty and can't be edited.
 - `Ctrl+Alt+1` — Switch to the XSheet tab (always the first)
 - `Ctrl+Alt+2` — Switch to the second tab (SVG while the Sketchpad is on, otherwise XML)
 - `Ctrl+Alt+3` — Switch to the third tab (XML, while the Sketchpad is on and the XML Editor is too)
+- `Shift`+click (Sketchpad, Select tool) — add a shape to the selection, or take it out; `Delete` removes the selected shapes
 - `Ctrl+Alt+Page Up` / `Ctrl+Alt+Page Down` — On the XSheet tab, select the first frame of the previous / next group of frames and scroll to it. Groups are the document's Frame Rate in frames, counted from the first frame (24 at 24 fps: 1–24, 25–48, …; from frame 30, Page Down goes to 49 and Page Up to 1). It stops at the first and last groups. Needs a Frame Rate in the Production info.
 
 (`Ctrl+Z` and `Ctrl+Y` are global — they undo and redo the last change on any tab, including the SVG tab, with a warning if it was made on another tab; in a plain text box in a dialog they undo that box's typing.)
@@ -540,7 +665,69 @@ the combined chord isn't claimed by either.)
 | Item | What it does |
 |---|---|
 | About | Show the app name, author, version, and a link to more information, with the license in a scrollable tab. |
-| Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. Click a review to go to it: on the XSheet tab, the grid scrolls to its frame and selects it (the run's row, if the frame is in a collapsed run); on the XML tab, the editor scrolls to its `<Review>` element and the Hierarchy tree selects it. Click a review's ✏️ to edit its ID, frame, reviewer, status and comment, or **Delete** it; **Add Review** adds one, prefilled with the next free `RV###` ID, the frame selected in the XSheet, you as the reviewer, and **Pending**. IDs must be valid XML names and not already used by another review, audio track or asset (they share one ID space). The first review adds `<Reviews>` after `<Timeline>`, and deleting the last one removes it, as the schema requires. Each change is one ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against the schema, and the list and the grid's Tech. Notes update straight away. |
+| Reviews | List the open document's `<Review>` entries in frame order — ID, frame, reviewer, status (a colored badge: Approved, NeedsFix or Pending) and comment — with a count of each status. Columns can be sorted by clicking their headings. Click a review to go to it: on the XSheet tab, the grid scrolls to its frame and selects it (the run's row, if the frame is in a collapsed run); on the XML tab, the editor scrolls to its `<Review>` element and the Hierarchy tree selects it. Click a review's ✏️ to edit its ID, frame, reviewer, status and comment, or **Delete** it; **Add Review** adds one, prefilled with the next free `RV###` ID, the frame selected in the XSheet, you as the reviewer, and **Pending**. IDs must be valid XML names and not already used by another review, audio track or asset (they share one ID space). The first review adds `<Reviews>` after `<Timeline>`, and deleting the last one removes it, as the schema requires. Each change is one ordinary edit (**Ctrl+Z** undoes it) that keeps the document valid against the schema, and the list and the grid's Tech. Notes update straight away. Add Review is available to the **XSheet Reviewer** and **XSheet Editor** roles; a Reviewer can edit or delete only their own reviews (the **Reviewer** field is fixed to their user name), and an **XSheet Viewer** can only read the list (see [Roles](#roles)). |
+
+## Converting to and from XDTS
+
+XDTS is the timesheet format of OpenToonz-style tools. An ExposureSheet can be converted to XDTS
+JSON and back, so that work started in one tool can continue in the other. **File > Export > Export
+XDTS** does the forward conversion from the app, writing an *XDTS-Extended* JSON timesheet; the
+`tools/` folder has command-line converters for both directions and for two XDTS flavours:
+
+| Flavour | ExposureSheet to XDTS | XDTS to ExposureSheet | JSON Schema |
+|---|---|---|---|
+| **XDTS-Extended** (the one the app exports) | `tools/xsheet_to_xdts_extended.py` | `tools/xdts_extended_to_xsheet.py` | `tools/xdts-extended.schema.json` |
+| **Legacy XDTS** (fieldId / track / value) | `tools/xsheet_to_xdts.py` | `tools/xdts_to_xsheet.py` | `tools/xdts-20261206.json` |
+
+```
+python3 tools/xsheet_to_xdts_extended.py examples/xsheet-exposure.xml -o scene.xdts.json --validate
+python3 tools/xdts_extended_to_xsheet.py scene.xdts.json -o scene.xml --project-id SHOW001 --validate
+python3 tools/xsheet_to_xdts.py examples/xsheet-exposure.xml -o scene.legacy.json --validate
+python3 tools/xdts_to_xsheet.py scene.legacy.json -o scene.xml --validate
+```
+
+Each converter writes next to its input unless `-o` is given, and `--validate` checks the result:
+the JSON against its schema, the XML against `xml/xsheet-core.xsd`. `--indent N` sets the JSON
+indentation (0 for compact), and the legacy exporter's `--xdts-version {5,10}` sets the `version`
+field it writes (10 by default).
+
+**ExposureSheet to XDTS-Extended** (`xsheet_to_xdts_extended.py`, also used by the app):
+
+- **Layers** — each `<Layer>` becomes an entry in `layers`, bottom to top by `zOrder`, with its
+  `type` (`character`, `background` or `effects`) read from its asset's category. The timeline only
+  records frames where something changes, so each layer becomes a list of exposure runs
+  `{frame, cell, exposure}`: a cel is held from the frame it appears until it changes or drops out.
+- **Notes** — each frame's `<Notes>` becomes `marks` (`TYPE: note`, several joined by `; `).
+- **Camera and audio** — camera keyframes become `camera` entries (position, zoom, rotation, tilt),
+  and each `<AudioRef>` an `audio` entry with its file and length in frames.
+- **Production** — `SceneID`, `ShotID` and `FrameRate` become `scene`, `cut` and `frameRate`.
+- **Not carried** — dialogue, camera moves, ProjectID, SequenceID, Title, reviews, version control
+  and the OTIO mapping have no place in the extended schema, and are dropped.
+
+**XDTS-Extended to ExposureSheet** (`xdts_extended_to_xsheet.py`) reverses that: each layer becomes
+a `<Layer>` with a generated asset, each mark a frame's `<Notes>`, each audio entry a real audio
+track and `<AudioRef>`, and camera entries `<Keyframe>`s. A cel that looks like a 3D scene file
+(`.usd`, `.abc`, `.fbx` …) becomes a 3D layer. What XDTS-Extended cannot hold is filled with clearly
+labelled placeholders so the result is still schema-valid: `--project-id` and `--sequence-id`
+(default `UNKNOWN`), `--scene-id`, `--shot-id`, `--title`, `--camera-name` and `--frame-rate`
+override them, and a comment at the top of the file lists what was synthesized.
+
+**Legacy XDTS** works the same way but with a looser fit. Going to XDTS (`xsheet_to_xdts.py`), the
+`cut` and `scene` header fields must be 1–4 digits, so the trailing digits of ShotID and SceneID are
+used; each layer becomes a track of the *Cell* field (only cel changes are written, a layer dropping
+out as a null cell); dialogue goes in the *Dialog* field as `[phoneme, text]`; and camera moves go in
+the *Camerawork* field as text. Audio, notes, reviews, version control and numeric camera keyframes are
+dropped. Coming back (`xdts_to_xsheet.py`), tracks become layers, dialog entries `<Dialogue>`, and
+camerawork text `<CameraMove>`s; the sections XDTS lacks (project and sequence IDs, frame rate
+(`--frame-rate`, default 24), audio tracks, reviews, version history, one camera keyframe) are
+filled with placeholders. A file with several timetables is converted one XML file per table into the
+`-o` directory, or a single one with `--index N`.
+
+Because the formats differ, a round trip through XDTS does not reproduce the original ExposureSheet:
+what XDTS cannot hold is lost on the way out, and placeholders stand in for it on the way back. Use
+the converters to exchange the exposure data (layers, cels, timing, notes, camera and audio cues), and
+keep the ExposureSheet XML as the master. (The OCA converters below, by contrast, keep the extra data
+in OCA's metadata and restore it.)
 
 ## Converting to and from Open Cel Animation (OCA)
 
@@ -612,8 +799,8 @@ app uses). An existing output file is only replaced with `--force`.
 ```
 main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, validation, Format, XDTS export
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
-xml/              XSD schemas defining the ExposureSheet document format
+xml/              XSD schemas defining the ExposureSheet document format, and the schema architecture document (.docx)
 examples/         Sample .xml / .xsd / .json documents
-tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA
-doc/              XDTS file format reference and XML validation notes
+tools/            XSheet XML <-> XDTS JSON converters (legacy and "XDTS-Extended" schema), XSheet XML <-> OCA, Keycloak setup
+doc/              XDTS file format reference, XML validation notes, release notes, and the User and Role Management guide
 ```

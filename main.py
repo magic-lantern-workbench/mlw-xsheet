@@ -117,6 +117,8 @@ class Session:
         self.editor = None
         self.xml_tree = None
         self.xml_menu_button = None
+        self.review_items = []  # items a reviewer may use too (Save, Undo, ...): disabled only for a viewer
+        self.edit_items = []   # menu items that change the document: disabled for a read-only user
         self.xml_menu_items = []   # its items that act on the XML editor: enabled only on the XML tab
         self.xml_menu_icon = None  # the check box of XML > XML Editor
         self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
@@ -867,6 +869,8 @@ def format_xml():
     """Pretty-print the editor's XML/XSD contents in place, using the current
     format preferences. Routed through _set_editor_text() so it participates in
     undo/redo and flips the modified ('*') indicator like any other edit."""
+    if deny_read_only('format the document'):
+        return
     text = _editor_text()
     if not text.strip():
         ui.notify('Nothing to format', color='warning')
@@ -1016,15 +1020,26 @@ def show_preferences_dialog():
                     ui.button('Download', icon='download', on_click=download_log).props('outline size=sm')
                     ui.button('Clear Log', icon='delete', on_click=confirm_clear_log).props('outline size=sm')
             with ui.tab_panel(login_tab).classes('px-0 gap-2'):
-                ui.label('Applies to everyone using this server').classes('text-sm text-gray-500')
+                roles_text = ', '.join(auth.current_roles()) or 'none'
+                ui.label(f'Signed in as {auth.current_username()} ({roles_text})').classes('text-sm text-gray-500')
                 timeout_input = ui.number(
                     f'Log out after this many idle minutes (1–{auth.MAX_TIMEOUT_MINUTES})',
                     value=auth.session_timeout_minutes(), min=1, max=auth.MAX_TIMEOUT_MINUTES, step=1, format='%d',
                 ).classes('w-full')
-                ui.label('Change password (leave blank to keep it)').classes('text-sm text-gray-500 mt-2')
-                current_pw = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
-                new_pw = ui.input('New password', password=True, password_toggle_button=True).classes('w-full')
-                confirm_pw = ui.input('Confirm new password', password=True, password_toggle_button=True).classes('w-full')
+                if auth.is_admin():
+                    ui.label('The time-out applies to everyone using this server').classes('text-sm text-gray-500')
+                else:
+                    timeout_input.disable()
+                    ui.label(f'Only the "{auth.ADMIN_ROLE}" role can change the time-out').classes('text-sm text-gray-500')
+                current_pw = new_pw = confirm_pw = None
+                if auth.is_local_account():
+                    ui.label('Change the built-in account\'s password (leave blank to keep it)') \
+                        .classes('text-sm text-gray-500 mt-2')
+                    current_pw = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
+                    new_pw = ui.input('New password', password=True, password_toggle_button=True).classes('w-full')
+                    confirm_pw = ui.input('Confirm new password', password=True, password_toggle_button=True).classes('w-full')
+                else:
+                    ui.label('Your password is managed in Keycloak').classes('text-sm text-gray-500 mt-2')
 
         def do_save(_=None):
             # Check a password change first, so a mistake there saves nothing
@@ -1034,7 +1049,7 @@ def show_preferences_dialog():
                 tabs.value = logs_tab
                 ui.notify('Choose the time zone for the log', color='warning')
                 return
-            changing_password = any((current_pw.value, new_pw.value, confirm_pw.value))
+            changing_password = current_pw is not None and any((current_pw.value, new_pw.value, confirm_pw.value))
             if changing_password:
                 error = None
                 if not auth.check_password(current_pw.value or ''):
@@ -1048,10 +1063,11 @@ def show_preferences_dialog():
                     ui.notify(error, color='negative')
                     return
                 auth.set_password(new_pw.value)
-            try:
-                auth.set_session_timeout_minutes(int(timeout_input.value))
-            except (TypeError, ValueError):
-                auth.set_session_timeout_minutes(auth.DEFAULT_TIMEOUT_MINUTES)
+            if auth.is_admin():
+                try:
+                    auth.set_session_timeout_minutes(int(timeout_input.value))
+                except (TypeError, ValueError):
+                    auth.set_session_timeout_minutes(auth.DEFAULT_TIMEOUT_MINUTES)
             prefs['use_tabs'] = bool(use_tabs_cb.value)
             try:
                 prefs['indent_size'] = max(int(indent_input.value), 1)
@@ -1763,7 +1779,7 @@ def show_reviews_dialog() -> None:
                 table.on('rowClick', go_to)
                 table.on('edit_review', lambda e: show_review_editor(e.args, content.refresh))
             with ui.row().classes('w-full items-center mt-2'):
-                if is_sheet and reviews is not None:
+                if is_sheet and reviews is not None and auth.can_review():
                     ui.button('Add Review', icon='add', on_click=lambda: show_review_editor(None, content.refresh)) \
                         .props('outline size=sm')
                 ui.space()
@@ -1777,6 +1793,10 @@ def show_review_editor(review: dict | None, on_saved) -> None:
     with Delete for an existing one. Changes are one ordinary (undoable)
     edit that keeps the document schema-valid; on_saved() then refreshes the
     Reviews list."""
+    # a reviewer may add reviews, and edit or delete their own (those that name them as the reviewer)
+    own = review is None or (review['reviewer'] or '').strip() == (auth.current_username() or '').strip()
+    if deny_read_only('add reviews' if review is None else "edit or delete other reviewers' reviews", reviewer_ok=own):
+        return
     import re
     import xml.etree.ElementTree as ET
     text = _editor_text()
@@ -1802,7 +1822,7 @@ def show_review_editor(review: dict | None, on_saved) -> None:
         dlg.close()
         sess.xsheet_refresh_in_place = True
         try:
-            _set_editor_text(new_text)  # undoable; marks modified; updates the tree, and the grid in place
+            _set_editor_text(new_text, reviewer_ok=True)  # undoable; marks modified; updates the tree, and the grid in place
         finally:
             sess.xsheet_refresh_in_place = False
         on_saved()
@@ -1815,6 +1835,8 @@ def show_review_editor(review: dict | None, on_saved) -> None:
             frame_input = ui.number('Frame', value=values['frame'] if isinstance(values['frame'], int) else None,
                                     min=1, step=1, format='%d').classes('w-24').props('dense')
             reviewer_input = ui.input('Reviewer', value=values['reviewer']).classes('flex-grow').props('dense')
+            if auth.access_level() == 'review':
+                reviewer_input.set_enabled(False)  # a reviewer's reviews are their own
             status_input = ui.select(REVIEW_STATUSES, value=values['status'] if values['status'] in REVIEW_STATUSES
                                      else 'Pending', label='Status').classes('w-32').props('dense')
         comment_input = ui.textarea('Comment', value=values['comment']).classes('w-full') \
@@ -1875,7 +1897,7 @@ def show_about_dialog():
         with ui.tab_panels(tabs, value=about_tab).classes('w-full'):
             with ui.tab_panel(about_tab).classes('px-0 gap-4'):
                 ui.label('Author: Wizzer Works')
-                ui.label('Version: 1.4.0')
+                ui.label('Version: 1.5.0')
                 with ui.row().classes('items-center gap-1'):
                     ui.label('Please visit')
                     ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)
@@ -1889,6 +1911,55 @@ def show_about_dialog():
         with ui.row().classes('w-full justify-end mt-2'):
             ui.button('Close', on_click=about_dialog.close).props('outline size=sm')
     about_dialog.open()
+
+
+def show_profile_dialog():
+    """Show the signed-in user's profile: who they are, how they signed in
+    (Keycloak, or the built-in account) and their roles."""
+    info = auth.current_profile()
+    profile = info['profile']
+    keycloak = info['source'] == 'keycloak'
+    rows = [('User name', info['username'])]
+    if keycloak:
+        full_name = profile.get('name') or ' '.join(
+            part for part in (profile.get('first_name'), profile.get('last_name')) if part)
+        email = profile.get('email') or ''
+        if email and profile.get('email_verified') is not None:
+            email += ' (verified)' if profile['email_verified'] else ' (not verified)'
+        rows += [('Name', full_name), ('E-mail', email),
+                 ('Signed in with', f"Keycloak, realm {profile.get('realm') or auth.KEYCLOAK_REALM}"),
+                 ('Client', profile.get('client') or auth.KEYCLOAK_CLIENT_ID),
+                 ('Keycloak ID', profile.get('id') or '')]
+    else:
+        rows.append(('Signed in with', 'The built-in administrative account'
+                     + ('' if not auth.keycloak_enabled() else ' (Keycloak was not used)')))
+    if info['login_time']:
+        rows.append(('Signed in at', time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(info['login_time']))))
+    rows.append(('Administrator', 'Yes' if auth.is_admin() else 'No'))
+    rows.append(('Access', {'view': 'Read-only (viewer)', 'review': 'Reviewer (reviews and Sketchpad)'}.get(auth.access_level(), 'Can edit')))
+    with ui.dialog() as profile_dialog, \
+            titled_card('Profile', classes='w-[520px] max-w-full', body_classes='gap-2'):
+        with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
+            for label, value in rows:
+                ui.label(label).classes('text-gray-500')
+                ui.label(value or '—').classes('break-all')
+            ui.label('Realm roles' if keycloak else 'Roles').classes('text-gray-500')
+            with ui.row().classes('gap-1'):
+                roles = profile.get('realm_roles', info['roles']) if keycloak else info['roles']
+                if roles:
+                    for role in roles:
+                        ui.badge(role, color='primary' if role == auth.ADMIN_ROLE else 'grey').props('outline')
+                else:
+                    ui.label('none')
+            client_roles = profile.get('client_roles') or {}
+            if client_roles:
+                ui.label('Client roles').classes('text-gray-500')
+                with ui.column().classes('gap-0'):
+                    for client, names in client_roles.items():
+                        ui.label(f"{client}: {', '.join(names)}")
+        with ui.row().classes('w-full justify-end mt-2'):
+            ui.button('Close', on_click=profile_dialog.close).props('outline size=sm')
+    profile_dialog.open()
 
 
 # --- helpers ---
@@ -2887,6 +2958,8 @@ def _prompt_edit_production(focus: str | None = None) -> None:
     """Edit the Production info shown above the XSheet grid. Nothing changes
     until the user confirms the listed changes; then the XML is updated as
     an ordinary (undoable) edit."""
+    if deny_read_only('edit the production info'):
+        return
     info = read_production_info(_editor_text())
     if info is None:
         return
@@ -3038,7 +3111,7 @@ def rebuild_xsheet_from_current():
         {'field': 'Camera', 'headerName': 'Camera', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
         {'field': 'Dialogue', 'headerName': 'Dialogue', 'width': 160},
         {'field': 'Audio', 'headerName': 'Audio', 'width': 160, 'cellStyle': {'textAlign': 'center'}},
-        {'field': 'Notes', 'headerName': 'Notes', 'width': 220, **NOTES_EDITING},
+        {'field': 'Notes', 'headerName': 'Notes', 'width': 220, **notes_editing()},
     ]
     grid.options['columnDefs'] = column_defs
     grid.options['rowData'] = _xsheet_display_rows('classic', layer_ids or [], rows)
@@ -3057,6 +3130,24 @@ NOTES_EDITING = {
     'cellEditorParams': {'maxLength': 2000, 'rows': 5, 'cols': 50},
     'headerTooltip': "Double-click a frame's cell to edit its notes",
 }
+
+
+def notes_editing() -> dict:
+    """NOTES_EDITING for the Notes column -- or, for a read-only user, a column that can't be edited."""
+    return {} if auth.is_read_only() else NOTES_EDITING
+
+
+def deny_read_only(what: str = 'change the document', reviewer_ok: bool = False) -> bool:
+    """True (after saying so) if the signed-in user may not `what`: they have only read-only
+    access (the XSheet Viewer role), or the XSheet Reviewer role and `what` is not
+    one of the things a reviewer may do (`reviewer_ok`: add reviews, use the Sketchpad,
+    save, undo). See auth.access_level()."""
+    level = auth.access_level()
+    if level == 'edit' or (level == 'review' and reviewer_ok):
+        return False
+    role = auth.REVIEWER_ROLE if level == 'review' else auth.VIEWER_ROLE
+    ui.notify(f'Your role ({role}) is read-only: you cannot {what}.', color='warning')
+    return True
 
 def _xsheet_column_default(col_id: str) -> str | None:
     """The layer a layer column's pencil heading renames (see
@@ -3094,7 +3185,7 @@ def _build_traditional_xsheet(sess, grid, layer_ids: list[str], rows: list[dict]
     wrapped = {'wrapText': True, 'autoHeight': True, 'cellClass': 'mlw-trad-wrap'}
     column_defs = [
         {'field': 'Notes', 'colId': 'action', 'headerName': 'Action/Description', 'width': 320, **wrapped,
-         **NOTES_EDITING},
+         **notes_editing()},
         first_frame_col,
         {'field': 'AudioTrack', 'colId': 'audio', 'headerName': 'Audio', 'width': 160, **centered},
         {'field': 'Dialogue', 'colId': 'dialogue', 'headerName': 'Dialogue', 'width': 190},
@@ -3504,6 +3595,8 @@ def edit_xsheet_notes(e) -> None:
     A frame that has no <Frame> of its own (a hold) gets one, restating
     the drawings it was holding, so the sheet still shows the same thing.
     The grid is updated in place, so it keeps its scroll position."""
+    if deny_read_only('edit notes'):
+        return
     args = e.args or {}
     if args.get('colId') not in ('Notes', 'action'):
         return
@@ -3601,6 +3694,8 @@ def show_dialogue_dialog(frame: int) -> None:
     it's holding (see add_holding_frame_in_text()). Saved as one ordinary
     (undoable) edit that keeps the document schema-valid; the grid updates
     in place."""
+    if deny_read_only('edit dialogue'):
+        return
     import xml.etree.ElementTree as ET
     text = _editor_text()
     try:
@@ -3694,6 +3789,8 @@ def show_audio_cue_dialog(frame: int, effects: bool | None) -> None:
     track's own parameters (which every cue on the track shares). Saved as
     one ordinary (undoable) edit that keeps the document schema-valid; the
     grid updates in place."""
+    if deny_read_only('edit audio cues'):
+        return
     import re
     import xml.etree.ElementTree as ET
     text = _editor_text()
@@ -3878,6 +3975,8 @@ def show_camera_move_dialog(frame: int) -> None:
     that range, and the camera's own name and projection. Saved as one
     ordinary (undoable) edit that keeps the document schema-valid; the
     grid updates in place."""
+    if deny_read_only('edit camera moves'):
+        return
     import re
     import xml.etree.ElementTree as ET
     text = _editor_text()
@@ -4092,7 +4191,7 @@ def update_delete_frame_item(on_xsheet_tab: bool | None = None) -> None:
     sess = session()
     for item in (sess.delete_frame_item, sess.delete_layer_item):
         if item is not None:
-            item.set_enabled(sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab)
+            item.set_enabled((sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab) and not auth.is_read_only())
 
 
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
@@ -4102,7 +4201,7 @@ def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     if on_xsheet_tab is None:
         on_xsheet_tab = sess.main_tab == 'XSheet'
     if sess.sketchpad_item is not None:
-        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open)
+        sess.sketchpad_item.set_enabled(on_xsheet_tab and sess.document_open and auth.can_review())
 
 
 def reset_sketchpad() -> None:
@@ -4207,6 +4306,8 @@ def _apply_doc_step(undo: bool) -> bool:
 
 
 async def _step_history(undo: bool) -> None:
+    if deny_read_only('undo or redo', reviewer_ok=True):
+        return
     sess = session()
     word = 'undo' if undo else 'redo'
     try:  # the sketch reports a moment after a change: ask it now, so the journal is up to date
@@ -4358,7 +4459,7 @@ def refresh_svg_editor() -> None:
         sess.suppress_svg_editor_change = True
         sess.svg_editor.value = text
         sess.suppress_svg_editor_change = False
-    sess.svg_editor.set_enabled(sess.document_open)
+    sess.svg_editor.set_enabled(sess.document_open and auth.can_review())
     if sess.svg_status is not None:
         sess.svg_status.set_text('Edits here change the Sketchpad sketch, and the Sketchpad\'s edits show here.'
                                  if sess.document_open else 'Open a document to see its sketch here.')
@@ -4370,7 +4471,7 @@ async def on_svg_editor_change(e) -> None:
     (see mlwSketchpad.applySVG()), unless it isn't well-formed yet -- then
     the sketch stays as it was, and a note says why."""
     sess = session()
-    if sess.suppress_svg_editor_change or not sess.document_open:
+    if not auth.can_review() or sess.suppress_svg_editor_change or not sess.document_open:
         return
     text = e.value if hasattr(e, 'value') else ''
     try:
@@ -4432,6 +4533,8 @@ def toggle_sketchpad(active: bool | None = None) -> None:
     off, the sketchpad is hidden and
     ignores the pointer, so nothing can be drawn and the grid works as
     usual. The sketch is kept, and shows again when it's turned back on."""
+    if active is not False and deny_read_only('use the Sketchpad', reviewer_ok=True):
+        return
     sess = session()
     sess.sketchpad_active = (not sess.sketchpad_active) if active is None else bool(active)
     if sess.sketchpad_active and not sess.document_open:
@@ -4640,7 +4743,7 @@ def _build_sketchpad_toolbar(sess) -> None:
             show_width(SKETCHPAD_WIDTH)
             ui.separator().props('vertical')
             ui.button(icon='delete', on_click=delete_selected).props('flat dense size=sm') \
-                .tooltip('Delete the selected shape (or press Delete)')
+                .tooltip('Delete the selected shape or shapes (or press Delete)')
             ui.button(icon='undo', on_click=undo).props('flat dense size=sm').tooltip('Undo')
             ui.button(icon='delete_sweep', on_click=confirm_clear).props('flat dense size=sm').tooltip('Clear the sketchpad')
     buttons['tool:draw'].classes(add='mlw-tool-on')
@@ -4712,7 +4815,7 @@ def update_xml_menu_items() -> None:
     on the XML tab. (XML > XML Editor, the check box, always can.)"""
     sess = session()
     for item in sess.xml_menu_items:
-        item.set_enabled(sess.main_tab == 'XML')
+        item.set_enabled(sess.main_tab == 'XML' and not (auth.is_read_only() and item in sess.edit_items))
 
 
 def close_find_dialogs(showing: str) -> None:
@@ -4798,6 +4901,8 @@ def show_add_layer_dialog() -> None:
     """Edit > Add Layer: add a new animation layer (a <Layer> in one frame's
     <Layers>), with placeholder values to fill in. Its column then appears
     in the XSheet grid from that frame on."""
+    if deny_read_only('add layers'):
+        return
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
     if rows is None:
@@ -4927,6 +5032,8 @@ def show_add_frame_dialog() -> None:
     (the default) or inserted before any frame, moving the later frames
     along (see add_frames_in_text()). The first new frame gets a <Frame>
     with the values filled in here; the rest hold it."""
+    if deny_read_only('add frames'):
+        return
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
     if not rows:
@@ -5068,6 +5175,8 @@ def show_delete_frame_dialog() -> None:
     """Edit > Delete Frame (the XSheet tab): delete frames from the sheet,
     starting at the selected one -- the rows go, and the later frames move up
     (see delete_frames_in_text()). Undo with Ctrl+Z."""
+    if deny_read_only('delete frames'):
+        return
     import re
     import xml.etree.ElementTree as ET
     sess = session()
@@ -5170,6 +5279,8 @@ def show_delete_layer_dialog() -> None:
     -- a layer, or one of the other data columns (notes, dialogue, audio,
     camera moves, ...) -- from the document (see delete_column_in_text()).
     The column last clicked is offered; the dialog can choose any other."""
+    if deny_read_only('delete layers'):
+        return
     sess = session()
     text = _editor_text()
     layer_ids, rows, message = parse_exposure_sheet(text)
@@ -5217,6 +5328,8 @@ def _prompt_rename_layer(old: str) -> None:
     """Rename an animation layer in the open document, from its column
     heading in the traditional sheet. The edit goes through the editor like
     any other, so it marks the document modified and can be undone."""
+    if deny_read_only('rename layers'):
+        return
     with ui.dialog() as dlg, titled_card('Rename Layer', classes='w-[360px] max-w-full', body_classes='gap-2'):
         ui.label('Renames the layer on every frame of the document (and in the OTIO track map). '
                  'Undo with Ctrl+Z.').classes('text-caption text-grey')
@@ -5492,6 +5605,8 @@ def new_document():
     editor -- after offering to save the current one if it has unsaved
     changes. Nothing is written to disk until Save or Save As; until then it
     shows as untitled.xml, and is kept as a draft like any unsaved work."""
+    if deny_read_only('start a new document'):
+        return
     def start():
         text = new_document_text()
         _load_document(None, text, '')
@@ -5504,10 +5619,12 @@ def new_document():
     _then_with_check(start, 'Save changes before starting a new document?')
 
 
-def _set_editor_text(new_text: str):
+def _set_editor_text(new_text: str, reviewer_ok: bool = False):
     """Programmatically replace the editor contents (used by Find & Replace),
     keeping undo/redo and modified-state tracking consistent -- same pattern
     as global_undo() and global_redo()."""
+    if deny_read_only('change the document', reviewer_ok=reviewer_ok):
+        return
     sess = session()
     if new_text == sess.last_editor_value:
         return
@@ -5627,6 +5744,8 @@ def show_find_dialog():
         highlight_current()
 
     def do_replace():
+        if deny_read_only('replace text', reviewer_ok=on_svg()):
+            return
         sync_tab()
         if not (0 <= state['index'] < len(state['matches'])):
             do_find(1)
@@ -5644,6 +5763,8 @@ def show_find_dialog():
         refresh_matches(anchor_pos=m.start() + len(replacement))
 
     def do_replace_all():
+        if deny_read_only('replace text', reviewer_ok=on_svg()):
+            return
         sync_tab()
         pattern = build_pattern()
         if pattern is None:
@@ -5696,6 +5817,8 @@ def save_file(on_saved=None):
     the file on disk no longer matches what this session last opened or
     saved -- someone else saved over it in the meantime -- ask before
     overwriting their changes."""
+    if deny_read_only('save the document', reviewer_ok=True):
+        return
     sess = session()
     if not sess.current_file['path']:
         save_as(on_saved=on_saved)
@@ -5766,6 +5889,8 @@ def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
 def save_as(on_saved=None):
     """Save the editor to a newly chosen file, then call on_saved() if the
     save went through (not if the dialog or an overwrite prompt is cancelled)."""
+    if deny_read_only('save the document', reviewer_ok=True):
+        return
     sess = session()
     def file_selected_callback(files):
         if not files:
@@ -6312,7 +6437,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     // how far the curve holds it); rect: two opposite corners; circle: the centre and a point on the edge.
     const st = {shapes: [], active: false, tool: 'draw', shape: 'spline', color: '#e11d48', width: 4, font: 'sans-serif', fontSize: 24,  /* text: see setTextStyle() */
                  /* = SKETCHPAD_COLOR, SKETCHPAD_WIDTH */
-                selected: -1, node: null, history: [], future: [], label: null,  // node: [shape, anchor] whose arms show
+                selected: -1, group: [], marquee: null, node: null, history: [], future: [], label: null,  // node: [shape, anchor] whose arms show
                 poly: null};  // the polyline being drawn: its last point follows the pointer
     const hosts = new Set();
     const round = (v) => Math.round(v * 10) / 10;
@@ -6457,9 +6582,18 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         const boxEl = (s, attrs) => { const b = textBox(s); return el('rect', {x: b.x - 2, y: b.y - 2, width: b.w + 4, height: b.h + 4, ...attrs}); };
         st.shapes.forEach((s, i) => svg.appendChild(s.type === 'text' ? boxEl(s, {
             fill: 'transparent', 'pointer-events': 'all', 'data-shape': i,
-            class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'}) : shapeEl(s, {
+            class: i === st.selected || st.group.includes(i) ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'}) : shapeEl(s, {
             fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(s.width + 12, 14), 'stroke-linecap': 'round',
-            'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+            'pointer-events': 'stroke', 'data-shape': i, class: i === st.selected || st.group.includes(i) ? 'mlw-hit mlw-selected-hit' : 'mlw-hit'})));
+        // several shapes selected by dragging across them: each highlighted, with no handles
+        st.group.forEach(gi => { const gs = st.shapes[gi]; if (gs) svg.insertBefore(gs.type === 'text' ? boxEl(gs, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.6, 'stroke-width': 2,
+            'pointer-events': 'none'}) : shapeEl(gs, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.35, 'stroke-width': gs.width + 8,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none'}), svg.firstChild); });
+        if (st.marquee) {  // the selection rectangle being dragged
+            const [mx1, my1, mx2, my2] = st.marquee;
+            svg.appendChild(el('rect', {x: Math.min(mx1, mx2), y: Math.min(my1, my2), width: Math.abs(mx2 - mx1), height: Math.abs(my2 - my1),
+                fill: 'rgba(88,152,212,0.12)', stroke: '#2b5d8a', 'stroke-width': 1, 'stroke-dasharray': '4 3', 'pointer-events': 'none'}));
+        }
         const s = st.shapes[st.selected];
         if (!s) return;
         svg.insertBefore(s.type === 'text' ? boxEl(s, {fill: 'none', stroke: '#5898d4', 'stroke-opacity': 0.6, 'stroke-width': 2,
@@ -6600,7 +6734,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         if (!keep || (t.index === null && !text) || (s && s.text === text)) return;
         remember();
         if (t.index === null) { st.shapes.push({type: 'text', color: st.color, size: st.fontSize, font: st.font, points: [t.at], text}); }
-        else if (!text) { st.shapes.splice(t.index, 1); st.selected = -1; st.node = null; }
+        else if (!text) { st.shapes.splice(t.index, 1); st.selected = -1; st.group = []; st.node = null; }
         else s.text = text;
         rebuildAll();
     }
@@ -6727,6 +6861,27 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         });
         return shapes;
     }
+    // The shapes a dragged rectangle (x1, y1, x2, y2: the sheet's coordinates) crosses: any point of
+    // a shape's line within it (allowing for the line's width), or a string's box overlapping it.
+    function shapesCrossed(host, [ax, ay, bx, by]) {
+        const r = [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
+        const g = svgOf(host).querySelector(':scope > g.mlw-sheet');
+        const found = [];
+        st.shapes.forEach((s, i) => {
+            if (s.type === 'text') {
+                const b = textBox(s);
+                if (b.x <= r[2] && b.x + b.w >= r[0] && b.y <= r[3] && b.y + b.h >= r[1]) found.push(i);
+                return;
+            }
+            const e = g && g.querySelector(`:scope > [data-shape="${i}"]:not(.mlw-hit)`);
+            if (!e || !e.getTotalLength) return;
+            const pad = (s.width || 4) / 2, len = e.getTotalLength();
+            const inside = (d) => { const q = e.getPointAtLength(d); return q.x >= r[0] - pad && q.x <= r[2] + pad && q.y >= r[1] - pad && q.y <= r[3] + pad; };
+            for (let d = 0; d < len; d += 3) if (inside(d)) { found.push(i); return; }
+            if (inside(len)) found.push(i);
+        });
+        return found;
+    }
     function attach(host) {
         if (host._mlwSketchpad) {  // back on the page (its tab shown again): drawn afresh
             if (!hosts.has(host)) { hosts.add(host); rebuildAll(); }
@@ -6800,14 +6955,26 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 st.node = [i, +t.dataset.point];  // a spline's anchor: show its arms
                 rebuildAll();
             } else if (t.classList.contains('mlw-hit')) {
+                if (e.shiftKey) {  // Shift+click adds a shape to the selection, or takes it out
+                    const now = st.group.length ? st.group.slice() : (st.shapes[st.selected] ? [st.selected] : []);
+                    const pos = now.indexOf(i);
+                    if (pos >= 0) now.splice(pos, 1); else now.push(i);
+                    st.node = null;
+                    st.selected = now.length === 1 ? now[0] : -1;
+                    st.group = now.length > 1 ? now : [];
+                    rebuildAll();
+                    return;
+                }
+                const inGroup = st.group.includes(i);  // one of several selected: they all move together
                 const was = st.selected === i;
-                if (st.selected !== i || st.node) { st.selected = i; st.node = null; rebuildAll(); }
+                if (!inGroup && (st.selected !== i || st.node || st.group.length)) { st.selected = i; st.group = []; st.node = null; rebuildAll(); }
                 remember();
-                drag = {kind: 'move', shape: i, from: [x, y], moved: false, again: was && st.shapes[i].type === 'text'};
-            } else if (st.selected !== -1) {
-                st.selected = -1;
-                st.node = null;
-                rebuildAll();
+                drag = {kind: 'move', shape: i, shapes: inGroup ? st.group.slice() : [i], from: [x, y], moved: false,
+                        again: was && st.shapes[i].type === 'text'};
+            } else {
+                // empty space: drag a rectangle across the shapes to select them (a click just deselects)
+                if (!e.shiftKey && (st.selected !== -1 || st.group.length)) { st.selected = -1; st.group = []; st.node = null; rebuildAll(); }
+                drag = {kind: 'marquee', from: [x, y], moved: false, add: e.shiftKey ? (st.group.length ? st.group.slice() : (st.shapes[st.selected] ? [st.selected] : [])) : []};
             }
         });
         host.addEventListener('pointermove', (e) => {
@@ -6850,10 +7017,15 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                 drag.moved = true;
                 dragHandle(st.shapes[drag.shape], drag.point, x, y);
                 rebuildAll();
+            } else if (drag.kind === 'marquee') {
+                if (!drag.moved && Math.hypot(x - drag.from[0], y - drag.from[1]) < 4) return;
+                drag.moved = true;
+                st.marquee = [drag.from[0], drag.from[1], x, y];
+                rebuildAll();
             } else {
                 const dx = x - drag.from[0], dy = y - drag.from[1];
                 if (!dx && !dy) return;
-                st.shapes[drag.shape].points.forEach(p => { p[0] += dx; p[1] += dy; });
+                drag.shapes.forEach(si => st.shapes[si].points.forEach(p => { p[0] += dx; p[1] += dy; }));
                 drag.from = [x, y];
                 drag.moved = true;
                 rebuildAll();
@@ -6869,6 +7041,15 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
                     const tiny = s.type === 'rect' ? Math.abs(x2 - x1) < 2 && Math.abs(y2 - y1) < 2 : radius(s) < 2;
                     if (tiny) { st.shapes.pop(); st.history.pop(); }  // a click, not a drag: nothing drawn
                 }
+            } else if (drag.kind === 'marquee') {
+                if (drag.moved) {
+                    const found = shapesCrossed(host, st.marquee);
+                    const all = [...new Set([...drag.add, ...found])].sort((a, b) => a - b);
+                    st.selected = all.length === 1 ? all[0] : -1;
+                    st.group = all.length > 1 ? all : [];
+                    st.node = null;
+                }
+                st.marquee = null;
             } else if (!drag.moved) st.history.pop();  // a click to select (a shape, or an anchor): nothing to undo
             const edit = drag.kind === 'move' && !drag.moved && drag.again ? drag.shape : null;  // a click on a selected string: edit it
             drag = null;
@@ -6907,7 +7088,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
     }, true);
     document.addEventListener('keydown', (e) => {
         if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
-        if (!st.active || st.selected === -1 || !['Delete', 'Backspace'].includes(e.key)) return;
+        if (!st.active || (st.selected === -1 && !st.group.length) || !['Delete', 'Backspace'].includes(e.key)) return;
         e.preventDefault();
         if (!api.deleteNode()) api.deleteSelected();  // a spline's selected anchor, or else the shape
     });
@@ -6915,26 +7096,34 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
         .observe(document.body, {childList: true, subtree: true});
     document.querySelectorAll('div.mlw-sketchpad').forEach(attach);
     const api = {
-        setActive(on) { finishPoly(); finishText(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; rebuildAll(); },
+        setActive(on) { finishPoly(); finishText(); [...hosts].filter(h => h.isConnected).forEach(sheetGeometry); st.active = !!on; if (!on) st.selected = -1; st.group = []; rebuildAll(); },
         // 'draw' (the current shape) or 'select'; 'pen' is taken as 'draw'
-        setTool(tool) { finishPoly(); finishText(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; rebuildAll(); },
+        setTool(tool) { finishPoly(); finishText(); st.tool = tool === 'select' ? 'select' : 'draw'; if (st.tool === 'draw') st.selected = -1; st.group = []; rebuildAll(); },
         setShape(shape) { st.shape = ['polyline', 'rect', 'circle', 'text'].includes(shape) ? shape : 'spline'; api.setTool('draw'); },
         // the pen's colour / width, and the selected shape's
         setColor(color) {
             st.color = color;
-            const s = st.shapes[st.selected];
-            if (s && s.color !== color) { remember(); s.color = color; rebuildAll(); }
+            const chosen = (st.group.length ? st.group : [st.selected]).map(i => st.shapes[i]).filter(s => s && s.color !== color);
+            if (chosen.length) { remember(); chosen.forEach(s => { s.color = color; }); rebuildAll(); }
         },
         setWidth(width) {
             st.width = width;
-            const s = st.shapes[st.selected];
-            if (s && s.type !== 'text' && s.width !== width) { remember(); s.width = width; rebuildAll(); }
+            const chosen = (st.group.length ? st.group : [st.selected]).map(i => st.shapes[i]).filter(s => s && s.type !== 'text' && s.width !== width);
+            if (chosen.length) { remember(); chosen.forEach(s => { s.width = width; }); rebuildAll(); }
         },
         deleteSelected() {
+            if (st.group.length) {  // several selected: all go
+                remember();
+                const gone = new Set(st.group);
+                st.shapes = st.shapes.filter((_, i) => !gone.has(i));
+                st.selected = -1; st.group = []; st.node = null;
+                rebuildAll();
+                return true;
+            }
             if (!st.shapes[st.selected]) return false;
             remember();
             st.shapes.splice(st.selected, 1);
-            st.selected = -1;
+            st.selected = -1; st.group = [];
             st.node = null;
             rebuildAll();
             return true;
@@ -6964,7 +7153,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (!st.history.length) return false;
             st.future.push(copy(st.shapes));
             st.shapes = st.history.pop();
-            if (!st.shapes[st.selected]) st.selected = -1;
+            if (!st.shapes[st.selected]) st.selected = -1; st.group = [];
             rebuildAll();
             return true;
         },
@@ -6973,7 +7162,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             if (!st.future.length) return false;
             st.history.push(copy(st.shapes));
             st.shapes = st.future.pop();
-            if (!st.shapes[st.selected]) st.selected = -1;
+            if (!st.shapes[st.selected]) st.selected = -1; st.group = [];
             rebuildAll();
             return true;
         },
@@ -6988,7 +7177,7 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             const shapes = fromSVG(text);
             if (!shapes) return false;
             finishPoly(false); finishText(false);
-            st.shapes = shapes; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null;
+            st.shapes = shapes; st.history = []; st.future = []; st.selected = -1; st.group = []; st.node = null; st.label = null;
             saved = unsaved ? null : JSON.stringify(shapes);
             rebuildAll();
             return true;
@@ -7006,14 +7195,14 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             finishPoly(false); finishText(false);
             if (Date.now() - editorEdit > 1500) remember();
             editorEdit = Date.now();
-            st.shapes = shapes; st.selected = -1; st.node = null; st.label = null;
+            st.shapes = shapes; st.selected = -1; st.group = []; st.node = null; st.label = null;
             origin = 'editor';
             rebuildAll();
             return 'ok';
         },
         // a document opened or closed: no sketch, nothing to undo
-        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.future = []; st.selected = -1; st.node = null; st.label = null; rebuildAll(); },
-        clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.node = null; rebuildAll(); } },
+        reset() { saved = '[]'; finishText(false); st.poly = null; st.shapes = []; st.history = []; st.future = []; st.selected = -1; st.group = []; st.node = null; st.label = null; rebuildAll(); },
+        clear() { finishPoly(); finishText(false); if (st.shapes.length) { remember(); st.shapes = []; st.selected = -1; st.group = []; st.node = null; rebuildAll(); } },
         // the pen alone, leaving the selected shape as it is
         // the typeface and size (pixels) of the strings typed from now on (Preferences > Sketchpad)
         setTextStyle(font, size) { st.font = FONTS.includes(font) ? font : 'sans-serif'; st.fontSize = Math.max(+size || 24, 1); },
@@ -7028,13 +7217,13 @@ window.mlwSketchpad = window.mlwSketchpad || (() => {
             st.shapes = st.history[n];
             st.history.length = n;
             st.future.length = 0;
-            if (!st.shapes[st.selected]) st.selected = -1;
+            if (!st.shapes[st.selected]) st.selected = -1; st.group = [];
             rebuildAll();
         },
         squashTo(n) { if (st.history.length > n + 1) st.history.length = n + 1; st.future.length = 0; },
         tool() { return st.tool; },
         shape() { return st.shape; },
-        selected() { return st.selected; },
+        selected() { return st.group.length ? st.group[0] : st.selected; },
         shapes() { return copy(st.shapes); },
         shapeCount() { return st.shapes.length; },
         splines() { return copy(st.shapes); },        // earlier names, kept
@@ -7430,7 +7619,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         with ui.row().classes('items-center gap-4 flex-nowrap overflow-x-auto overflow-y-hidden'):
             # File menu dropdown with Open, Save, Save As, Close
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
-                ui.menu_item('New', on_click=lambda _: new_document())
+                sess.edit_items.append(ui.menu_item('New', on_click=lambda _: new_document()))
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
                 # Submenu of this user's recently opened files. The File
                 # dropdown auto-closes on any click inside it, so stop this
@@ -7442,8 +7631,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                     sess.recent_menu = ui.menu().props('anchor="top end" self="top start" auto-close')
                     sess.recent_menu.on('before-show', lambda _: rebuild_recent_menu())
                 rebuild_recent_menu()
-                ui.menu_item('Save', on_click=lambda _: save_file())
-                ui.menu_item('Save As', on_click=lambda _: save_as())
+                sess.review_items.append(ui.menu_item('Save', on_click=lambda _: save_file()))
+                sess.review_items.append(ui.menu_item('Save As', on_click=lambda _: save_as()))
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)
@@ -7457,16 +7646,16 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):
-                ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog())
+                sess.edit_items.append(ui.menu_item('Add Frame', on_click=lambda _: show_add_frame_dialog()))
                 # deletes rows of the sheet: available on the XSheet tab only (see update_delete_frame_item())
                 sess.delete_frame_item = ui.menu_item('Delete Frame', on_click=lambda _: show_delete_frame_dialog())
-                ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog())
+                sess.edit_items.append(ui.menu_item('Add Layer', on_click=lambda _: show_add_layer_dialog()))
                 sess.delete_layer_item = ui.menu_item('Delete Layer', on_click=lambda _: show_delete_layer_dialog())
                 ui.separator()
                 ui.menu_item('Find', on_click=lambda _: show_find_frame_dialog() if session().main_tab == 'XSheet' else show_find_dialog())
                 ui.separator()
-                ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo())
-                ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo())
+                sess.review_items.append(ui.menu_item('Undo (Ctrl+Z)', on_click=lambda _: global_undo()))
+                sess.review_items.append(ui.menu_item('Redo (Ctrl+Y)', on_click=lambda _: global_redo()))
             # XSheet menu
             with ui.dropdown_button('XSheet', auto_close=True).props('flat color=white'):
                 # these act on the grid, so they are disabled on the XML tab and
@@ -7511,6 +7700,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                 ]
                 ui.separator()
                 sess.xml_menu_items.append(ui.menu_item('Format', on_click=lambda _: format_xml()))
+                sess.edit_items.append(sess.xml_menu_items[-1])
             # About menu: the app's About dialog, and the document's reviews
             with ui.dropdown_button('About', auto_close=True).props('flat color=white'):
                 ui.menu_item('About', on_click=lambda _: show_about_dialog())
@@ -7522,7 +7712,15 @@ window.mlwSelectRange = function(elementId, from, to) {
             ui.tooltip(f'Logged in as {auth.current_username()}') \
                 .props('anchor="center left" self="center right" :offset="[8, 0]"')
             with ui.menu().props('anchor="bottom right" self="top right"'):
+                ui.menu_item('Profile', on_click=lambda _: show_profile_dialog())
                 ui.menu_item('Logout', on_click=lambda _: log_out_with_check())
+
+    if auth.is_read_only():  # viewer and reviewer roles: don't change the XML (a reviewer may add reviews and sketch)
+        for item in sess.edit_items:
+            item.set_enabled(False)
+    if not auth.can_review():
+        for item in sess.review_items:
+            item.set_enabled(False)
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
@@ -7647,6 +7845,9 @@ window.mlwSelectRange = function(elementId, from, to) {
                         # fallback to textarea
                         sess.editor = ui.textarea(value='', on_change=on_editor_change_with_tree).classes('w-full').style('min-height: 80vh')
                         ui.notify('CodeMirror component not found; using plain textarea', color='warning')
+
+                if auth.is_read_only():
+                    sess.editor.set_enabled(False)  # the XSheet Viewer role: read-only
 
                 # create a right-side column for XML hierarchy as a sibling in the same row
                 # tree selection handler: highlight the line where the selected node
