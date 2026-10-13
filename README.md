@@ -26,6 +26,9 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
 
 ## Features
 
+- **Login with roles**: users sign in through Keycloak. A user with the **XSheet Viewer** role has
+  read-only access (nothing that changes the XML or the Sketchpad); one with **XSheet Editor** can
+  do everything. See [Roles](#roles).
 - **Two tabs**: **XSheet** (a traditional exposure-sheet grid rendered from the document) and
   **XML** (the text editor and Hierarchy tree). Your place in each — editor cursor
   line, XSheet scroll position — is remembered when you switch away and back.
@@ -182,7 +185,7 @@ is `http://mlw-keycloak:8080`, not `localhost:8180`.
   list, exports, Generate Report), but cannot change the XML or the Sketchpad: New, Save, Save As,
   Add/Delete Frame and Layer, Undo/Redo, Format, Find & Replace and the Sketchpad are disabled or refused; the XML and
   SVG editors are read-only; the Notes cells, dialogue, audio, camera, production, layer-name and
-  review editors do not open. Profile shows *Access: Read-only (viewer)*.
+  review editors do not open (the Reviews list still shows). Profile shows *Access: Read-only (viewer)*.
 - **`XSheet Editor`** — can do everything. So can the administrator role (`admin`), the built-in
   fallback account, and a user with neither of the two roles. If a user has both Viewer and Editor
   (or `admin`), they can edit.
@@ -198,7 +201,7 @@ Keycloak password is not retried against the built-in account.
 
 - Logging in applies to all tabs of that browser. The user icon at the right end of the menubar
   opens a menu with **Profile** and **Logout**. **Profile** shows who is signed in: for a Keycloak user
-  their name, e-mail, realm, Keycloak ID, sign-in time, administrator status, realm roles and client
+  their name, e-mail, realm, Keycloak ID, sign-in time, administrator status, access (*Read-only (viewer)* or *Can edit*, see [Roles](#roles)), realm roles and client
   roles (as of login, so a change made in Keycloak appears after the next login); for the built-in
   account, its user name and administrator role. **Logout** logs them all out and returns to the login page. If the
   document has unsaved changes (to its text or its Sketchpad sketch), Logout first asks whether
