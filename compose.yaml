@@ -28,5 +28,34 @@ services:
       MLW_KEYCLOAK_ADMIN_CLIENT_ID: ${MLW_KEYCLOAK_ADMIN_CLIENT_ID:-mlw-xsheet-admin}
       MLW_KEYCLOAK_ADMIN_CLIENT_SECRET: ${MLW_KEYCLOAK_ADMIN_CLIENT_SECRET:-}
       MLW_KEYCLOAK_VERIFY_TLS: ${MLW_KEYCLOAK_VERIFY_TLS:-1}
+      # Each logged-in user's saved settings and unsaved drafts live in Redis (see
+      # userstore.py). With MLW_REDIS_URL empty the app falls back to per-browser
+      # storage in NICEGUI_STORAGE_PATH.
+      MLW_REDIS_URL: ${MLW_REDIS_URL-redis://redis:6379/0}
+      MLW_REDIS_PASSWORD: ${MLW_REDIS_PASSWORD:-}
+      MLW_REDIS_PREFIX: ${MLW_REDIS_PREFIX:-mlw:xsheet}
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - /etc/localtime:/etc/localtime:ro
+
+  # The per-user store: preferences, recent files and unsaved drafts, one record
+  # per logged-in user (see userstore.py for the key layout). Not published on
+  # the host (the dev override publishes it on localhost only). Persistent: every
+  # write is appended to the redis-data volume (append-only file).
+  redis:
+    image: redis:7-alpine
+    command: ["sh", "-c", "exec redis-server --appendonly yes --save 300 1 ${MLW_REDIS_PASSWORD:+--requirepass \"$$MLW_REDIS_PASSWORD\"}"]
+    environment:
+      MLW_REDIS_PASSWORD: ${MLW_REDIS_PASSWORD:-}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "[ -z \"$$MLW_REDIS_PASSWORD\" ] || export REDISCLI_AUTH=\"$$MLW_REDIS_PASSWORD\"; redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

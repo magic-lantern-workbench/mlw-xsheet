@@ -17,6 +17,12 @@ services:
       - default
       - mlw-platform
 
+  # Publish Redis on this machine only, so its records can be inspected while
+  # developing (e.g. redis-cli -p 6380 --scan --pattern 'mlw:xsheet:*').
+  redis:
+    ports:
+      - "127.0.0.1:${MLW_REDIS_HOST_PORT:-6380}:6379"
+
 networks:
   mlw-platform:
     name: mlw-platform_default

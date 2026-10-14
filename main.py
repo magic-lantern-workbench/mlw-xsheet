@@ -36,6 +36,7 @@ from save_file import save_file as SaveFileDialog
 from choose_folder import choose_folder as ChooseFolderDialog
 from dialog_ui import give_to_owner_of, titled_card, within
 import auth
+import userstore
 from tools import xsheet_to_xdts_extended
 from tools import xsheet_to_oca
 import export_pdf
@@ -168,9 +169,13 @@ class Session:
         self.xsheet_refresh_in_place = False  # the next grid rebuild just replaces the rows (see edit_xsheet_notes())
         self.main_tabs = None  # the XSheet / XML / SVG tabs (see xml_tab_active())
 
-        # This user's app.storage.user, captured while index() still has the
-        # page request (event handlers and timers don't always carry one).
+        # This browser's app.storage.user (its login state), and the storage for this
+        # logged-in user's saved settings and drafts -- in Redis, shared by all their
+        # browsers, when it is set up; otherwise the same app.storage.user (see
+        # userstore.py). Captured while index() still has the page request (event
+        # handlers and timers don't always carry one).
         self.user_storage = None
+        self.prefs = None
 
 
 def session() -> Session:
@@ -178,9 +183,11 @@ def session() -> Session:
     return app.storage.client['session']
 
 
-# Per-user data kept in app.storage.user, which NiceGUI persists per browser
-# (identified by a signed cookie) across reloads, tabs, and server restarts --
-# unlike Session, which lives only as long as its page.
+# Per-user data. With Redis set up (MLW_REDIS_URL; see userstore.py) it is kept in
+# Redis under the logged-in user's id, so it follows the person across browsers,
+# reloads and server restarts. Without it, it is kept in app.storage.user, which
+# NiceGUI persists per browser (identified by a signed cookie) -- unlike Session,
+# which lives only as long as its page.
 #   'format_prefs':   XML/XSD pretty-print parameters, editable via
 #                     File > Preferences.
 #   'schema_path':    the .xsd chosen for semantic (schema) validation; None
@@ -236,7 +243,12 @@ MAX_RECENT_FILES_LIMIT = 20
 
 
 def user_storage():
-    return session().user_storage
+    return session().prefs
+
+
+def _prefs():
+    """The same storage as user_storage(), for code that may run outside a page's Session."""
+    return userstore.store_for(app.storage.user)
 
 
 # ---------------------------------------------------------------- Pop-up log
@@ -305,18 +317,18 @@ LOG_TIME_MODES = ('server', 'utc', 'custom')
 
 
 def popup_log_time_mode() -> str:
-    mode = app.storage.user.get('popup_log_time', 'server')
+    mode = _prefs().get('popup_log_time', 'server')
     return mode if mode in LOG_TIME_MODES else 'server'
 
 
 def popup_log_zone() -> str:
-    return app.storage.user.get('popup_log_zone') or SERVER_TIME_ZONE
+    return _prefs().get('popup_log_zone') or SERVER_TIME_ZONE
 
 
 def set_popup_log_time(mode: str, zone: str | None) -> None:
-    app.storage.user['popup_log_time'] = mode if mode in LOG_TIME_MODES else 'server'
+    _prefs()['popup_log_time'] = mode if mode in LOG_TIME_MODES else 'server'
     if zone:
-        app.storage.user['popup_log_zone'] = zone
+        _prefs()['popup_log_zone'] = zone
 
 
 def popup_log_now() -> datetime.datetime:
@@ -334,11 +346,11 @@ def popup_log_now() -> datetime.datetime:
 
 
 def popup_log_enabled() -> bool:
-    return bool(app.storage.user.get('popup_log', True))
+    return bool(_prefs().get('popup_log', True))
 
 
 def set_popup_log_enabled(enabled: bool) -> None:
-    app.storage.user['popup_log'] = bool(enabled)
+    _prefs()['popup_log'] = bool(enabled)
 
 
 def popup_log_path() -> Path:
@@ -6314,6 +6326,7 @@ def show_file_dialog():
 def index():
     sess = Session()
     sess.user_storage = app.storage.user
+    sess.prefs = userstore.store_for(app.storage.user)
     app.storage.client['session'] = sess
     sess.xsheet_style = xsheet_style_pref()
     # JS helpers bridging the editor and the Hierarchy tree.
