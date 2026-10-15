@@ -170,7 +170,7 @@ class Session:
         self.main_tabs = None  # the XSheet / XML / SVG tabs (see xml_tab_active())
 
         # This browser's app.storage.user (its login state), and the storage for this
-        # logged-in user's saved settings and drafts -- in Redis, shared by all their
+        # logged-in user's saved settings and drafts -- in Valkey, shared by all their
         # browsers, when it is set up; otherwise the same app.storage.user (see
         # userstore.py). Captured while index() still has the page request (event
         # handlers and timers don't always carry one).
@@ -183,8 +183,8 @@ def session() -> Session:
     return app.storage.client['session']
 
 
-# Per-user data. With Redis set up (MLW_REDIS_URL; see userstore.py) it is kept in
-# Redis under the logged-in user's id, so it follows the person across browsers,
+# Per-user data. With Valkey set up (MLW_VALKEY_URL; see userstore.py) it is kept in
+# Valkey under the logged-in user's id, so it follows the person across browsers,
 # reloads and server restarts. Without it, it is kept in app.storage.user, which
 # NiceGUI persists per browser (identified by a signed cookie) -- unlike Session,
 # which lives only as long as its page.
@@ -1909,7 +1909,7 @@ def show_about_dialog():
         with ui.tab_panels(tabs, value=about_tab).classes('w-full'):
             with ui.tab_panel(about_tab).classes('px-0 gap-4'):
                 ui.label('Author: Wizzer Works')
-                ui.label('Version: 1.5.0')
+                ui.label('Version: 1.6.0')
                 with ui.row().classes('items-center gap-1'):
                     ui.label('Please visit')
                     ui.link('www.wizzerworks.com', 'https://www.wizzerworks.com', new_tab=True)

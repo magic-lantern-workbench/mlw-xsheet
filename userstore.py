@@ -23,20 +23,20 @@
 # SOFTWARE.
 #
 
-"""Per-user storage for the Web UI's saved state, kept in Redis.
+"""Per-user storage for the Web UI's saved state, kept in Valkey.
 
 NiceGUI's own app.storage.user is tied to a *browser* (a signed cookie): two
 people using one browser share it, and one person using two browsers has two
 copies. This module keeps the same data -- preferences, recent files, the
-document last worked on and its unsaved drafts -- in Redis, keyed by the
+document last worked on and its unsaved drafts -- in Valkey, keyed by the
 *logged-in user*, so it follows the person, not the browser.
 
-Redis is optional. With MLW_REDIS_URL empty (or Redis unreachable) the app falls
+Valkey is optional. With MLW_VALKEY_URL empty (or Valkey unreachable) the app falls
 back to app.storage.user, exactly as before. Settings:
 
-  MLW_REDIS_URL:       e.g. redis://redis:6379/0. Empty turns this module off.
-  MLW_REDIS_PASSWORD:  the server's password, if it has one.
-  MLW_REDIS_PREFIX:    prefix of every key; default "mlw:xsheet".
+  MLW_VALKEY_URL:       e.g. valkey://valkey:6379/0. Empty turns this module off.
+  MLW_VALKEY_PASSWORD:  the server's password, if it has one.
+  MLW_VALKEY_PREFIX:    prefix of every key; default "mlw:xsheet".
 
 Data layout (all keys start with the prefix; <user> is "kc:<realm>:<Keycloak id>"
 for a Keycloak user, or "local:<name>" for the built-in account):
@@ -69,11 +69,11 @@ from collections.abc import MutableMapping
 
 log = logging.getLogger('mlw.userstore')
 
-REDIS_URL = (os.environ.get('MLW_REDIS_URL') or '').strip()
-REDIS_PASSWORD = os.environ.get('MLW_REDIS_PASSWORD') or None
-PREFIX = (os.environ.get('MLW_REDIS_PREFIX') or 'mlw:xsheet').strip().rstrip(':')
+VALKEY_URL = (os.environ.get('MLW_VALKEY_URL') or '').strip()
+VALKEY_PASSWORD = os.environ.get('MLW_VALKEY_PASSWORD') or None
+PREFIX = (os.environ.get('MLW_VALKEY_PREFIX') or 'mlw:xsheet').strip().rstrip(':')
 UNTITLED_FIELD = '@untitled'  # the drafts field of a document that has never been saved (its key is '')
-# What is carried over from a browser's app.storage.user into a user's first Redis record. Drafts
+# What is carried over from a browser's app.storage.user into a user's first Valkey record. Drafts
 # are left out on purpose: a browser may have been used by someone else.
 IMPORTED_KEYS = ('format_prefs', 'schema_path', 'xsheet_style', 'report_sections', 'report_include_raw',
                  'export_sketch', 'sketch_font', 'sketch_font_size', 'xml_editor', 'popup_log',
@@ -86,27 +86,27 @@ _warned = set()
 
 
 def enabled() -> bool:
-    return bool(REDIS_URL)
+    return bool(VALKEY_URL)
 
 
-def _redis():
-    """The shared Redis client (created on first use), or None if unavailable."""
+def _valkey():
+    """The shared Valkey client (created on first use), or None if unavailable."""
     global _client
-    if not REDIS_URL:
+    if not VALKEY_URL:
         return None
     if _client is None:
         try:
-            import redis
-            _client = redis.Redis.from_url(REDIS_URL, password=REDIS_PASSWORD, decode_responses=True,
+            import valkey
+            _client = valkey.Valkey.from_url(VALKEY_URL, password=VALKEY_PASSWORD, decode_responses=True,
                                            socket_connect_timeout=2, socket_timeout=2)
         except Exception as exc:
-            _warn('client', f'cannot create the Redis client: {exc}')
+            _warn('client', f'cannot create the Valkey client: {exc}')
             return None
     return _client
 
 
 def _warn(what: str, message: str) -> None:
-    if what not in _warned:  # once per kind, so a Redis outage doesn't flood the log
+    if what not in _warned:  # once per kind, so a Valkey outage doesn't flood the log
         _warned.add(what)
         log.warning('userstore: %s', message)
 
@@ -124,7 +124,7 @@ def _path(field: str) -> str:
 
 
 class UserStore(MutableMapping):
-    """One user's settings and drafts, loaded from Redis and written through to it on every change."""
+    """One user's settings and drafts, loaded from Valkey and written through to it on every change."""
 
     def __init__(self, client, user_id: str, data: dict, drafts: dict):
         self._r = client
@@ -136,7 +136,7 @@ class UserStore(MutableMapping):
     # --- loading
     @classmethod
     def load(cls, client, user_id: str, browser_store=None, who: dict | None = None):
-        """The user's record from Redis; created (importing the browser's preferences) if it is new."""
+        """The user's record from Valkey; created (importing the browser's preferences) if it is new."""
         key = f'{PREFIX}:user:{user_id}'
         fields = client.hgetall(key)
         drafts = client.hgetall(key + ':drafts')
@@ -160,8 +160,8 @@ class UserStore(MutableMapping):
     def _guard(self, action):
         try:
             return action()
-        except Exception as exc:  # Redis is down: keep working from memory, and say so once
-            _warn('write', f'Redis write failed ({exc}); changes are kept in memory only')
+        except Exception as exc:  # Valkey is down: keep working from memory, and say so once
+            _warn('write', f'Valkey write failed ({exc}); changes are kept in memory only')
             return None
 
     # --- the mapping
@@ -241,9 +241,9 @@ def user_id_for(browser_store) -> tuple[str, dict] | None:
 
 def store_for(browser_store):
     """The storage to use for the page whose browser has `browser_store` (its app.storage.user): the
-    logged-in user's Redis record, shared by all their browsers; or `browser_store` itself when Redis
+    logged-in user's Valkey record, shared by all their browsers; or `browser_store` itself when Valkey
     is off or unreachable, or nobody is logged in."""
-    if not REDIS_URL:
+    if not VALKEY_URL:
         return browser_store
     found = user_id_for(browser_store)
     if found is None:
@@ -252,13 +252,13 @@ def store_for(browser_store):
     store = _stores.get(user_id)
     if store is not None:
         return store
-    client = _redis()
+    client = _valkey()
     if client is None:
         return browser_store
     try:
         store = UserStore.load(client, user_id, browser_store, who)
     except Exception as exc:
-        _warn('load', f'cannot read the user\'s record from Redis ({exc}); using the browser\'s own storage')
+        _warn('load', f'cannot read the user\'s record from Valkey ({exc}); using the browser\'s own storage')
         return browser_store
     _warned.discard('load')
     _stores[user_id] = store
@@ -266,7 +266,7 @@ def store_for(browser_store):
 
 
 def forget_cached(user_id: str | None = None) -> None:
-    """Drop the in-memory copy of one user's record (or all), so it is read from Redis again next time."""
+    """Drop the in-memory copy of one user's record (or all), so it is read from Valkey again next time."""
     if user_id is None:
         _stores.clear()
     else:

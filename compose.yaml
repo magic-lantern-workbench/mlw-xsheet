@@ -28,14 +28,14 @@ services:
       MLW_KEYCLOAK_ADMIN_CLIENT_ID: ${MLW_KEYCLOAK_ADMIN_CLIENT_ID:-mlw-xsheet-admin}
       MLW_KEYCLOAK_ADMIN_CLIENT_SECRET: ${MLW_KEYCLOAK_ADMIN_CLIENT_SECRET:-}
       MLW_KEYCLOAK_VERIFY_TLS: ${MLW_KEYCLOAK_VERIFY_TLS:-1}
-      # Each logged-in user's saved settings and unsaved drafts live in Redis (see
-      # userstore.py). With MLW_REDIS_URL empty the app falls back to per-browser
+      # Each logged-in user's saved settings and unsaved drafts live in Valkey (see
+      # userstore.py). With MLW_VALKEY_URL empty the app falls back to per-browser
       # storage in NICEGUI_STORAGE_PATH.
-      MLW_REDIS_URL: ${MLW_REDIS_URL-redis://redis:6379/0}
-      MLW_REDIS_PASSWORD: ${MLW_REDIS_PASSWORD:-}
-      MLW_REDIS_PREFIX: ${MLW_REDIS_PREFIX:-mlw:xsheet}
+      MLW_VALKEY_URL: ${MLW_VALKEY_URL-valkey://valkey:6379/0}
+      MLW_VALKEY_PASSWORD: ${MLW_VALKEY_PASSWORD:-}
+      MLW_VALKEY_PREFIX: ${MLW_VALKEY_PREFIX:-mlw:xsheet}
     depends_on:
-      redis:
+      valkey:
         condition: service_healthy
     volumes:
       - /etc/localtime:/etc/localtime:ro
@@ -43,19 +43,20 @@ services:
   # The per-user store: preferences, recent files and unsaved drafts, one record
   # per logged-in user (see userstore.py for the key layout). Not published on
   # the host (the dev override publishes it on localhost only). Persistent: every
-  # write is appended to the redis-data volume (append-only file).
-  redis:
-    image: redis:7-alpine
-    command: ["sh", "-c", "exec redis-server --appendonly yes --save 300 1 ${MLW_REDIS_PASSWORD:+--requirepass \"$$MLW_REDIS_PASSWORD\"}"]
+  # write is appended to the valkey-data volume (append-only file).
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["sh", "-c", "exec valkey-server --appendonly yes --save 300 1 ${MLW_VALKEY_PASSWORD:+--requirepass \"$$MLW_VALKEY_PASSWORD\"}"]
     environment:
-      MLW_REDIS_PASSWORD: ${MLW_REDIS_PASSWORD:-}
+      MLW_VALKEY_PASSWORD: ${MLW_VALKEY_PASSWORD:-}
     volumes:
-      - redis-data:/data
+      - valkey-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "[ -z \"$$MLW_REDIS_PASSWORD\" ] || export REDISCLI_AUTH=\"$$MLW_REDIS_PASSWORD\"; redis-cli ping | grep -q PONG"]
+      # (valkey-cli reads the password from REDISCLI_AUTH)
+      test: ["CMD-SHELL", "[ -z \"$$MLW_VALKEY_PASSWORD\" ] || export REDISCLI_AUTH=\"$$MLW_VALKEY_PASSWORD\"; valkey-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
 
 volumes:
-  redis-data:
+  valkey-data:

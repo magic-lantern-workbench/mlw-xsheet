@@ -303,7 +303,7 @@ to. This matters when the app runs as root; normally it doesn't:
 
 Several people can use one server at the same time. Every browser tab has its own editing
 session: the open document, undo/redo history, validation results, and XSheet view. Some things
-are saved **per logged-in user**, in **Redis**, so they survive reloads and server restarts and
+are saved **per logged-in user**, in **Valkey**, so they survive reloads and server restarts and
 follow that user to any browser or tab they log in from (and are not shared with anyone else using
 the same browser):
 
@@ -319,30 +319,30 @@ the same browser):
 Documents are shared: everyone sees the same files in the data directory. If you save a file
 that someone else has saved since you opened it, you're asked before overwriting their changes.
 
-#### Per-user storage in Redis
+#### Per-user storage in Valkey
 
-`compose.yaml` runs a **`redis`** service (`redis:7-alpine`, append-only persistence in the
-`redis-data` volume, not published on the host; the development override publishes it on
+[Valkey](https://valkey.io) is the open-source (BSD-3-Clause), Redis-compatible in-memory database from the Linux Foundation; the app talks to it with the standard Redis protocol. `compose.yaml` runs a **`valkey`** service (`valkey/valkey:8-alpine`, append-only persistence in the
+`valkey-data` volume, not published on the host; the development override publishes it on
 `127.0.0.1:6380` for inspection) and points the app at it. These environment variables control it
 (in `.env`):
 
 | Variable | Meaning |
 |---|---|
-| `MLW_REDIS_URL` | The server, default `redis://redis:6379/0`. Set it empty to turn Redis off. |
-| `MLW_REDIS_PASSWORD` | Optional: the password Redis requires (given to both Redis and the app). |
-| `MLW_REDIS_PREFIX` | Prefix of every key; default `mlw:xsheet`. |
-| `MLW_REDIS_HOST_PORT` | Development only: the localhost port Redis is published on; default `6380`. |
+| `MLW_VALKEY_URL` | The server, default `valkey://valkey:6379/0`. Set it empty to turn Valkey off. |
+| `MLW_VALKEY_PASSWORD` | Optional: the password Valkey requires (given to both Valkey and the app). |
+| `MLW_VALKEY_PREFIX` | Prefix of every key; default `mlw:xsheet`. |
+| `MLW_VALKEY_HOST_PORT` | Development only: the localhost port Valkey is published on; default `6380`. |
 
-If Redis is off, or can't be reached, the app falls back to the old behaviour: the same data is
+If Valkey is off, or can't be reached, the app falls back to the old behaviour: the same data is
 kept per *browser* (by cookie) in `NICEGUI_STORAGE_PATH`, and a note is written to the server log. The
-first time a user logs in with Redis on, their record starts from the preferences of the browser they
+first time a user logs in with Valkey on, their record starts from the preferences of the browser they
 use (not its drafts, which could belong to someone else). Login state itself (who is logged in, their
 roles) stays in the browser's cookie-backed storage; the pop-up log files are still per browser, in
 `NICEGUI_STORAGE_PATH/logs`.
 
 **Key layout.** A user is identified by `kc:<realm>:<Keycloak user id>` for a Keycloak user (the id
 never changes, even if the user name does) or `local:<name>` for the built-in account. Each user has
-three Redis hashes (`<prefix>` is `mlw:xsheet`):
+three Valkey hashes (`<prefix>` is `mlw:xsheet`):
 
 | Key | Type | Fields |
 |---|---|---|
@@ -350,9 +350,9 @@ three Redis hashes (`<prefix>` is `mlw:xsheet`):
 | `<prefix>:user:<user>:drafts` | hash | One field per document with unsaved changes: the field is the document's path (`@untitled` for a never-saved one), the value JSON `{"text", "saved_content", "sketch"?, "saved_at"}` |
 | `<prefix>:user:<user>:meta` | hash | `username`, `source` (`keycloak` or `local`), `realm`, `user_id`, `created`, `last_seen` (ISO 8601, UTC) |
 
-For example, `redis-cli -p 6380 --scan --pattern 'mlw:xsheet:*'` lists the records, and
+For example, `valkey-cli -p 6380 --scan --pattern 'mlw:xsheet:*'` lists the records, and
 `HGETALL mlw:xsheet:user:local:admin` shows one user's settings. Records have no expiry; delete a
-user's three keys to reset them. A Redis server holds one copy of each record, written through on
+user's three keys to reset them. A Valkey server holds one copy of each record, written through on
 every change, so run a single app server against it.
 
 ### Layout
@@ -832,7 +832,7 @@ app uses). An existing output file is only replaced with `--force`.
 ## Project layout
 
 ```
-userstore.py      Per-user settings and drafts, kept in Redis (see Multiple users)
+userstore.py      Per-user settings and drafts, kept in Valkey (see Multiple users)
 main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, validation, Format, XDTS export
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
 xml/              XSD schemas defining the ExposureSheet document format, and the schema architecture document (.docx)
