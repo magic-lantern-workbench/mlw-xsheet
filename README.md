@@ -59,6 +59,9 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
   grid as a table (**Export XSheet**); see [XSheet menu](#xsheet-menu) below.
 - **XDTS JSON export** — converts the current ExposureSheet document to an XDTS-Extended JSON
   timesheet (see [Converting to and from XDTS](#converting-to-and-from-xdts) for the reverse direction and the older/legacy XDTS format).
+- **Per-user settings in Valkey** — preferences, recent files, the document you were last working
+  on and unsaved drafts are saved under your own login, so they follow you to any browser and are
+  not shared with others on the same browser; see [Multiple users](#multiple-users).
 - **File management** — Open/Save/Save As with a local file browser, an unsaved-changes prompt
   on Close, and a modified indicator (`*`) in the filename label.
 
@@ -96,6 +99,11 @@ development stack (`mlw-xsheet`). Both can run on the same machine, and starting
 one leaves the other alone. Its volumes are named with that prefix, e.g.
 `mlw-xsheet-prod_xsheet-data`.
 
+Both stacks also run a **`valkey`** service, the per-user settings database (see
+[Per-user storage in Valkey](#per-user-storage-in-valkey)). Its data is in the `valkey-data` volume
+(`mlw-xsheet-prod_valkey-data` in production): keep it between deploys, because it holds each user's
+preferences and unsaved drafts. The app waits for it to be healthy before starting.
+
 Production serves the app over **HTTPS** through a [Caddy](https://caddyserver.com/) reverse
 proxy (see [`Caddyfile`](Caddyfile)). The app's own port isn't published, and HTTP on port 80
 redirects to HTTPS on 443.
@@ -115,8 +123,11 @@ In production, the file dialogs open in `/data`, a named volume (`xsheet-data`),
 the app directory. The bundled schemas in `xml/` are still found by auto-detection. The server
 reads these environment variables: `MLW_DATA_DIR` (file dialog root; defaults to the working
 directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), `MLW_RELOAD`
-(`1`/`0`), `MLW_STORAGE_SECRET` (signs the per-user settings cookie), and
-`NICEGUI_STORAGE_PATH` (where per-user settings are saved; `/state` in production).
+(`1`/`0`), `MLW_STORAGE_SECRET` (signs the browser's login cookie), and
+`NICEGUI_STORAGE_PATH` (NiceGUI's storage: who is logged in, the built-in account's password and the
+idle time-out, and the pop-up logs; without Valkey it also holds per-browser settings; `/state` in
+production). The per-user settings themselves are kept in Valkey: `MLW_VALKEY_URL`,
+`MLW_VALKEY_PASSWORD` and `MLW_VALKEY_PREFIX` configure it (see below).
 `MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the host port in
 development.
 
