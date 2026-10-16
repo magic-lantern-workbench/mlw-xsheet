@@ -284,6 +284,49 @@ the password of a user who has the required action pending. Without the secret, 
 to change their password in Keycloak. If the account needs something else first (such as a missing
 e-mail address), the login says that has to be done in Keycloak.
 
+### Your own file storage
+
+Users who log in with Keycloak can open and save exposure sheets in **their own file storage** on an
+**mlw-storage** server (SFTPGo behind a gateway; see that project's User Guide) instead of the server's
+data folder. It is set up per user: the storage server decides each user's root folder from their
+Keycloak identity, and **Profile** shows which storage and folder is in use, as found when they logged in
+(*Storage*, *Storage folder*, *Storage access*).
+
+**What is needed.** The mlw-storage stack running with its Keycloak login enabled and reachable from the
+app (in development, on the `mlw-platform_default` network, as `mlw-proxy`); users who hold the Keycloak
+role **`mlw-user`** (`tools/keycloak_setup.py` creates it and gives it to the user it creates; use
+`--storage-role ''` to skip); and the `paramiko` package (in `requirements.txt`). Set these in `.env`:
+
+| Variable | Meaning |
+|---|---|
+| `MLW_STORAGE_URL` | The gateway's HTTP address, e.g. `http://mlw-proxy:8000`. Empty turns storage off. |
+| `MLW_STORAGE_SFTP_HOST` / `MLW_STORAGE_SFTP_PORT` | The SFTP address; default the URL's host, port `2222`. |
+| `MLW_STORAGE_NAME` | A label shown in Profile and the dialogs; default `mlw-storage`. |
+| `MLW_STORAGE_REQUIRED_ROLE` | The Keycloak role the storage server requires, used in messages; default `mlw-user`. |
+| `MLW_STORAGE_READONLY_ROLE` | The role that makes a user's storage read-only on the server, if it has one (Profile then shows *Read-only*). |
+| `MLW_STORAGE_HOST_KEY` | The SSH host key fingerprint to require (`SHA256:...`). Without it, the first key seen is remembered and must not change. |
+| `MLW_STORAGE_TIMEOUT` | Seconds to wait for the storage server; default 8. |
+
+**How it works.** At login the app keeps the user's Keycloak tokens *in memory only* (never on disk or in
+Valkey) and asks the storage API (`GET /mlw/v1/storage/root`) where their root is. To open or save, it
+connects over SFTP with the user name set to the token's `sub` claim and a fresh access token, renewed from the
+refresh token, as the password; a file is saved by writing a temporary name and renaming it over the original,
+so a partly written file is never seen. The user's root appears as `/` and they cannot leave it.
+
+**Using it.** **File > Open from Storage…** and **Save to Storage…** browse and save in the user's own
+storage (the dialogs remember the last folder, and *Save to Storage* can create a folder). A document from
+storage is shown with its name, **Save** writes it back, the sketch is saved beside it as `.svg`, and it
+appears in **Open Recent**, drafts and *last document* like any other (as `storage:/folder/file.xml`, in the
+user's own Valkey record). **File > Storage Location…** (or *Profile > Storage Location…*) lists the folders
+of the shared area and sets which one is the user's own, or returns them to their private directory.
+Exports still go to the server's data folder.
+
+**Limits.** Storage is for Keycloak users: the built-in fallback account sees *Not available* in Profile. The
+tokens are lost when the app server restarts (including a development auto-reload), so the user must log out
+and in again before using storage; the app says so, and keeps the document as their last document so it comes
+back after they log in. A user who lacks `mlw-user`, or whose chosen folder is gone, sees the storage server's
+refusal in Profile and the dialogs. Roles still apply: a Viewer can open from storage but not save.
+
 ### File access
 
 Every file dialog (Open, Save As, Select Schema, and the exports) is limited to the data folder,
@@ -357,7 +400,7 @@ three Valkey hashes (`<prefix>` is `mlw:xsheet`):
 
 | Key | Type | Fields |
 |---|---|---|
-| `<prefix>:user:<user>` | hash | One field per setting, each value JSON: `format_prefs`, `schema_path`, `xsheet_style`, `report_sections`, `report_include_raw`, `export_sketch`, `sketch_font`, `sketch_font_size`, `xml_editor`, `popup_log`, `popup_log_time`, `popup_log_zone`, `oca_export`, `recent_files`, `recent_files_limit`, `open_dir`, `last_document` |
+| `<prefix>:user:<user>` | hash | One field per setting, each value JSON: `format_prefs`, `schema_path`, `xsheet_style`, `report_sections`, `report_include_raw`, `export_sketch`, `sketch_font`, `sketch_font_size`, `xml_editor`, `popup_log`, `popup_log_time`, `popup_log_zone`, `oca_export`, `recent_files`, `recent_files_limit`, `open_dir`, `storage_dir`, `last_document` |
 | `<prefix>:user:<user>:drafts` | hash | One field per document with unsaved changes: the field is the document's path (`@untitled` for a never-saved one), the value JSON `{"text", "saved_content", "sketch"?, "saved_at"}` |
 | `<prefix>:user:<user>:meta` | hash | `username`, `source` (`keycloak` or `local`), `realm`, `user_id`, `created`, `last_seen` (ISO 8601, UTC) |
 
@@ -391,12 +434,15 @@ every change, so run a single app server against it.
 |---|---|
 | New | Start a new ExposureSheet document that is well-formed and valid against the XML Schema, with placeholder values to replace: the four required sections (Production with `UNKNOWN` IDs, the Title "Untitled", 24 fps and frames 1–24; Assets with one `Unknown` asset; a Timeline whose frame 1 exposes a "New Layer" at cel `A001`; and VersionControl with a first revision by you, dated today), laid out with your Format preferences. If the open document has unsaved changes, you're asked first (Cancel / No / Yes, as when closing). Nothing is written to disk until you choose **Save** or **Save As** (both open the Save As dialog, suggesting `untitled.xml`); until then the footer shows `untitled.xml *`, and the document is kept as a draft like any unsaved work. |
 | Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. If a `.svg` of the same name is beside it (saved with its sketch), the Sketchpad's sketch is loaded from it. |
+| Open from Storage… | Browse **your own file storage** (see [Your own file storage](#your-own-file-storage)) and open a document from it. Shown when storage is set up (`MLW_STORAGE_URL`). Its sketch, if any, comes with it. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. Also saves the Sketchpad's sketch beside the file, as `.svg` (see [Sketchpad](#xsheet-menu)). |
 | Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. The Sketchpad's sketch is saved beside the new file, as `.svg`. |
+| Save to Storage… | Save the document under a name in **your own file storage**, choosing or creating a folder; it becomes the open document, so **Save** then writes it back there. Not available to the Viewer role. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export > Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
 | Export > Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder in the data folder where your real cel images are. Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
+| Storage Location… | Choose which folder of the shared storage is your own (or go back to your private directory). Also on the Profile dialog. |
 | Preferences… | Open the Preferences dialog, in tabs: XSheet style, Sketchpad text type and size, Format, Recent Files, Report, Logs and Login (see [Preferences dialog](#preferences-dialog)). |
 
 ### Edit menu

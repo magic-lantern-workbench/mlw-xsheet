@@ -36,6 +36,8 @@ from save_file import save_file as SaveFileDialog
 from choose_folder import choose_folder as ChooseFolderDialog
 from dialog_ui import give_to_owner_of, titled_card, within
 import auth
+import storage
+import storage_ui
 import userstore
 from tools import xsheet_to_xdts_extended
 from tools import xsheet_to_oca
@@ -56,6 +58,8 @@ SCHEMA_DIR = APP_DIR / 'xml'
 # schema from is checked against these -- including paths remembered in user
 # storage from before, and paths sent back by the browser.
 def in_data_dir(path) -> bool:
+    if storage.is_remote(path):  # a file in the user's own storage: inside it by construction
+        return True
     return within(path, BASE_DIR)
 
 
@@ -176,11 +180,32 @@ class Session:
         # handlers and timers don't always carry one).
         self.user_storage = None
         self.prefs = None
+        # a document in the user's storage that could not be reopened on page load because storage was
+        # unavailable: kept as their last document, so it comes back once they can reach their storage again
+        self.keep_last_document = None
 
 
 def session() -> Session:
     """The Session of the page the current event/timer belongs to."""
     return app.storage.client['session']
+
+
+storage.set_user_resolver(lambda: session().user_storage)  # who is logged in, for the user's storage (see storage.py)
+
+
+def _document_dir() -> Path:
+    """The local folder the file dialogs start in: the open document's, or the data folder (a document in the
+    user's storage has no local folder)."""
+    path = session().current_file.get('path')
+    if not path or storage.is_remote(path):
+        return BASE_DIR
+    return Path(path).parent
+
+
+def _own(path) -> None:
+    """Give a file the app wrote to the data folder's owner (see dialog_ui.give_to_owner_of()); nothing for storage."""
+    if not storage.is_remote(path):
+        give_to_owner_of(path, BASE_DIR)
 
 
 # Per-user data. With Valkey set up (MLW_VALKEY_URL; see userstore.py) it is kept in
@@ -591,8 +616,13 @@ def clear_recent_files() -> None:
     ui.notify('Recent files cleared', color='info')
 
 
-def open_recent_file(path: Path) -> None:
-    if not path.is_file():
+def open_recent_file(path) -> None:
+    try:
+        found = path.is_file()
+    except OSError as exc:  # a file in storage, and storage can't be reached
+        ui.notify(f'Could not open {path.name}: {exc}', color='negative')
+        return
+    if not found:
         remove_recent_file(str(path))
         ui.notify(f'{path.name} no longer exists; removed it from recent files', color='warning')
         return
@@ -613,7 +643,7 @@ def rebuild_recent_menu() -> None:
             ui.menu_item('No recent files').props('disable')
             return
         for p in paths:
-            path = Path(p)
+            path = storage.as_path(p)
             with ui.menu_item(path.name, on_click=lambda _, path=path: open_recent_file(path)):
                 ui.tooltip(str(path)).props('delay=2000')  # full path, after a 2 s hover
         ui.separator()
@@ -653,7 +683,10 @@ def remember_document() -> None:
         drafts.pop(key, None)
     store = user_storage()
     store['drafts'] = drafts
-    store['last_document'] = key if (key or document_modified()) else None
+    if sess.keep_last_document and not key and not document_modified():
+        store['last_document'] = sess.keep_last_document
+    else:
+        store['last_document'] = key if (key or document_modified()) else None
 
 
 def set_filename_label(name: str | None = None):
@@ -1167,7 +1200,7 @@ def resolve_schema_for_xml(text: str):
     if chosen and Path(chosen).is_file():
         return Path(chosen)
 
-    doc_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    doc_dir = _document_dir()
     for loc in _detect_schema_locations(text):
         cand = (doc_dir / loc)
         if cand.is_file() and is_readable_schema(cand):
@@ -1949,6 +1982,9 @@ def show_profile_dialog():
         rows.append(('Signed in at', time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(info['login_time']))))
     rows.append(('Administrator', 'Yes' if auth.is_admin() else 'No'))
     rows.append(('Access', {'view': 'Read-only (viewer)', 'review': 'Reviewer (reviews and Sketchpad)'}.get(auth.access_level(), 'Can edit')))
+    if storage.enabled():
+        where = storage.describe(auth.current_storage())
+        rows += [('Storage', where['storage']), ('Storage folder', where['location']), ('Storage access', where['access'])]
     with ui.dialog() as profile_dialog, \
             titled_card('Profile', classes='w-[520px] max-w-full', body_classes='gap-2'):
         with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
@@ -1970,6 +2006,11 @@ def show_profile_dialog():
                     for client, names in client_roles.items():
                         ui.label(f"{client}: {', '.join(names)}")
         with ui.row().classes('w-full justify-end mt-2'):
+            if storage.enabled() and keycloak:
+                async def change_storage_location() -> None:
+                    profile_dialog.close()
+                    await show_storage_location()
+                ui.button('Storage Location…', on_click=change_storage_location).props('outline size=sm')
             ui.button('Close', on_click=profile_dialog.close).props('outline size=sm')
     profile_dialog.open()
 
@@ -4236,8 +4277,10 @@ def reset_sketchpad() -> None:
 EMPTY_SKETCH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" viewBox="0 0 0 0"/>'
 
 
-def sketch_path_for(document: Path | str) -> Path:
-    return Path(document).with_suffix('.svg')
+def sketch_path_for(document):
+    if isinstance(document, storage.RemotePath):
+        return document.with_suffix('.svg')
+    return storage.as_path(document).with_suffix('.svg')
 
 
 # ---- Undo / Redo, global across the XSheet, XML and SVG tabs ----
@@ -4416,11 +4459,11 @@ def _sketch_comments(document: Path | None) -> str:
                  '     (not saved yet: Save As saves it beside the document, as <name>.svg) -->']
     else:
         try:
-            where = Path(document).resolve().relative_to(Path(BASE_DIR).resolve())
+            where = Path(str(document)).resolve().relative_to(Path(BASE_DIR).resolve())
         except ValueError:
-            where = Path(document).name
+            where = str(document) if storage.is_remote(document) else Path(document).name
         lines = [f'<!-- Sketchpad sketch for the XSheet document {safe(str(where))}',
-                 f'     (saved beside it by the Magic Lantern XSheet Viewer; opening {safe(Path(document).name)} loads it) -->']
+                 f'     (saved beside it by the Magic Lantern XSheet Viewer; opening {safe(Path(str(document)).name)} loads it) -->']
     info = read_production_info(_editor_text())
     if info:
         lines.append('<!--')
@@ -4453,7 +4496,7 @@ def sketch_file_text(document: Path | None = None) -> str:
     an element to a line. Shown in the SVG tab's editor; written by Save."""
     sess = session()
     if document is None and sess.current_file.get('path'):
-        document = Path(sess.current_file['path'])
+        document = storage.as_path(sess.current_file['path'])
     svg = sess.sketch['svg'] if sess.sketch['count'] else EMPTY_SKETCH_SVG
     body = re.sub(r'^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--.*?-->\s*)*', '', svg, flags=re.S)  # a loaded file's comments
     return _sketch_comments(document) + _pretty_svg(body or EMPTY_SKETCH_SVG) + '\n'
@@ -4517,7 +4560,7 @@ def save_sketch_beside(document: Path) -> Path | None:
     except Exception as exc:
         ui.notify(f'Failed to save the sketch to {dest}: {exc}', color='negative')
         return None
-    give_to_owner_of(dest, BASE_DIR)
+    _own(dest)
     return dest
 
 
@@ -5387,6 +5430,7 @@ def _load_document(path: str | None, text: str, saved_content: str):
     sess = session()
     sess.xsheet_style = xsheet_style_pref()  # a newly opened document gets the preferred XSheet style
     sess.xsheet_current_frame = None
+    sess.keep_last_document = None
     sess.current_file['path'] = path
     sess.current_file['modified'] = (text != saved_content)
     sess.current_file['saved_content'] = saved_content
@@ -5476,8 +5520,16 @@ def restore_last_document():
     if key is None or (key and not in_data_dir(key)):
         return
     draft = _drafts().get(key)
-    if key and Path(key).is_file():
-        open_file(Path(key), restore_draft=True)
+    found = False
+    if key:
+        try:
+            found = storage.as_path(key).is_file()
+        except OSError as exc:  # a file in the user's storage, and storage can't be reached
+            session().keep_last_document = key  # try again at the next page load or login
+            if not draft:
+                ui.notify(f'Could not reopen {Path(key).name} from your storage: {exc}', color='warning')
+    if key and found:
+        open_file(storage.as_path(key), restore_draft=True)
     elif draft:  # never-saved document, or its file has since been removed
         _load_document(key or None, draft['text'], draft['saved_content'])
         restore_sketch_draft(draft)
@@ -5486,6 +5538,7 @@ def restore_last_document():
 
 def close_file():
     sess = session()
+    sess.keep_last_document = None
     forget_draft(sess.current_file['path'] or '')
     sess.xsheet_style = xsheet_style_pref()  # the next (new) document gets the preferred XSheet style
     sess.xsheet_current_frame = None
@@ -5835,7 +5888,7 @@ def save_file(on_saved=None):
     if not sess.current_file['path']:
         save_as(on_saved=on_saved)
         return
-    path = Path(sess.current_file['path'])
+    path = storage.as_path(sess.current_file['path'])
 
     def do_save():
         try:
@@ -5843,7 +5896,7 @@ def save_file(on_saved=None):
         except Exception as exc:
             ui.notify(f'Failed to save {path}: {exc}', color='negative')
             return
-        give_to_owner_of(path, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+        _own(path)  # the data folder's owner, not root (see dialog_ui.py)
         sketch = save_sketch_beside(path)
         mark_sketch_saved()
         sess.current_file['modified'] = False
@@ -5898,6 +5951,37 @@ def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
     confirm_dialog.open()
 
 
+def _save_to(dest, on_saved=None) -> None:
+    """Write the editor (and the sketch) to `dest`, a local Path or a RemotePath in the user's
+    storage, and make it the open document. Shared by Save As and Save to Storage."""
+    sess = session()
+    try:
+        dest.write_text(sess.editor.value, encoding='utf-8')
+    except Exception as exc:
+        ui.notify(f'Failed to save {dest}: {exc}', color='negative')
+        return
+    _own(dest)  # the data folder's owner, not root (see dialog_ui.py)
+    sketch = save_sketch_beside(dest)
+    mark_sketch_saved()
+    forget_draft(sess.current_file['path'] or '')
+    sess.current_file['path'] = str(dest)
+    sess.current_file['modified'] = False
+    sess.current_file['saved_content'] = sess.editor.value
+    set_filename_label(dest.name)
+    remember_document()
+    add_recent_file(str(dest))
+    ui.notify(f'Saved {dest}' + (f' and its sketch, {sketch.name}' if sketch else ''), color='positive')
+    # keep the Hierarchy tree (and its editor-sync state) consistent
+    # with the file's new name/location, even though the content is
+    # unchanged
+    try:
+        rebuild_tree_from_current()
+    except Exception:
+        pass
+    if on_saved is not None:
+        on_saved()
+
+
 def save_as(on_saved=None):
     """Save the editor to a newly chosen file, then call on_saved() if the
     save went through (not if the dialog or an overwrite prompt is cancelled)."""
@@ -5908,35 +5992,7 @@ def save_as(on_saved=None):
         if not files:
             return
         dest = Path(files[0])
-
-        def do_save():
-            try:
-                dest.write_text(sess.editor.value, encoding='utf-8')
-            except Exception as exc:
-                ui.notify(f'Failed to save {dest}: {exc}', color='negative')
-                return
-            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
-            sketch = save_sketch_beside(dest)
-            mark_sketch_saved()
-            forget_draft(sess.current_file['path'] or '')
-            sess.current_file['path'] = str(dest)
-            sess.current_file['modified'] = False
-            sess.current_file['saved_content'] = sess.editor.value
-            set_filename_label(dest.name)
-            remember_document()
-            add_recent_file(str(dest))
-            ui.notify(f'Saved {dest}' + (f' and its sketch, {sketch.name}' if sketch else ''), color='positive')
-            # keep the Hierarchy tree (and its editor-sync state) consistent
-            # with the file's new name/location, even though the content is
-            # unchanged
-            try:
-                rebuild_tree_from_current()
-            except Exception:
-                pass
-            if on_saved is not None:
-                on_saved()
-
-        _confirm_overwrite(dest, do_save)
+        _confirm_overwrite(dest, lambda: _save_to(dest, on_saved))
 
     class SaveFileWithCallback(SaveFileDialog):
         def submit(self, value):
@@ -5944,7 +6000,7 @@ def save_as(on_saved=None):
             self.close()
             super().submit(value)
 
-    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    start_dir = _document_dir()
     start_name = Path(sess.current_file['path']).name if sess.current_file.get('path') else 'untitled.xml'
     dialog = SaveFileWithCallback(
         str(start_dir),
@@ -5953,6 +6009,64 @@ def save_as(on_saved=None):
         allowed_extensions=['.xml', '.xsd'],
     )
     dialog.open()
+
+
+# ---- The user's own file storage (see storage.py) ----
+
+def storage_ready(say: bool = True) -> bool:
+    """Whether the logged-in user's storage can be used now; if not (and `say`), tell them why."""
+    reason = None
+    if not storage.enabled():
+        reason = 'Storage is not set up on this server.'
+    elif storage.current_sub() is None:
+        reason = 'Storage is available to users who log in with Keycloak.'
+    elif not storage.has_login(storage.current_sub()):
+        reason = 'Your Keycloak session is not available to the server any more. Log out and log in again to use your storage.'
+    if reason and say:
+        ui.notify(reason, color='warning')
+    return reason is None
+
+
+async def open_from_storage() -> None:
+    """File > Open from Storage: open a file from the user's own storage."""
+    if not storage_ready():
+        return
+    sess = session()
+
+    def picked(path) -> None:
+        user_storage()['storage_dir'] = str(path.parent)[len(storage.PREFIX):]
+        open_file(path)
+    start = user_storage().get('storage_dir') or '/'
+    await storage_ui.StorageFileDialog('open', picked, start_dir=start).open()
+
+
+async def save_to_storage(on_saved=None) -> None:
+    """File > Save to Storage: save the document under a name in the user's own storage."""
+    if deny_read_only('save the document', reviewer_ok=True) or not storage_ready():
+        return
+    sess = session()
+    current = sess.current_file.get('path')
+    if current and storage.is_remote(current):
+        start = str(storage.as_path(current).parent)[len(storage.PREFIX):]
+    else:
+        start = user_storage().get('storage_dir') or '/'
+    name = Path(current).name if current else 'untitled.xml'
+
+    def picked(dest) -> None:
+        user_storage()['storage_dir'] = str(dest.parent)[len(storage.PREFIX):]
+        _confirm_overwrite(dest, lambda: _save_to(dest, on_saved))
+    await storage_ui.StorageFileDialog('save', picked, start_dir=start, start_name=name).open()
+
+
+async def show_storage_location() -> None:
+    """File > Storage Location: choose which folder of the shared storage is the user's own."""
+    if not storage_ready():
+        return
+    sess = session()
+
+    def changed(status: dict) -> None:
+        sess.user_storage['storage'] = status  # what Profile shows (see auth.current_storage())
+    await storage_ui.StorageLocationDialog(auth.current_storage(), changed).open()
 
 
 def export_xdts():
@@ -5981,7 +6095,7 @@ def export_xdts():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
-            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+            _own(dest)  # the data folder's owner, not root (see dialog_ui.py)
             ui.notify(f'Exported {dest}', color='positive')
 
         _confirm_overwrite(dest, do_export)
@@ -5992,7 +6106,7 @@ def export_xdts():
             self.close()
             super().submit(value)
 
-    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    start_dir = _document_dir()
     start_name = f'{source_name}.xdts.json'
     dialog = ExportFileWithCallback(
         str(start_dir),
@@ -6044,7 +6158,7 @@ def export_oca():
             """Choose (or create) the cel images folder in a folder browser."""
             current = BASE_DIR / cels_input.value if cels_input.value else None
             start = current if current is not None and current.is_dir() else (
-                Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR)
+                _document_dir())
 
             class CelsFolderDialog(ChooseFolderDialog):
                 def submit(self, value):
@@ -6156,7 +6270,7 @@ def _choose_oca_destination(text: str, source_name: str, options: dict, cels_dir
             self.close()
             super().submit(value)
 
-    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    start_dir = _document_dir()
     dialog = ExportFileWithCallback(
         str(start_dir),
         title='Export OCA',
@@ -6202,7 +6316,7 @@ def export_to_pdf():
                 except Exception as exc:
                     ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                     return
-                give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+                _own(dest)  # the data folder's owner, not root (see dialog_ui.py)
                 ui.notify(f'Exported {dest}', color='positive')
 
             _confirm_overwrite(dest, do_export)
@@ -6213,7 +6327,7 @@ def export_to_pdf():
                 self.close()
                 super().submit(value)
 
-        start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+        start_dir = _document_dir()
         start_name = f'{source_name}.pdf'
         dialog = ExportPdfWithCallback(
             str(start_dir),
@@ -6273,7 +6387,7 @@ async def export_xsheet():
             except Exception as exc:
                 ui.notify(f'Failed to write {dest}: {exc}', color='negative')
                 return
-            give_to_owner_of(dest, BASE_DIR)  # the data folder's owner, not root (see dialog_ui.py)
+            _own(dest)  # the data folder's owner, not root (see dialog_ui.py)
             with_sketch = ', with the sketch' if sketch else ''
             ui.notify(f'Exported {dest} ({XSHEET_STYLES[style]}{with_sketch})', color='positive')
 
@@ -6285,7 +6399,7 @@ async def export_xsheet():
             self.close()
             super().submit(value)
 
-    start_dir = Path(sess.current_file['path']).parent if sess.current_file.get('path') else BASE_DIR
+    start_dir = _document_dir()
     start_name = f'{source_name}-xsheet.pdf'
     dialog = ExportXSheetPdfWithCallback(
         str(start_dir),
@@ -7634,6 +7748,8 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
                 sess.edit_items.append(ui.menu_item('New', on_click=lambda _: new_document()))
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
+                if storage.enabled():
+                    ui.menu_item('Open from Storage…', on_click=lambda _: open_from_storage())
                 # Submenu of this user's recently opened files. The File
                 # dropdown auto-closes on any click inside it, so stop this
                 # item's click from reaching it -- otherwise opening the
@@ -7646,6 +7762,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                 rebuild_recent_menu()
                 sess.review_items.append(ui.menu_item('Save', on_click=lambda _: save_file()))
                 sess.review_items.append(ui.menu_item('Save As', on_click=lambda _: save_as()))
+                if storage.enabled():
+                    sess.review_items.append(ui.menu_item('Save to Storage…', on_click=lambda _: save_to_storage()))
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)
@@ -7656,6 +7774,8 @@ window.mlwSelectRange = function(elementId, from, to) {
                         ui.menu_item('Export XDTS', on_click=lambda _: export_xdts())
                         ui.menu_item('Export OCA', on_click=lambda _: export_oca())
                 ui.separator()
+                if storage.enabled():
+                    ui.menu_item('Storage Location…', on_click=lambda _: show_storage_location())
                 ui.menu_item('Preferences…', on_click=lambda _: show_preferences_dialog())
             # Edit menu with Undo/Redo
             with ui.dropdown_button('Edit', auto_close=True).props('flat color=white'):

@@ -28,6 +28,16 @@ services:
       MLW_KEYCLOAK_ADMIN_CLIENT_ID: ${MLW_KEYCLOAK_ADMIN_CLIENT_ID:-mlw-xsheet-admin}
       MLW_KEYCLOAK_ADMIN_CLIENT_SECRET: ${MLW_KEYCLOAK_ADMIN_CLIENT_SECRET:-}
       MLW_KEYCLOAK_VERIFY_TLS: ${MLW_KEYCLOAK_VERIFY_TLS:-1}
+      # The user's own file storage, on an mlw-storage server (SFTPGo behind a gateway): see
+      # storage.py. With MLW_STORAGE_URL empty the storage features are off.
+      MLW_STORAGE_URL: ${MLW_STORAGE_URL:-}
+      MLW_STORAGE_SFTP_HOST: ${MLW_STORAGE_SFTP_HOST:-}
+      MLW_STORAGE_SFTP_PORT: ${MLW_STORAGE_SFTP_PORT:-2222}
+      MLW_STORAGE_NAME: ${MLW_STORAGE_NAME:-mlw-storage}
+      MLW_STORAGE_REQUIRED_ROLE: ${MLW_STORAGE_REQUIRED_ROLE:-mlw-user}
+      MLW_STORAGE_READONLY_ROLE: ${MLW_STORAGE_READONLY_ROLE:-}
+      MLW_STORAGE_HOST_KEY: ${MLW_STORAGE_HOST_KEY:-}
+      MLW_STORAGE_TIMEOUT: ${MLW_STORAGE_TIMEOUT:-8}
       # Each logged-in user's saved settings and unsaved drafts live in Valkey (see
       # userstore.py). With MLW_VALKEY_URL empty the app falls back to per-browser
       # storage in NICEGUI_STORAGE_PATH.
