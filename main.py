@@ -30,7 +30,7 @@ import json
 import os
 import re
 import time
-from nicegui import app, ui
+from nicegui import app, background_tasks, ui
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from choose_folder import choose_folder as ChooseFolderDialog
@@ -5953,7 +5953,7 @@ def _confirm_overwrite(path: Path, on_confirm, message: str | None = None):
 
 def _save_to(dest, on_saved=None) -> None:
     """Write the editor (and the sketch) to `dest`, a local Path or a RemotePath in the user's
-    storage, and make it the open document. Shared by Save As and Save to Storage."""
+    storage, and make it the open document. Used by Save As."""
     sess = session()
     try:
         dest.write_text(sess.editor.value, encoding='utf-8')
@@ -5986,6 +5986,9 @@ def save_as(on_saved=None):
     """Save the editor to a newly chosen file, then call on_saved() if the
     save went through (not if the dialog or an overwrite prompt is cancelled)."""
     if deny_read_only('save the document', reviewer_ok=True):
+        return
+    if uses_storage():
+        _in_page(save_to_storage, on_saved)
         return
     sess = session()
     def file_selected_callback(files):
@@ -6023,12 +6026,29 @@ def storage_ready(say: bool = True) -> bool:
     elif not storage.has_login(storage.current_sub()):
         reason = 'Your Keycloak session is not available to the server any more. Log out and log in again to use your storage.'
     if reason and say:
-        ui.notify(reason, color='warning')
+        ui.notify(reason, color='negative')
     return reason is None
 
 
+def _in_page(coroutine_function, *args) -> None:
+    """Run an async dialog function from synchronous code, inside this page's UI context
+    (a bare background task has no slot, so it could not create dialogs or notifications)."""
+    client = ui.context.client
+
+    async def run_it() -> None:
+        with client:
+            await coroutine_function(*args)
+    background_tasks.create(run_it())
+
+
+def uses_storage() -> bool:
+    """Open and Save As work on the user's own storage for Keycloak users when a storage is set up
+    (otherwise -- local accounts, no storage -- on the server's data folder)."""
+    return storage.enabled() and storage.current_sub() is not None
+
+
 async def open_from_storage() -> None:
-    """File > Open from Storage: open a file from the user's own storage."""
+    """File > Open (Keycloak users): open a file from the user's own storage."""
     if not storage_ready():
         return
     sess = session()
@@ -6041,7 +6061,7 @@ async def open_from_storage() -> None:
 
 
 async def save_to_storage(on_saved=None) -> None:
-    """File > Save to Storage: save the document under a name in the user's own storage."""
+    """File > Save As (Keycloak users): save the document under a name in the user's own storage."""
     if deny_read_only('save the document', reviewer_ok=True) or not storage_ready():
         return
     sess = session()
@@ -6413,6 +6433,9 @@ async def export_xsheet():
 
 # File chooser using OpenFileDialog
 def show_file_dialog():
+    if uses_storage():
+        _in_page(open_from_storage)
+        return
     def file_selected_callback(files):
         if files:
             print(f"DEBUG: File selected callback with: {files}")
@@ -7748,8 +7771,6 @@ window.mlwSelectRange = function(elementId, from, to) {
             with ui.dropdown_button('File', auto_close=True).props('flat color=white'):
                 sess.edit_items.append(ui.menu_item('New', on_click=lambda _: new_document()))
                 ui.menu_item('Open', on_click=lambda _: show_file_dialog())
-                if storage.enabled():
-                    ui.menu_item('Open from Storage…', on_click=lambda _: open_from_storage())
                 # Submenu of this user's recently opened files. The File
                 # dropdown auto-closes on any click inside it, so stop this
                 # item's click from reaching it -- otherwise opening the
@@ -7762,8 +7783,6 @@ window.mlwSelectRange = function(elementId, from, to) {
                 rebuild_recent_menu()
                 sess.review_items.append(ui.menu_item('Save', on_click=lambda _: save_file()))
                 sess.review_items.append(ui.menu_item('Save As', on_click=lambda _: save_as()))
-                if storage.enabled():
-                    sess.review_items.append(ui.menu_item('Save to Storage…', on_click=lambda _: save_to_storage()))
                 ui.menu_item('Close', on_click=lambda _: close_with_check())
                 ui.separator()
                 # Export submenu, opened like Open Recent's (clicking the item itself doesn't close the menu)

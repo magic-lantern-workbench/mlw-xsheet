@@ -42,14 +42,13 @@ def _problem(exc: Exception) -> str:
 
 
 class StorageFileDialog:
-    """Browse the user's storage and pick a file to open, or a name to save as (File > Open from
-    Storage, Save to Storage). `on_pick(RemotePath)` is called with the choice."""
+    """Browse the user's storage and pick a file to open, or a name to save as (File > Open, Save As). `on_pick(RemotePath)` is called with the choice."""
 
     def __init__(self, mode: str, on_pick, *, start_dir: str = '/', start_name: str = 'untitled.xml'):
         self.mode, self.on_pick = mode, on_pick
         self.path = storage._clean(start_dir)
         self.sub = storage.current_sub()
-        title = 'Open from Storage' if mode == 'open' else 'Save to Storage'
+        title = 'Open' if mode == 'open' else 'Save As'
         with ui.dialog() as self.dialog, titled_card(title, classes='w-[520px] max-w-full', body_classes='gap-2'):
             ui.label(f'{storage.NAME}: your own files').classes('text-sm text-gray-500')
             self.where = ui.label('').classes('text-sm font-medium break-all')
@@ -69,9 +68,11 @@ class StorageFileDialog:
                 ui.button('Open' if mode == 'open' else 'Save', on_click=self._ok).props('size=sm')
 
     async def open(self) -> None:
+        """Show the dialog -- or, if the storage can't be reached, just say so (an error)."""
+        if not await self._show(self.path) and (self.path == '/' or not await self._show('/')):  # else: the remembered folder is gone
+            ui.notify(self.error.text or 'The storage is not available.', color='negative')
+            return
         self.dialog.open()
-        if not await self._show(self.path) and self.path != '/':  # the folder remembered from last time is gone
-            await self._show('/')
 
     async def _show(self, path: str) -> bool:
         self.error.set_text('')
