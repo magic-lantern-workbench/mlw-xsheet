@@ -6,14 +6,20 @@ This file lists the license and copyright of mlw-xsheet itself and of every thir
 uses or ships: the Python packages installed in its Docker image, the browser libraries bundled with
 NiceGUI, fonts, container base images, and third-party material in the repository.
 
-Generated on 2026-10-14 from the v1.6.0-features branch (after commit 63e6c5a, in development after
-the v1.5.0 release) and a production Docker image freshly built from it. Python dependency versions
+Generated on 2026-10-14 and updated on 2026-10-16 (storage support) from the v1.6.0-features branch
+(in development after the v1.5.0 release) and a production Docker image freshly built from it. Python dependency versions
 are the ones that image installed: requirements.txt gives minimum versions, so a later build may pick
 up newer releases with the same licenses.
 
 Changes since the previous edition of this file (v1.3.0, 2026-09-30):
   - One new Python package: valkey (valkey-py) 6.2.0 (MIT), the client for the new Valkey service
     that keeps each user's settings. It is a direct requirement.
+  - One new Python package for the user's own file storage (SFTP to mlw-storage): paramiko 5.0.0
+    (LGPL-2.1, a direct requirement) and the packages it needs: bcrypt 5.0.0 (Apache-2.0),
+    cryptography 50.0.2 (Apache-2.0 OR BSD-3-Clause), PyNaCl 1.6.2 (Apache-2.0, bundling libsodium
+    under the ISC license), cffi 2.1.1 (MIT-0), pycparser 3.11 (BSD-3-Clause) and invoke 3.0.3
+    (BSD-2-Clause). paramiko is a second LGPL component; see section 8. The versions are those
+    pip installs for requirements.txt today (paramiko>=3.4).
   - One new container image: valkey/valkey:8-alpine (Valkey 8.1, BSD-3-Clause), added to the
     Compose files as the per-user store. Valkey is the open-source, Redis-compatible fork under the
     Linux Foundation; Redis itself (7.4 and later, RSALv2/SSPLv1) is not used.
@@ -70,17 +76,21 @@ MIT                                   30     @uiw/codemirror-themes-all, AG Grid
                                              simple-websocket, Socket.IO client, Tailwind CSS,
                                              typing-inspection, valkey, Vue, watchfiles, wsproto,
                                              xmlschema
-Apache-2.0                            8      aiofiles, aiosignal, frozenlist, multidict,
-                                             opentelemetry-api, propcache, python-multipart, yarl
-BSD-3-Clause                          8      click, httpcore, idna, MarkupSafe, python-dotenv,
-                                             starlette, uvicorn, websockets
+Apache-2.0                            10     aiofiles, aiosignal, bcrypt, frozenlist, multidict,
+                                             opentelemetry-api, propcache, PyNaCl,
+                                             python-multipart, yarl
+BSD-3-Clause                          9      click, httpcore, idna, MarkupSafe, pycparser,
+                                             python-dotenv, starlette, uvicorn, websockets
 BSD (variant per package)             5      httpx, itsdangerous, Jinja2, tinycss2, webencodings
 PSF-2.0                               3      aiohappyeyeballs, defusedxml, typing_extensions
 MPL-2.0                               2      bidict, certifi
 Apache-2.0 AND MIT                    1      aiohttp
+Apache-2.0 OR BSD-3-Clause            1      cryptography
 Apache-2.0 OR MIT                     1      uvloop
+MIT-0                                 1      cffi
 Apache-2.0 OR MPL-2.0                 1      DOMPurify
-BSD-2-Clause                          1      Pygments
+BSD-2-Clause                          2      invoke, Pygments
+LGPL-2.1                              1      paramiko
 LGPL-3.0-only                         1      fpdf2
 MIT-CMU                               1      pillow
 MPL-2.0 AND (Apache-2.0 OR MIT)       1      orjson
@@ -134,6 +144,11 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2015 Hynek Schlawack and the attrs contributors
     Source:    https://www.attrs.org/en/stable/changelog.html
 
+  bcrypt 5.0.0
+    License:   Apache-2.0
+    Copyright: The Python Cryptographic Authority developers
+    Source:    https://github.com/pyca/bcrypt/
+
   bidict 0.24.1
     License:   MPL-2.0
     Copyright: Copyright 2009-2026 Joshua Bronson. All rights reserved.
@@ -144,10 +159,20 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Kenneth Reitz
     Source:    https://github.com/certifi/python-certifi
 
+  cffi 2.1.1
+    License:   MIT-0
+    Copyright: Armin Rigo, Maciej Fijalkowski
+    Source:    https://cffi.readthedocs.io/
+
   click 8.5.0
     License:   BSD-3-Clause
     Copyright: Copyright 2014 Pallets
     Source:    https://github.com/pallets/click/
+
+  cryptography 50.0.2
+    License:   Apache-2.0 OR BSD-3-Clause
+    Copyright: The Python Cryptographic Authority and individual contributors
+    Source:    https://github.com/pyca/cryptography
 
   defusedxml 0.7.1
     License:   PSF-2.0
@@ -214,6 +239,11 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2014 Stefan C. Mueller
     Source:    https://github.com/pydron/ifaddr
 
+  invoke 3.0.3
+    License:   BSD-2-Clause
+    Copyright: Copyright (c) 2020 Jeff Forcier.
+    Source:    https://github.com/pyinvoke/invoke
+
   itsdangerous 2.2.0
     License:   BSD (variant per package)
     Copyright: Copyright 2011 Pallets
@@ -254,6 +284,11 @@ the rest are installed because a direct requirement depends on them.
     Copyright: ijl
     Source:    https://github.com/ijl/orjson
 
+* paramiko 5.0.0
+    License:   LGPL-2.1
+    Copyright: Jeff Forcier and the Paramiko contributors
+    Source:    https://github.com/paramiko/paramiko
+
   pillow 12.3.0
     License:   MIT-CMU
     Copyright: Copyright © 1997-2011 by Secret Labs AB
@@ -263,6 +298,11 @@ the rest are installed because a direct requirement depends on them.
     License:   Apache-2.0
     Copyright: Copyright 2016-2021, Andrew Svetlov and aio-libs team
     Source:    https://github.com/aio-libs/propcache
+
+  pycparser 3.11
+    License:   BSD-3-Clause
+    Copyright: Copyright (c) 2008-2027, Eli Bendersky
+    Source:    https://github.com/eliben/pycparser
 
   pydantic 2.14.1
     License:   MIT
@@ -278,6 +318,11 @@ the rest are installed because a direct requirement depends on them.
     License:   BSD-2-Clause
     Copyright: Copyright (c) 2006-2022 by the respective authors (see AUTHORS file).
     Source:    https://pygments.org
+
+  PyNaCl 1.6.2
+    License:   Apache-2.0 (bundles libsodium, ISC)
+    Copyright: The PyNaCl developers; libsodium: Copyright (c) 2013-2026 Frank Denis
+    Source:    https://github.com/pyca/pynacl/
 
   python-dotenv 1.2.4
     License:   BSD-3-Clause
@@ -533,6 +578,12 @@ Served by NiceGUI for the user interface.
     replace with another version, which the LGPL permits. Its license text is installed with the
     package in the image, and its source is available from https://github.com/py-pdf/fpdf2.
     Modifying fpdf2 itself would require releasing those changes under the LGPL.
+
+  paramiko (LGPL-2.1)
+    mlw-xsheet uses paramiko unmodified, as a separately installed Python library that users can
+    replace with another version, which the LGPL permits. Its license text is installed with the
+    package in the image, and its source is available from https://github.com/paramiko/paramiko.
+    Modifying paramiko itself would require releasing those changes under the LGPL.
 
   MPL-2.0 (bidict, certifi; orjson in part; DOMPurify as an option)
     The Mozilla Public License applies file by file. These components are used unmodified and their
