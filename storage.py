@@ -404,7 +404,10 @@ class RemotePath:
     def write_text(self, text: str, encoding: str = 'utf-8') -> int:
         """Write to a temporary name in the same folder, then rename it over the file, so a
         partly written file is never seen (the pattern mlw-storage recommends)."""
-        data = text.encode(encoding)
+        return self.write_bytes(text.encode(encoding))
+
+    def write_bytes(self, data: bytes) -> int:
+        """As write_text, for bytes (PDF reports and the like)."""
         tmp = posixpath.join(posixpath.dirname(self._p), f'.{self.name}.{uuid.uuid4().hex[:8]}.tmp')
         try:
             with sftp(current_sub()) as s:
@@ -421,6 +424,78 @@ class RemotePath:
             return len(data)
         except Exception as exc:
             raise _wrap(exc, self._p) from None
+
+
+def is_oca_folder(path: 'RemotePath') -> bool:
+    """Whether `path` is an OCA folder in the user's storage: a folder holding its own NAME.oca data file
+    (the remote twin of xsheet_to_oca.is_oca_folder)."""
+    stem = path.name[:-4] if path.name.endswith('.oca') else path.name
+    return path.is_dir() and (path / f'{stem}.oca').is_file()
+
+
+def put_tree(local, dest: 'RemotePath', replace: bool = False) -> int:
+    """Copy the local folder `local` to `dest` in the user's storage (all files in one connection);
+    with `replace`, an existing `dest` is removed first. Returns the number of files copied."""
+    import os
+    local = str(local)
+    root = dest._p
+    count = 0
+
+    def remove(s, path):
+        for a in s.listdir_attr(path):
+            child = posixpath.join(path, a.filename)
+            if stat.S_ISDIR(a.st_mode or 0):
+                remove(s, child)
+            else:
+                s.remove(child)
+        s.rmdir(path)
+
+    try:
+        with sftp(current_sub()) as s:
+            try:
+                s.stat(root)
+                exists = True
+            except OSError:
+                exists = False
+            if exists:
+                if not replace:
+                    raise FileExistsError(f'{PREFIX}{root} already exists')
+                remove(s, root)
+            for folder, _dirs, files in os.walk(local):
+                rel = os.path.relpath(folder, local)
+                target = root if rel == '.' else posixpath.join(root, *rel.split(os.sep))
+                s.mkdir(target)
+                for name in files:
+                    s.put(os.path.join(folder, name), posixpath.join(target, name))
+                    count += 1
+        return count
+    except Exception as exc:
+        raise _wrap(exc, root) from None
+
+
+def get_images(src: 'RemotePath', local, suffix: str = '.png', depth: int = 2) -> int:
+    """Copy the `suffix` files of the storage folder `src` (and its sub-folders, `depth` levels down)
+    into the local folder `local`, keeping the folder layout. Returns the number of files copied."""
+    import os
+    count = 0
+
+    def walk(s, remote, folder, level):
+        nonlocal count
+        for a in s.listdir_attr(remote):
+            name = a.filename
+            if stat.S_ISDIR(a.st_mode or 0):
+                if level < depth and not name.startswith('.'):
+                    walk(s, posixpath.join(remote, name), os.path.join(folder, name), level + 1)
+            elif name.lower().endswith(suffix):
+                os.makedirs(folder, exist_ok=True)
+                s.get(posixpath.join(remote, name), os.path.join(folder, name))
+                count += 1
+    try:
+        with sftp(current_sub()) as s:
+            walk(s, src._p, str(local), 1)
+        return count
+    except Exception as exc:
+        raise _wrap(exc, src._p) from None
 
 
 def as_path(value):

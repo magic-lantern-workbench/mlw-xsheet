@@ -29,6 +29,7 @@ import datetime
 import json
 import os
 import re
+import tempfile
 import time
 from nicegui import app, background_tasks, ui
 from open_file import open_file as OpenFileDialog
@@ -6089,6 +6090,40 @@ async def show_storage_location() -> None:
     await storage_ui.StorageLocationDialog(auth.current_storage(), changed).open()
 
 
+def _export_destination(title: str, start_name: str, extensions: list, on_picked) -> None:
+    """Ask where an export goes and call on_picked(path) with it: a RemotePath in the user's own storage
+    for Keycloak users when storage is set up (an error if it can't be reached), else a Path in the
+    data folder."""
+    if uses_storage():
+        _in_page(_export_to_storage, title, start_name, extensions, on_picked)
+        return
+
+    class ExportFileWithCallback(SaveFileDialog):
+        def submit(self, value):
+            if value:
+                on_picked(Path(value[0]))
+            self.close()
+            super().submit(value)
+
+    dialog = ExportFileWithCallback(str(_document_dir()), title=title, filename=start_name,
+                                    upper_limit=str(BASE_DIR), allowed_extensions=extensions)
+    dialog.open()
+
+
+async def _export_to_storage(title: str, start_name: str, extensions: list, on_picked) -> None:
+    if not storage_ready():
+        return
+    current = session().current_file.get('path')
+    start = str(storage.as_path(current).parent)[len(storage.PREFIX):] if current and storage.is_remote(current) \
+        else user_storage().get('storage_dir') or '/'
+
+    def picked(dest) -> None:
+        user_storage()['storage_dir'] = str(dest.parent)[len(storage.PREFIX):]
+        on_picked(dest)
+    await storage_ui.StorageFileDialog('save', picked, start_dir=start, start_name=start_name, title=title,
+                                       extensions=extensions).open()
+
+
 def export_xdts():
     """Convert the current editor contents (an XSheet ExposureSheet document)
     to an XDTS JSON timesheet and save it via a Save As-style dialog."""
@@ -6104,11 +6139,7 @@ def export_xdts():
         ui.notify(f'Export failed: {exc}', color='negative')
         return
 
-    def file_selected_callback(files):
-        if not files:
-            return
-        dest = Path(files[0])
-
+    def picked(dest):
         def do_export():
             try:
                 dest.write_text(xdts_text, encoding='utf-8')
@@ -6120,22 +6151,7 @@ def export_xdts():
 
         _confirm_overwrite(dest, do_export)
 
-    class ExportFileWithCallback(SaveFileDialog):
-        def submit(self, value):
-            file_selected_callback(value)
-            self.close()
-            super().submit(value)
-
-    start_dir = _document_dir()
-    start_name = f'{source_name}.xdts.json'
-    dialog = ExportFileWithCallback(
-        str(start_dir),
-        title='Export XDTS',
-        filename=start_name,
-        upper_limit=str(BASE_DIR),
-        allowed_extensions=['.json'],
-    )
-    dialog.open()
+    _export_destination('Export XDTS', f'{source_name}.xdts.json', ['.json'], picked)
 
 
 # File > Export > Export OCA: what the Images choice offers
@@ -6174,8 +6190,20 @@ def export_oca():
         ui.label('Images').classes('text-sm text-grey-8 mt-1')
         images_input = ui.radio(OCA_IMAGE_MODES, value=options['images'] if options['images'] in OCA_IMAGE_MODES
                                 else 'placeholder').props('dense')
+        async def browse_cels_in_storage() -> None:
+            if not storage_ready():
+                return
+            start = cels_input.value if str(cels_input.value or '').startswith('/') else (user_storage().get('storage_dir') or '/')
+
+            def chosen_folder(folder) -> None:
+                cels_input.value = str(folder)[len(storage.PREFIX):]
+            await storage_ui.StorageFileDialog('folder', chosen_folder, start_dir=start, title='Cel Images Folder').open()
+
         def browse_cels(_=None):
             """Choose (or create) the cel images folder in a folder browser."""
+            if uses_storage():
+                _in_page(browse_cels_in_storage)
+                return
             current = BASE_DIR / cels_input.value if cels_input.value else None
             start = current if current is not None and current.is_dir() else (
                 _document_dir())
@@ -6216,7 +6244,20 @@ def export_oca():
                 return
             cels_value = (cels_input.value or '').strip()
             cels_dir = None
-            if cels_value and images_input.value == 'placeholder':
+            if cels_value and images_input.value == 'placeholder' and uses_storage():
+                if not storage_ready():
+                    return
+                candidate = storage.RemotePath(cels_value)  # fetched when the export is written
+                try:
+                    found = candidate.is_dir()
+                except OSError as exc:
+                    ui.notify(f'Export failed: {exc}', color='negative')
+                    return
+                if not found:
+                    ui.notify(f'{cels_value} is not a folder in your storage', color='warning')
+                    return
+                cels_dir = candidate
+            elif cels_value and images_input.value == 'placeholder':
                 candidate = Path(cels_value)
                 candidate = candidate if candidate.is_absolute() else BASE_DIR / candidate
                 if not within(candidate, BASE_DIR) or not candidate.is_dir():
@@ -6238,23 +6279,37 @@ def _choose_oca_destination(text: str, source_name: str, options: dict, cels_dir
     """Export OCA, second step: where to save the NAME.oca folder, then write it."""
     sess = session()
 
-    def file_selected_callback(files):
-        if not files:
-            return
-        dest = xsheet_to_oca.oca_folder(Path(files[0]))
-        if not within(dest.parent, BASE_DIR):
-            ui.notify(f'{dest.name} is outside the folders you can save to', color='warning')
-            return
+    def picked(chosen):
+        remote = storage.is_remote(chosen)
+        if remote:  # in the user's storage: build the folder here, then copy it over
+            dest = chosen if chosen.suffix == '.oca' else storage.RemotePath(str(chosen) + '.oca')
+        else:
+            dest = xsheet_to_oca.oca_folder(chosen)
+            if not within(dest.parent, BASE_DIR):
+                ui.notify(f'{dest.name} is outside the folders you can save to', color='warning')
+                return
 
         def do_export():
             try:
-                summary = xsheet_to_oca.export_oca(text, dest, source_name=source_name, width=options['width'],
-                                                   height=options['height'], image_mode=options['images'],
-                                                   cels_dir=cels_dir, replace=True)
+                if remote:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        local_cels = cels_dir
+                        if isinstance(cels_dir, storage.RemotePath):  # the user's cel images: fetch them first
+                            local_cels = Path(tmp) / 'cels'
+                            local_cels.mkdir()
+                            storage.get_images(cels_dir, local_cels)
+                        summary = xsheet_to_oca.export_oca(text, Path(tmp) / dest.name, source_name=source_name,
+                                                           width=options['width'], height=options['height'],
+                                                           image_mode=options['images'], cels_dir=local_cels, replace=True)
+                        storage.put_tree(summary['path'], dest, replace=True)
+                else:
+                    summary = xsheet_to_oca.export_oca(text, dest, source_name=source_name, width=options['width'],
+                                                       height=options['height'], image_mode=options['images'],
+                                                       cels_dir=cels_dir, replace=True)
             except Exception as exc:
                 ui.notify(f'Export failed: {exc}', color='negative')
                 return
-            give_to_owner_of(summary['path'], BASE_DIR)  # the whole OCA folder: the data folder's owner, not root
+            _own(dest)  # the whole OCA folder: the data folder's owner, not root
             total = summary['copied'] + summary['placeholders']
             if options['images'] != 'placeholder':
                 images = 'no images'
@@ -6278,27 +6333,19 @@ def _choose_oca_destination(text: str, source_name: str, options: dict, cels_dir
             else:
                 ui.notify(exported, color='positive', multi_line=True)
 
-        if dest.exists() and not xsheet_to_oca.is_oca_folder(dest):
+        try:
+            exists = dest.exists()
+            is_oca = (storage.is_oca_folder(dest) if remote else xsheet_to_oca.is_oca_folder(dest)) if exists else False
+        except OSError as exc:
+            ui.notify(f'Export failed: {exc}', color='negative')
+            return
+        if exists and not is_oca:
             ui.notify(f'{dest.name} already exists and is not an OCA folder; choose another name', color='warning')
             return
         _confirm_overwrite(dest, do_export,
                            message=f'{dest.name} already exists. Replace that OCA folder and everything in it?')
 
-    class ExportFileWithCallback(SaveFileDialog):
-        def submit(self, value):
-            file_selected_callback(value)
-            self.close()
-            super().submit(value)
-
-    start_dir = _document_dir()
-    dialog = ExportFileWithCallback(
-        str(start_dir),
-        title='Export OCA',
-        filename=f'{source_name}.oca',
-        upper_limit=str(BASE_DIR),
-        allowed_extensions=['.oca'],
-    )
-    dialog.open()
+    _export_destination('Export OCA', f'{source_name}.oca', ['.oca'], picked)
 
 
 def export_to_pdf():
@@ -6325,11 +6372,7 @@ def export_to_pdf():
             ui.notify(f'PDF export failed: {exc}', color='negative')
             return
 
-        def file_selected_callback(files):
-            if not files:
-                return
-            dest = Path(files[0])
-
+        def picked(dest):
             def do_export():
                 try:
                     dest.write_bytes(pdf_bytes)
@@ -6341,22 +6384,7 @@ def export_to_pdf():
 
             _confirm_overwrite(dest, do_export)
 
-        class ExportPdfWithCallback(SaveFileDialog):
-            def submit(self, value):
-                file_selected_callback(value)
-                self.close()
-                super().submit(value)
-
-        start_dir = _document_dir()
-        start_name = f'{source_name}.pdf'
-        dialog = ExportPdfWithCallback(
-            str(start_dir),
-            title='Generate Report',
-            filename=start_name,
-            upper_limit=str(BASE_DIR),
-            allowed_extensions=['.pdf'],
-        )
-        dialog.open()
+        _export_destination('Generate Report', f'{source_name}.pdf', ['.pdf'], picked)
 
     validation_warnings = _validate_for_export(text)
     if validation_warnings:
@@ -6390,10 +6418,7 @@ async def export_xsheet():
         except Exception as exc:  # no answer from the browser: export without it
             print('DEBUG: sketchpad sheetShapes failed:', exc)
 
-    def file_selected_callback(files):
-        if not files:
-            return
-        dest = Path(files[0])
+    def picked(dest):
         try:
             pdf_bytes = export_pdf.generate_xsheet_pdf(layer_ids or [], rows, title=doc_name, source_text=text,
                                                        style=style, sketch=sketch)
@@ -6413,22 +6438,7 @@ async def export_xsheet():
 
         _confirm_overwrite(dest, do_export)
 
-    class ExportXSheetPdfWithCallback(SaveFileDialog):
-        def submit(self, value):
-            file_selected_callback(value)
-            self.close()
-            super().submit(value)
-
-    start_dir = _document_dir()
-    start_name = f'{source_name}-xsheet.pdf'
-    dialog = ExportXSheetPdfWithCallback(
-        str(start_dir),
-        title='Export XSheet',
-        filename=start_name,
-        upper_limit=str(BASE_DIR),
-        allowed_extensions=['.pdf'],
-    )
-    dialog.open()
+    _export_destination('Export XSheet', f'{source_name}-xsheet.pdf', ['.pdf'], picked)
 
 
 # File chooser using OpenFileDialog

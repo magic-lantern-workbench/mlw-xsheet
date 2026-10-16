@@ -42,13 +42,14 @@ def _problem(exc: Exception) -> str:
 
 
 class StorageFileDialog:
-    """Browse the user's storage and pick a file to open, or a name to save as (File > Open, Save As). `on_pick(RemotePath)` is called with the choice."""
+    """Browse the user's storage and pick a file to open, or a name to save as (File > Open, Save As, the exports, and the cel images folder). `on_pick(RemotePath)` is called with the choice."""
 
-    def __init__(self, mode: str, on_pick, *, start_dir: str = '/', start_name: str = 'untitled.xml'):
-        self.mode, self.on_pick = mode, on_pick
+    def __init__(self, mode: str, on_pick, *, start_dir: str = '/', start_name: str = 'untitled.xml',
+                 title: str | None = None, extensions=ALLOWED):
+        self.mode, self.on_pick, self.extensions = mode, on_pick, tuple(extensions)
         self.path = storage._clean(start_dir)
         self.sub = storage.current_sub()
-        title = 'Open' if mode == 'open' else 'Save As'
+        title = title or {'open': 'Open', 'save': 'Save As', 'folder': 'Choose Folder'}[mode]
         with ui.dialog() as self.dialog, titled_card(title, classes='w-[520px] max-w-full', body_classes='gap-2'):
             ui.label(f'{storage.NAME}: your own files').classes('text-sm text-gray-500')
             self.where = ui.label('').classes('text-sm font-medium break-all')
@@ -61,11 +62,11 @@ class StorageFileDialog:
             if mode == 'save':
                 self.filename = ui.input('File name', value=start_name).classes('w-full')
             with ui.row().classes('w-full items-center gap-2'):
-                if mode == 'save':
+                if mode in ('save', 'folder'):
                     ui.button('New Folder', icon='create_new_folder', on_click=self._new_folder).props('outline size=sm')
                 ui.space()
                 ui.button('Cancel', on_click=self.dialog.close).props('outline size=sm')
-                ui.button('Open' if mode == 'open' else 'Save', on_click=self._ok).props('size=sm')
+                ui.button({'open': 'Open', 'save': 'Save', 'folder': 'Select Folder'}[mode], on_click=self._ok).props('size=sm')
 
     async def open(self) -> None:
         """Show the dialog -- or, if the storage can't be reached, just say so (an error)."""
@@ -85,7 +86,7 @@ class StorageFileDialog:
             return False
         self.path = path
         self.where.set_text(f'{path}  (in your storage)')
-        entries = [e for e in entries if not e['name'].startswith('.') and (e['is_dir'] or posixpath.splitext(e['name'])[1].lower() in ALLOWED)]
+        entries = [e for e in entries if not e['name'].startswith('.') and (e['is_dir'] or (self.mode != 'folder' and  posixpath.splitext(e['name'])[1].lower() in self.extensions))]
         entries.sort(key=lambda e: e['name'].lower())
         entries.sort(key=lambda e: not e['is_dir'])
         rows = [{'name': f"\U0001F4C1 <strong>{e['name']}</strong>" if e['is_dir'] else e['name'],
@@ -102,6 +103,8 @@ class StorageFileDialog:
             await self._show(row['path'])
         elif self.mode == 'open':
             self._pick(row['path'])
+        elif self.mode == 'folder':
+            pass
         else:
             self.filename.set_value(row['file'])
 
@@ -137,9 +140,15 @@ class StorageFileDialog:
             if not file or '/' in file:
                 ui.notify('Give a file name', color='warning')
                 return
+            if posixpath.splitext(file)[1].lower() not in self.extensions:  # the dialogs offer only these kinds
+                file += self.extensions[0]
             self._pick(posixpath.join(self.path, file))
             return
         rows = await self.grid.get_selected_rows()
+        if self.mode == 'folder':  # the selected folder, else the one being shown
+            rows = [r for r in rows if r['is_dir'] and r['file']]
+            self._pick(rows[0]['path'] if rows else self.path)
+            return
         rows = [r for r in rows if not r['is_dir']]
         if not rows:
             ui.notify('Select a file to open', color='info')
