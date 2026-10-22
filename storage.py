@@ -219,6 +219,20 @@ def use_private_directory(sub: str) -> dict:
     return _api(sub, 'DELETE', 'root')
 
 
+def list_drives(sub: str | None = None) -> list[dict]:
+    """The removable drives the user may use now: [{'name', 'path': '/drives/NAME', 'read_only'}]. An
+    administrator enables a drive for chosen users and roles in mlw-storage; it then appears in the
+    user's storage at `path`. A storage server without drives gives an empty list."""
+    try:
+        data = _api(sub or current_sub(), 'GET', 'drives')
+    except StorageError as exc:
+        if exc.kind == 'off' and URL:  # a gateway that does not know about drives
+            return []
+        raise
+    return [{'name': d.get('name') or posixpath.basename(d.get('path') or ''), 'path': d.get('path') or '',
+             'read_only': bool(d.get('read_only'))} for d in data.get('drives') or [] if d.get('path')]
+
+
 def status_for(sub: str, roles: list | None = None) -> dict:
     """What a Profile dialog shows about the user's storage: which server, which folder, whether they can write."""
     status = {'state': 'ready', 'name': NAME, 'host': SFTP_HOST, 'port': SFTP_PORT, 'user_id': sub, 'selected': False,
@@ -230,20 +244,33 @@ def status_for(sub: str, roles: list | None = None) -> dict:
         status.update(state=exc.kind, message=exc.message)
         return status
     status.update(selected=bool(info.get('selected')), folder=info.get('path') or '', root=info.get('home') or '')
+    try:
+        status['drives'] = list_drives(sub)
+    except StorageError:
+        status['drives'] = []
     return status
 
 
-def describe(status: dict | None) -> dict:
-    """The lines of a status for display: {'storage', 'location', 'access'} (text)."""
+def describe_drives(drives: list | None, active: str = '') -> str:
+    """The removable drives as one line of text; the one in use (its path) is marked."""
+    return ', '.join(f"{d['name']} ({'read-only' if d.get('read_only') else 'read and write'})"
+                     + (' - in use' if d['path'] == active else '') for d in drives or [])
+
+
+def describe(status: dict | None, active_drive: str = '') -> dict:
+    """The lines of a status for display: {'storage', 'location', 'access', 'drives'} (text).
+    `active_drive` is the path of the removable drive the user chose to work on, if any."""
     if not status or status.get('state') == 'off':
-        return {'storage': 'Not set up', 'location': '', 'access': ''}
+        return {'storage': 'Not set up', 'location': '', 'access': '', 'drives': ''}
     where = f"{status.get('name') or NAME} (SFTP {status.get('host')}:{status.get('port')})"
     if status.get('state') != 'ready':
-        return {'storage': where, 'location': '', 'access': 'Not available: ' + (status.get('message') or status.get('state'))}
+        return {'storage': where, 'location': '', 'access': 'Not available: ' + (status.get('message') or status.get('state')),
+                'drives': ''}
     location = (f"Shared folder “{status['folder']}”" if status.get('folder') else 'Shared folder (the top of the shared area)') \
         if status.get('selected') else 'Your private directory (no folder chosen yet)'
     return {'storage': where, 'location': location + (f"  ({status['root']})" if status.get('root') else ''),
-            'access': 'Read-only' if status.get('read_only') else 'Read and write'}
+            'access': 'Read-only' if status.get('read_only') else 'Read and write',
+            'drives': describe_drives(status.get('drives'), active_drive) or 'None shared with you'}
 
 
 # ---------------------------------------------------------------- the user's files (SFTP)

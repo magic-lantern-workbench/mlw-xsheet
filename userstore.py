@@ -47,7 +47,8 @@ for a Keycloak user, or "local:<name>" for the built-in account):
                                        export_sketch, sketch_font, sketch_font_size,
                                        xml_editor, popup_log, popup_log_time,
                                        popup_log_zone, oca_export, recent_files,
-                                       recent_files_limit, open_dir, storage_dir, last_document
+                                       recent_files_limit, open_dir, storage_dir,
+                                       storage_drive, last_document
   <prefix>:user:<user>:drafts    HASH  one field per document with unsaved changes:
                                        the field is the document's path ("@untitled"
                                        for a never-saved one), the value JSON

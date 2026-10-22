@@ -32,6 +32,7 @@ import re
 import tempfile
 import time
 from nicegui import app, background_tasks, ui
+from nicegui import run as nicegui_run
 from open_file import open_file as OpenFileDialog
 from save_file import save_file as SaveFileDialog
 from choose_folder import choose_folder as ChooseFolderDialog
@@ -1984,8 +1985,12 @@ def show_profile_dialog():
     rows.append(('Administrator', 'Yes' if auth.is_admin() else 'No'))
     rows.append(('Access', {'view': 'Read-only (viewer)', 'review': 'Reviewer (reviews and Sketchpad)'}.get(auth.access_level(), 'Can edit')))
     if storage.enabled():
-        where = storage.describe(auth.current_storage())
+        where = storage.describe(auth.current_storage(), storage_drive())
         rows += [('Storage', where['storage']), ('Storage folder', where['location']), ('Storage access', where['access'])]
+        if where['drives']:
+            rows.append(('Removable drives', where['drives']))
+        if storage_drive():
+            rows.append(('Working on', f"The removable drive “{storage_drive().rsplit('/', 1)[-1]}” (Open and Save As stay on it)"))
     with ui.dialog() as profile_dialog, \
             titled_card('Profile', classes='w-[520px] max-w-full', body_classes='gap-2'):
         with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
@@ -6048,6 +6053,34 @@ def uses_storage() -> bool:
     return storage.enabled() and storage.current_sub() is not None
 
 
+def storage_drive() -> str:
+    """The removable drive (its path in the user's storage, /drives/NAME) the user works on, or ''."""
+    return user_storage().get('storage_drive') or ''
+
+
+async def storage_scope(writing: bool = False) -> dict | None:
+    """Where the storage dialogs may go: {'base': '/'} for the user's whole storage, or the removable drive
+    they chose. If that drive is not available now (unplugged, or no longer shared with them), say so as
+    an error and return None, so Open, Save As and the exports do not quietly show something else."""
+    drive = storage_drive()
+    if not drive:
+        return {'base': '/', 'notice': ''}
+    name = drive.rsplit('/', 1)[-1]
+    try:
+        drives = await nicegui_run.io_bound(storage.list_drives, storage.current_sub())
+    except Exception as exc:
+        ui.notify(getattr(exc, 'message', None) or str(exc), color='negative')
+        return None
+    found = next((d for d in drives if d['path'] == drive), None)
+    if found is None:
+        ui.notify(f'The drive “{name}” is not available (it may be unplugged, or no longer shared with you). '
+                  'Choose File > Storage Location to pick another drive or go back to your storage.',
+                  color='negative', multi_line=True)
+        return None
+    return {'base': drive, 'notice': f'The drive “{name}” is read-only: nothing can be saved on it.'
+            if writing and found['read_only'] else ''}
+
+
 async def open_from_storage() -> None:
     """File > Open (Keycloak users): open a file from the user's own storage."""
     if not storage_ready():
@@ -6057,8 +6090,11 @@ async def open_from_storage() -> None:
     def picked(path) -> None:
         user_storage()['storage_dir'] = str(path.parent)[len(storage.PREFIX):]
         open_file(path)
+    scope = await storage_scope()
+    if scope is None:
+        return
     start = user_storage().get('storage_dir') or '/'
-    await storage_ui.StorageFileDialog('open', picked, start_dir=start).open()
+    await storage_ui.StorageFileDialog('open', picked, start_dir=start, base=scope['base']).open()
 
 
 async def save_to_storage(on_saved=None) -> None:
@@ -6076,7 +6112,11 @@ async def save_to_storage(on_saved=None) -> None:
     def picked(dest) -> None:
         user_storage()['storage_dir'] = str(dest.parent)[len(storage.PREFIX):]
         _confirm_overwrite(dest, lambda: _save_to(dest, on_saved))
-    await storage_ui.StorageFileDialog('save', picked, start_dir=start, start_name=name).open()
+    scope = await storage_scope(writing=True)
+    if scope is None:
+        return
+    await storage_ui.StorageFileDialog('save', picked, start_dir=start, start_name=name,
+                                       base=scope['base'], notice=scope['notice']).open()
 
 
 async def show_storage_location() -> None:
@@ -6087,7 +6127,11 @@ async def show_storage_location() -> None:
 
     def changed(status: dict) -> None:
         sess.user_storage['storage'] = status  # what Profile shows (see auth.current_storage())
-    await storage_ui.StorageLocationDialog(auth.current_storage(), changed).open()
+    def drive_chosen(path: str) -> None:
+        user_storage()['storage_drive'] = path  # kept per user, in Valkey like the other settings
+
+    await storage_ui.StorageLocationDialog(auth.current_storage(), changed, drive=storage_drive(),
+                                           on_drive=drive_chosen).open()
 
 
 def _export_destination(title: str, start_name: str, extensions: list, on_picked) -> None:
@@ -6120,8 +6164,11 @@ async def _export_to_storage(title: str, start_name: str, extensions: list, on_p
     def picked(dest) -> None:
         user_storage()['storage_dir'] = str(dest.parent)[len(storage.PREFIX):]
         on_picked(dest)
+    scope = await storage_scope(writing=True)
+    if scope is None:
+        return
     await storage_ui.StorageFileDialog('save', picked, start_dir=start, start_name=start_name, title=title,
-                                       extensions=extensions).open()
+                                       extensions=extensions, base=scope['base'], notice=scope['notice']).open()
 
 
 def export_xdts():
@@ -6197,7 +6244,11 @@ def export_oca():
 
             def chosen_folder(folder) -> None:
                 cels_input.value = str(folder)[len(storage.PREFIX):]
-            await storage_ui.StorageFileDialog('folder', chosen_folder, start_dir=start, title='Cel Images Folder').open()
+            scope = await storage_scope()
+            if scope is None:
+                return
+            await storage_ui.StorageFileDialog('folder', chosen_folder, start_dir=start, title='Cel Images Folder',
+                                               base=scope['base']).open()
 
         def browse_cels(_=None):
             """Choose (or create) the cel images folder in a folder browser."""

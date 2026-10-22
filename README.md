@@ -318,7 +318,15 @@ storage instead of the server's data folder (the dialogs remember the last folde
 folder); if the storage can't be reached, they report an error. Local accounts keep using the data folder. A document from
 storage is shown with its name, **Save** writes it back, the sketch is saved beside it as `.svg`, and it
 appears in **Open Recent**, drafts and *last document* like any other (as `storage:/folder/file.xml`, in the
-user's own Valkey record). **File > Storage Location…** (or *Profile > Storage Location…*) lists the folders
+user's own Valkey record). **Removable drives.** If an administrator has enabled a USB or other removable drive for the user (in mlw-storage's
+Drives page, for chosen users or Keycloak roles), it appears in the user's storage at `/drives/NAME`, and the gateway
+lists it at `GET /mlw/v1/storage/drives`. The *Storage Location* dialog shows these drives (read and write, or
+read-only); **Use this drive** keeps Open, Save As, the exports and the cel images folder on that drive (the dialogs
+cannot go above it; the choice is the per-user setting `storage_drive`), and **Use my storage** or choosing a
+folder or the private directory ends it. If the drive is unplugged or no longer shared, those commands report an error
+instead of showing other files. Profile lists the drives and the one in use.
+
+**File > Storage Location…** (or *Profile > Storage Location…*) lists the folders
 of the shared area and sets which one is the user's own, or returns them to their private directory.
 The exports (Export XDTS, Export OCA, Export XSheet and Generate Report) use the same storage dialogs and write to the
 user's storage too; an OCA folder is built on the server and copied over in one connection (replacing an existing OCA
@@ -404,7 +412,7 @@ three Valkey hashes (`<prefix>` is `mlw:xsheet`):
 
 | Key | Type | Fields |
 |---|---|---|
-| `<prefix>:user:<user>` | hash | One field per setting, each value JSON: `format_prefs`, `schema_path`, `xsheet_style`, `report_sections`, `report_include_raw`, `export_sketch`, `sketch_font`, `sketch_font_size`, `xml_editor`, `popup_log`, `popup_log_time`, `popup_log_zone`, `oca_export`, `recent_files`, `recent_files_limit`, `open_dir`, `storage_dir`, `last_document` |
+| `<prefix>:user:<user>` | hash | One field per setting, each value JSON: `format_prefs`, `schema_path`, `xsheet_style`, `report_sections`, `report_include_raw`, `export_sketch`, `sketch_font`, `sketch_font_size`, `xml_editor`, `popup_log`, `popup_log_time`, `popup_log_zone`, `oca_export`, `recent_files`, `recent_files_limit`, `open_dir`, `storage_dir`, `storage_drive`, `last_document` |
 | `<prefix>:user:<user>:drafts` | hash | One field per document with unsaved changes: the field is the document's path (`@untitled` for a never-saved one), the value JSON `{"text", "saved_content", "sketch"?, "saved_at"}` |
 | `<prefix>:user:<user>:meta` | hash | `username`, `source` (`keycloak` or `local`), `realm`, `user_id`, `created`, `last_seen` (ISO 8601, UTC) |
 
