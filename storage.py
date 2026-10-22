@@ -398,8 +398,10 @@ class RemotePath:
     def with_suffix(self, suffix: str) -> 'RemotePath':
         return RemotePath(posixpath.splitext(self._p)[0] + suffix)
 
-    def _stat(self):
-        sub = current_sub()
+    def _stat(self, sub=None):
+        """The SFTP attributes, or None if there is no such file. Pass `sub` when calling from a worker thread,
+        where the current user cannot be looked up."""
+        sub = sub or current_sub()
         try:
             with sftp(sub) as s:
                 return s.stat(self._p)

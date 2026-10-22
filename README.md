@@ -437,8 +437,12 @@ every change, so run a single app server against it.
 - **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
   collapsible tree mirroring the document's element structure.
 - **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
-- **Footer** — current filename (`*` suffix when there are unsaved changes), validation
-  status, and the active schema (a chosen file, or `auto-detect`).
+- **Footer** — a file icon and the current filename (`*` suffix when there are unsaved changes), validation
+  status, and the active schema (a chosen file, or `auto-detect`). Click the **file icon** for *File Information*: the
+  document's name, folder, where it is (the data folder, your storage or a removable drive), full path, size, last-changed
+  time, permissions (and owner, for a file in the data folder), its line and character count in the editor, unsaved
+  changes and schema; and, below, the same for its sketch `.svg` (or that it has not been saved yet), with the number of
+  shapes in the Sketchpad.
 
 ### File menu
 

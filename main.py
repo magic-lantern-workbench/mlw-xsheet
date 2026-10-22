@@ -29,6 +29,7 @@ import datetime
 import json
 import os
 import re
+import stat as stat_module
 import tempfile
 import time
 from nicegui import app, background_tasks, ui
@@ -702,6 +703,93 @@ def set_filename_label(name: str | None = None):
     label_text = name + (' *' if document_modified() else '')
     if sess.filename_label is not None:
         sess.filename_label.set_text(label_text)
+
+
+def _size_text(size: int) -> str:
+    units, value = ['bytes', 'KB', 'MB', 'GB'], float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f'{size:,} bytes' if unit == 'bytes' else f'{size:,} bytes ({value:.1f} {unit})'
+        value /= 1024
+
+
+def _file_facts(path, sub: str | None = None) -> list[tuple[str, str]]:
+    """What can be said about one file, local or in the user's storage: where it is, its size, when it was
+    last changed and who may do what. Reads the file system, so call it off the event loop (with `sub`, the
+    user's Keycloak id, which a worker thread cannot look up). A file that
+    is not there (yet) says so."""
+    path = storage.as_path(path)
+    remote = storage.is_remote(path)
+    rows = []
+    if remote:
+        location = str(path.parent)[len(storage.PREFIX):] or '/'
+        drive = location.split('/')[2] if location.startswith('/drives/') and location.count('/') >= 2 else ''
+        where = f'Removable drive “{drive}”' if drive else f'Your storage ({storage.NAME})'
+        rows += [('Name', path.name), ('Folder', location), ('Where', where), ('Path', str(path))]
+        try:
+            st = path._stat(sub)
+        except OSError as exc:
+            return rows + [('Status', f'Cannot be read now: {getattr(exc, "message", None) or exc}')]
+    else:
+        rows += [('Name', path.name), ('Folder', str(path.parent)), ('Where', 'The server\'s data folder'), ('Path', str(path))]
+        try:
+            st = path.stat()
+        except OSError:
+            st = None
+    if st is None:
+        return rows + [('Status', 'Not saved yet: there is no such file')]
+    rows.append(('Size', _size_text(int(st.st_size or 0))))
+    if st.st_mtime:
+        rows.append(('Last changed', time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(st.st_mtime))))
+    mode = st.st_mode or 0
+    if mode:
+        rows.append(('Permissions', stat_module.filemode(mode)))
+    if not remote:
+        try:
+            import grp
+            import pwd
+            owner = f'{pwd.getpwuid(st.st_uid).pw_name}:{grp.getgrgid(st.st_gid).gr_name}'
+        except (ImportError, KeyError):
+            owner = f'{st.st_uid}:{st.st_gid}'
+        rows.append(('Owner', owner))
+    return rows
+
+
+async def show_file_info() -> None:
+    """The footer's file icon: tell the user about the open document and, if there is one, its sketch (.svg)."""
+    sess = session()
+    path = sess.current_file.get('path')
+    text = _editor_text()
+    if not path and not text.strip():
+        ui.notify('No file is open', color='info')
+        return
+    sub = storage.current_sub()
+    document = ([('Name', UNTITLED_NAME), ('Status', 'Not saved yet: use Save or Save As')] if not path else
+                await nicegui_run.io_bound(_file_facts, path, sub))
+    lines = text.count('\n') + (1 if text and not text.endswith('\n') else 0)
+    document.append(('In the editor', f'{lines:,} line(s), {len(text):,} characters'))
+    document.append(('Unsaved changes', 'Yes' if sess.current_file.get('modified') else 'No'))
+    document.append(('Schema', 'Chosen: ' + Path(chosen_schema_path()).name if chosen_schema_path() else 'Detected from the document'))
+    sketch = [('Sketch in the editor', f"{sess.sketch['count']} shape(s)" + (', not saved' if sess.sketch_modified else ''))]
+    if path:
+        try:
+            sketch += await nicegui_run.io_bound(_file_facts, sketch_path_for(path), sub)
+        except Exception as exc:
+            sketch.append(('Status', f'Cannot be read now: {getattr(exc, "message", None) or exc}'))
+    else:
+        sketch.append(('Status', 'The sketch is saved beside the document, as .svg, once the document is saved'))
+    with ui.dialog() as dialog, titled_card('File Information', classes='w-[560px] max-w-full', body_classes='gap-2'):
+        for heading_text, rows in (('Document', document), ('Sketch (.svg)', sketch)):
+            ui.label(heading_text).classes('text-sm font-medium')
+            with ui.grid(columns='9rem 1fr').classes('w-full gap-x-3 gap-y-1'):
+                for label, value in rows:
+                    ui.label(label).classes('text-gray-500')
+                    ui.label(value or '—').classes('break-all')
+            if heading_text == 'Document':
+                ui.separator()
+        with ui.row().classes('w-full justify-end mt-2'):
+            ui.button('Close', on_click=dialog.close).props('outline size=sm')
+    dialog.open()
 
 
 def set_validation_status(message: str, ok: bool = True):
@@ -7937,7 +8025,10 @@ window.mlwSelectRange = function(elementId, from, to) {
 
     with ui.footer():
         with ui.row().classes('items-center justify-between w-full'):
-            sess.filename_label = ui.label('No file')
+            with ui.row().classes('items-center gap-1 no-wrap'):
+                ui.button(icon='description', on_click=show_file_info).props('flat dense round size=sm color=white') \
+                    .tooltip('Information about this file and its sketch')
+                sess.filename_label = ui.label('No file')
             sess.validation_status_label = ui.label('')
             sess.schema_label = ui.label('')
             set_schema_label()
