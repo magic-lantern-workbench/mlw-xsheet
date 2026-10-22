@@ -18,3 +18,7 @@ compose*.yaml
 # Generated outputs
 examples/*.pdf
 Caddyfile
+
+# Release packages
+releases/
+scripts/

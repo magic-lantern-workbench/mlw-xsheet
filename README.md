@@ -150,6 +150,25 @@ docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
 docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
 ```
 
+### Release package
+
+`scripts/package.sh <version>` builds an installable package, `releases/mlw-xsheet-<version>.tar.gz` (with a
+`.sha256` file), for a machine that has only Docker. It builds the production image from this checkout and saves it
+with the Valkey and Caddy images, the Compose files, `Caddyfile`, `.env.example`, the examples, the source (to
+rebuild), the release notes, the User Guide, the licenses and `doc/Installation.md`, with a checksum for every file.
+The version must match the About dialog in `main.py`, and `doc/mlw-xsheet-v<version>-Release-Notes.docx` and
+`doc/User-Guide_v<version>.docx` must exist. On the target machine:
+
+```bash
+tar xzf mlw-xsheet-<version>.tar.gz && cd <version>-release
+./install.sh --start --domain xsheet.example.com --keycloak-url https://keycloak.example.com
+```
+
+`install.sh` verifies the checksums, loads the images, creates `.env` (production Compose files, pinned image tag, a
+generated `MLW_STORAGE_SECRET`, and the options given: `--domain`, `--keycloak-url`, `--storage-url`, `--http-port`,
+`--https-port`), and with `--start` starts the stack; `--seed-examples` copies the examples into the data volume. See
+`doc/Installation.md` (also in the package) for requirements, settings, backups, upgrades and troubleshooting.
+
 ### Logging in
 
 For a fuller description of the Keycloak integration and of what each role allows, see
