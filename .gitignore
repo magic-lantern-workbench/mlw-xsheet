@@ -5,3 +5,6 @@ __pycache__/
 .env
 venv/
 .venv/
+
+# Release packages (scripts/package.sh)
+/releases/

@@ -118,6 +118,7 @@ ADMIN_CLIENT_SECRET = os.environ.get('MLW_KEYCLOAK_ADMIN_CLIENT_SECRET') or ''
 VIEWER_ROLE = (os.environ.get('MLW_KEYCLOAK_VIEWER_ROLE') or 'XSheet Viewer').strip()
 EDITOR_ROLE = (os.environ.get('MLW_KEYCLOAK_EDITOR_ROLE') or 'XSheet Editor').strip()
 REVIEWER_ROLE = (os.environ.get('MLW_KEYCLOAK_REVIEWER_ROLE') or 'XSheet Reviewer').strip()
+LOGIN_HOOKS = []  # async functions called with the who-dict of a user Keycloak has accepted, before they are signed in (see storage.py)
 NOT_SET_UP = 'Account is not fully set up'  # Keycloak's answer to the right password, with an action still required
 try:
     KEYCLOAK_TIMEOUT = float(os.environ.get('MLW_KEYCLOAK_TIMEOUT') or 5)
@@ -279,11 +280,14 @@ async def keycloak_login(username: str, password: str) -> tuple:
         _record(f'Keycloak answered {response.status_code}')
         return 'unreachable', None
     try:
-        claims = _token_claims(response.json()['access_token'])
+        answer = response.json()
+        claims = _token_claims(answer['access_token'])
     except Exception:
         return 'unreachable', None
+    # the tokens are for this server's use only, in memory (see storage.py); they are not kept in the login state
+    tokens = {k: answer.get(k) for k in ('access_token', 'refresh_token', 'expires_in', 'refresh_expires_in')}
     return 'ok', {'username': claims.get('preferred_username') or username, 'roles': _roles_from_claims(claims),
-                  'profile': _profile_from_claims(claims)}
+                  'profile': _profile_from_claims(claims), 'tokens': tokens}
 
 
 def password_change_available() -> bool:
@@ -444,9 +448,19 @@ def session_is_active(store) -> bool:
     return True
 
 
+def current_storage() -> dict:
+    """The user's storage as found at login (see storage.py), for the Profile dialog."""
+    return dict(_store().get('storage') or {})
+
+
 def log_out(store, *, timed_out: bool = False) -> None:
     if store.get('authenticated'):
         _record(_timed_out_text() if timed_out else 'Logged out')
+        try:  # the user's Keycloak tokens, kept in memory to reach their storage, go too
+            import storage
+            storage.forget_login((store.get('profile') or {}).get('id'))
+        except Exception:
+            pass
     store['authenticated'] = False
     ui.navigate.to('/login?reason=timeout' if timed_out else '/login')
 
@@ -479,7 +493,14 @@ def login_page(redirect_to: str = '/', reason: str = ''):
     if session_is_active(store):
         return RedirectResponse(_safe_redirect(redirect_to))
 
-    def sign_in(who):
+    async def sign_in(who):
+        for hook in LOGIN_HOOKS:
+            try:
+                await hook(who)
+            except Exception as exc:  # a hook must never stop someone logging in
+                _record(f'Login hook failed ({type(exc).__name__})')
+        store['storage'] = who.pop('storage', None) or {}
+        who.pop('tokens', None)
         store['username'] = who['username']
         store['roles'] = who['roles']
         store['profile'] = who['profile']
@@ -511,7 +532,7 @@ def login_page(redirect_to: str = '/', reason: str = ''):
                 who = await authenticate(name, new_pw.value)
                 if who and 'roles' in who:
                     ui.notify('Password changed', color='positive')
-                    sign_in(who)
+                    await sign_in(who)
                 else:
                     ui.notify('Password changed, but Keycloak requires more of your account before you can '
                               'log in; finish that in Keycloak', color='warning')
@@ -545,7 +566,7 @@ def login_page(redirect_to: str = '/', reason: str = ''):
                       'and that can only be done in Keycloak', color='warning')
             return
         if who:
-            sign_in(who)
+            await sign_in(who)
             return
         await asyncio.sleep(1)  # slow down password guessing
         password.value = ''

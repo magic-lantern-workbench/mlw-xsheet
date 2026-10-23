@@ -59,6 +59,9 @@ tool (or in OpenToonz) can migrate between the two, and between an ExposureSheet
   grid as a table (**Export XSheet**); see [XSheet menu](#xsheet-menu) below.
 - **XDTS JSON export** — converts the current ExposureSheet document to an XDTS-Extended JSON
   timesheet (see [Converting to and from XDTS](#converting-to-and-from-xdts) for the reverse direction and the older/legacy XDTS format).
+- **Per-user settings in Valkey** — preferences, recent files, the document you were last working
+  on and unsaved drafts are saved under your own login, so they follow you to any browser and are
+  not shared with others on the same browser; see [Multiple users](#multiple-users).
 - **File management** — Open/Save/Save As with a local file browser, an unsaved-changes prompt
   on Close, and a modified indicator (`*`) in the filename label.
 
@@ -96,6 +99,11 @@ development stack (`mlw-xsheet`). Both can run on the same machine, and starting
 one leaves the other alone. Its volumes are named with that prefix, e.g.
 `mlw-xsheet-prod_xsheet-data`.
 
+Both stacks also run a **`valkey`** service, the per-user settings database (see
+[Per-user storage in Valkey](#per-user-storage-in-valkey)). Its data is in the `valkey-data` volume
+(`mlw-xsheet-prod_valkey-data` in production): keep it between deploys, because it holds each user's
+preferences and unsaved drafts. The app waits for it to be healthy before starting.
+
 Production serves the app over **HTTPS** through a [Caddy](https://caddyserver.com/) reverse
 proxy (see [`Caddyfile`](Caddyfile)). The app's own port isn't published, and HTTP on port 80
 redirects to HTTPS on 443.
@@ -115,8 +123,11 @@ In production, the file dialogs open in `/data`, a named volume (`xsheet-data`),
 the app directory. The bundled schemas in `xml/` are still found by auto-detection. The server
 reads these environment variables: `MLW_DATA_DIR` (file dialog root; defaults to the working
 directory), `MLW_PORT` (default `8080`), `MLW_HOST` (default `0.0.0.0`), `MLW_RELOAD`
-(`1`/`0`), `MLW_STORAGE_SECRET` (signs the per-user settings cookie), and
-`NICEGUI_STORAGE_PATH` (where per-user settings are saved; `/state` in production).
+(`1`/`0`), `MLW_STORAGE_SECRET` (signs the browser's login cookie), and
+`NICEGUI_STORAGE_PATH` (NiceGUI's storage: who is logged in, the built-in account's password and the
+idle time-out, and the pop-up logs; without Valkey it also holds per-browser settings; `/state` in
+production). The per-user settings themselves are kept in Valkey: `MLW_VALKEY_URL`,
+`MLW_VALKEY_PASSWORD` and `MLW_VALKEY_PREFIX` configure it (see below).
 `MLW_IMAGE` and `MLW_TAG` set the image name and tag, and `MLW_HOST_PORT` sets the host port in
 development.
 
@@ -138,6 +149,25 @@ To put the example documents in the production data volume:
 docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
 docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
 ```
+
+### Release package
+
+`scripts/package.sh <version>` builds an installable package, `releases/mlw-xsheet-<version>.tar.gz` (with a
+`.sha256` file), for a machine that has only Docker. It builds the production image from this checkout and saves it
+with the Valkey and Caddy images, the Compose files, `Caddyfile`, `.env.example`, the examples, the source (to
+rebuild), the release notes, the User Guide, the licenses and `doc/Installation.md`, with a checksum for every file.
+The version must match the About dialog in `main.py`, and `doc/mlw-xsheet-v<version>-Release-Notes.docx` and
+`doc/User-Guide_v<version>.docx` must exist. On the target machine:
+
+```bash
+tar xzf mlw-xsheet-<version>.tar.gz && cd <version>-release
+./install.sh --start --domain xsheet.example.com --keycloak-url https://keycloak.example.com
+```
+
+`install.sh` verifies the checksums, loads the images, creates `.env` (production Compose files, pinned image tag, a
+generated `MLW_STORAGE_SECRET`, and the options given: `--domain`, `--keycloak-url`, `--storage-url`, `--http-port`,
+`--https-port`), and with `--start` starts the stack; `--seed-examples` copies the examples into the data volume. See
+`doc/Installation.md` (also in the package) for requirements, settings, backups, upgrades and troubleshooting.
 
 ### Logging in
 
@@ -273,6 +303,61 @@ the password of a user who has the required action pending. Without the secret, 
 to change their password in Keycloak. If the account needs something else first (such as a missing
 e-mail address), the login says that has to be done in Keycloak.
 
+### Your own file storage
+
+Users who log in with Keycloak can open and save exposure sheets in **their own file storage** on an
+**mlw-storage** server (SFTPGo behind a gateway; see that project's User Guide) instead of the server's
+data folder. It is set up per user: the storage server decides each user's root folder from their
+Keycloak identity, and **Profile** shows which storage and folder is in use, as found when they logged in
+(*Storage*, *Storage folder*, *Storage access*).
+
+**What is needed.** The mlw-storage stack running with its Keycloak login enabled and reachable from the
+app (in development, on the `mlw-platform_default` network, as `mlw-proxy`); users who hold the Keycloak
+role **`mlw-user`** (`tools/keycloak_setup.py` creates it and gives it to the user it creates; use
+`--storage-role ''` to skip); and the `paramiko` package (in `requirements.txt`). Set these in `.env`:
+
+| Variable | Meaning |
+|---|---|
+| `MLW_STORAGE_URL` | The gateway's HTTP address, e.g. `http://mlw-proxy:8000`. Empty turns storage off. |
+| `MLW_STORAGE_SFTP_HOST` / `MLW_STORAGE_SFTP_PORT` | The SFTP address; default the URL's host, port `2222`. |
+| `MLW_STORAGE_NAME` | A label shown in Profile and the dialogs; default `mlw-storage`. |
+| `MLW_STORAGE_REQUIRED_ROLE` | The Keycloak role the storage server requires, used in messages; default `mlw-user`. |
+| `MLW_STORAGE_READONLY_ROLE` | The role that makes a user's storage read-only on the server, if it has one (Profile then shows *Read-only*). |
+| `MLW_STORAGE_HOST_KEY` | The SSH host key fingerprint to require (`SHA256:...`). Without it, the first key seen is remembered and must not change. |
+| `MLW_STORAGE_TIMEOUT` | Seconds to wait for the storage server; default 8. |
+
+**How it works.** At login the app keeps the user's Keycloak tokens *in memory only* (never on disk or in
+Valkey) and asks the storage API (`GET /mlw/v1/storage/root`) where their root is. To open or save, it
+connects over SFTP with the user name set to the token's `sub` claim and a fresh access token, renewed from the
+refresh token, as the password; a file is saved by writing a temporary name and renaming it over the original,
+so a partly written file is never seen. The user's root appears as `/` and they cannot leave it.
+
+**Using it.** For Keycloak users, **File > Open** and **Save As** browse and save in the user's own
+storage instead of the server's data folder (the dialogs remember the last folder, and *Save As* can create a
+folder); if the storage can't be reached, they report an error. Local accounts keep using the data folder. A document from
+storage is shown with its name, **Save** writes it back, the sketch is saved beside it as `.svg`, and it
+appears in **Open Recent**, drafts and *last document* like any other (as `storage:/folder/file.xml`, in the
+user's own Valkey record). **Removable drives.** If an administrator has enabled a USB or other removable drive for the user (in mlw-storage's
+Drives page, for chosen users or Keycloak roles), it appears in the user's storage at `/drives/NAME`, and the gateway
+lists it at `GET /mlw/v1/storage/drives`. The *Storage Location* dialog shows these drives (read and write, or
+read-only); **Use this drive** keeps Open, Save As, the exports and the cel images folder on that drive (the dialogs
+cannot go above it; the choice is the per-user setting `storage_drive`), and **Use my storage** or choosing a
+folder or the private directory ends it. If the drive is unplugged or no longer shared, those commands report an error
+instead of showing other files. Profile lists the drives and the one in use.
+
+**File > Storage Location…** (or *Profile > Storage Location…*) lists the folders
+of the shared area and sets which one is the user's own, or returns them to their private directory.
+The exports (Export XDTS, Export OCA, Export XSheet and Generate Report) use the same storage dialogs and write to the
+user's storage too; an OCA folder is built on the server and copied over in one connection (replacing an existing OCA
+folder asks first). The optional *Copy cel images from* folder of Export OCA is chosen in, and read from, the user's
+storage too (its `.png` files are fetched when the export is written).
+
+**Limits.** Storage is for Keycloak users: the built-in fallback account sees *Not available* in Profile. The
+tokens are lost when the app server restarts (including a development auto-reload), so the user must log out
+and in again before using storage; the app says so, and keeps the document as their last document so it comes
+back after they log in. A user who lacks `mlw-user`, or whose chosen folder is gone, sees the storage server's
+refusal in Profile and the dialogs. Roles still apply: a Viewer can open from storage but not save.
+
 ### File access
 
 Every file dialog (Open, Save As, Select Schema, and the exports) is limited to the data folder,
@@ -303,8 +388,9 @@ to. This matters when the app runs as root; normally it doesn't:
 
 Several people can use one server at the same time. Every browser tab has its own editing
 session: the open document, undo/redo history, validation results, and XSheet view. Some things
-are saved per user (per browser, via a cookie), so they survive reloads and server restarts
-and carry over to that user's other tabs. The server keeps them in `NICEGUI_STORAGE_PATH`:
+are saved **per logged-in user**, in **Valkey**, so they survive reloads and server restarts and
+follow that user to any browser or tab they log in from (and are not shared with anyone else using
+the same browser):
 
 - **Preferences** (including the Sketchpad's text type and size) and the chosen schema, and whether the XML tab is shown (XML > XML Editor).
 - **Recent files** (File > Open Recent) and the folder File > Open starts in.
@@ -317,8 +403,42 @@ and carry over to that user's other tabs. The server keeps them in `NICEGUI_STOR
 
 Documents are shared: everyone sees the same files in the data directory. If you save a file
 that someone else has saved since you opened it, you're asked before overwriting their changes.
-There are no user accounts, so a "user" is a browser, not a person. Clearing cookies or
-switching browsers starts fresh settings.
+
+#### Per-user storage in Valkey
+
+[Valkey](https://valkey.io) is the open-source (BSD-3-Clause), Redis-compatible in-memory database from the Linux Foundation; the app talks to it with the standard Redis protocol. `compose.yaml` runs a **`valkey`** service (`valkey/valkey:8-alpine`, append-only persistence in the
+`valkey-data` volume, not published on the host; the development override publishes it on
+`127.0.0.1:6380` for inspection) and points the app at it. These environment variables control it
+(in `.env`):
+
+| Variable | Meaning |
+|---|---|
+| `MLW_VALKEY_URL` | The server, default `valkey://valkey:6379/0`. Set it empty to turn Valkey off. |
+| `MLW_VALKEY_PASSWORD` | Optional: the password Valkey requires (given to both Valkey and the app). |
+| `MLW_VALKEY_PREFIX` | Prefix of every key; default `mlw:xsheet`. |
+| `MLW_VALKEY_HOST_PORT` | Development only: the localhost port Valkey is published on; default `6380`. |
+
+If Valkey is off, or can't be reached, the app falls back to the old behaviour: the same data is
+kept per *browser* (by cookie) in `NICEGUI_STORAGE_PATH`, and a note is written to the server log. The
+first time a user logs in with Valkey on, their record starts from the preferences of the browser they
+use (not its drafts, which could belong to someone else). Login state itself (who is logged in, their
+roles) stays in the browser's cookie-backed storage; the pop-up log files are still per browser, in
+`NICEGUI_STORAGE_PATH/logs`.
+
+**Key layout.** A user is identified by `kc:<realm>:<Keycloak user id>` for a Keycloak user (the id
+never changes, even if the user name does) or `local:<name>` for the built-in account. Each user has
+three Valkey hashes (`<prefix>` is `mlw:xsheet`):
+
+| Key | Type | Fields |
+|---|---|---|
+| `<prefix>:user:<user>` | hash | One field per setting, each value JSON: `format_prefs`, `schema_path`, `xsheet_style`, `report_sections`, `report_include_raw`, `export_sketch`, `sketch_font`, `sketch_font_size`, `xml_editor`, `popup_log`, `popup_log_time`, `popup_log_zone`, `oca_export`, `recent_files`, `recent_files_limit`, `open_dir`, `storage_dir`, `storage_drive`, `last_document` |
+| `<prefix>:user:<user>:drafts` | hash | One field per document with unsaved changes: the field is the document's path (`@untitled` for a never-saved one), the value JSON `{"text", "saved_content", "sketch"?, "saved_at"}` |
+| `<prefix>:user:<user>:meta` | hash | `username`, `source` (`keycloak` or `local`), `realm`, `user_id`, `created`, `last_seen` (ISO 8601, UTC) |
+
+For example, `valkey-cli -p 6380 --scan --pattern 'mlw:xsheet:*'` lists the records, and
+`HGETALL mlw:xsheet:user:local:admin` shows one user's settings. Records have no expiry; delete a
+user's three keys to reset them. A Valkey server holds one copy of each record, written through on
+every change, so run a single app server against it.
 
 ### Layout
 
@@ -336,21 +456,26 @@ switching browsers starts fresh settings.
 - **XML tab**: **XML Editor** (left) — the XML/XSD text editor; **XML Hierarchy** (right) — a
   collapsible tree mirroring the document's element structure.
 - **XSheet tab**: the **Exposure Sheet** grid — see [XSheet tab](#xsheet-tab) below.
-- **Footer** — current filename (`*` suffix when there are unsaved changes), validation
-  status, and the active schema (a chosen file, or `auto-detect`).
+- **Footer** — a file icon and the current filename (`*` suffix when there are unsaved changes), validation
+  status, and the active schema (a chosen file, or `auto-detect`). Click the **file icon** for *File Information*: the
+  document's name, folder, where it is (the data folder, your storage or a removable drive), full path, size, last-changed
+  time, permissions (and owner, for a file in the data folder), its line and character count in the editor, unsaved
+  changes and schema; and, below, the same for its sketch `.svg` (or that it has not been saved yet), with the number of
+  shapes in the Sketchpad.
 
 ### File menu
 
 | Item | What it does |
 |---|---|
 | New | Start a new ExposureSheet document that is well-formed and valid against the XML Schema, with placeholder values to replace: the four required sections (Production with `UNKNOWN` IDs, the Title "Untitled", 24 fps and frames 1–24; Assets with one `Unknown` asset; a Timeline whose frame 1 exposes a "New Layer" at cel `A001`; and VersionControl with a first revision by you, dated today), laid out with your Format preferences. If the open document has unsaved changes, you're asked first (Cancel / No / Yes, as when closing). Nothing is written to disk until you choose **Save** or **Save As** (both open the Save As dialog, suggesting `untitled.xml`); until then the footer shows `untitled.xml *`, and the document is kept as a draft like any unsaved work. |
-| Open | Browse the data folder (see [File access](#file-access)) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. If a `.svg` of the same name is beside it (saved with its sketch), the Sketchpad's sketch is loaded from it. |
+| Open | Browse the data folder (see [File access](#file-access)), or, for Keycloak users with [file storage](#your-own-file-storage) set up, **your own storage** (an error is shown if it can't be reached) and open an `.xml` or `.xsd` file. Double-click a folder to enter it, double-click a file to open it. Starts in the folder you last opened a file from (remembered per user), or the project directory the first time. If a `.svg` of the same name is beside it (saved with its sketch), the Sketchpad's sketch is loaded from it. |
 | Open Recent | Submenu of the files you most recently opened or saved with Save As, newest first; hover over one for 2 seconds to see its full path, and pick one to open it. Shows 5 files by default (set in Preferences); **Clear Recent Files** empties the list. Kept per user, so it survives reloads. A file that no longer exists is removed from the list when picked. |
 | Save | Write the editor's content back to the open file. Behaves like Save As if no file is open yet. If the file changed on disk since you opened it (for example, another user saved it), asks before overwriting. Also saves the Sketchpad's sketch beside the file, as `.svg` (see [Sketchpad](#xsheet-menu)). |
-| Save As | Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. The Sketchpad's sketch is saved beside the new file, as `.svg`. |
+| Save As | (In your own storage for Keycloak users when it is set up.) Choose a destination path/filename (`.xml` or `.xsd`) to save to. **New Folder** creates a folder where you are and moves into it; the dialogs for Export XDTS, Generate Report and Export XSheet have it too. The Sketchpad's sketch is saved beside the new file, as `.svg`. |
 | Close | Close the current document. If there are unsaved changes, asks whether to save first: **Yes** saves and closes, **No** closes and discards the changes, **Cancel** keeps the file open. |
 | Export > Export XDTS | Convert the current document to an XDTS-Extended JSON timesheet and save it. |
-| Export > Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder in the data folder where your real cel images are. Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
+| Export > Export OCA | Convert the current document to an [Open Cel Animation](https://oca.rxlab.guide) (OCA 1.3.0) document for Krita and other OCA tools. A dialog asks for the picture size (1920×1080 by default), whether to write a labelled placeholder image for each cel or no images, and optionally **Copy cel images from**: a folder where your real cel images are (in your own storage for Keycloak users with storage set up, else in the data folder). Images are always written into the `NAME.oca` folder you choose next; each cel with a matching image in that folder (`LAYER/CEL.png` or `CEL.png`, e.g. `CHAR/A001.png`) gets a copy of it, and every other cel a placeholder, and the notice says how many were found (warning, with the file names it looked for, if none were). The folder is chosen with 📁 **Browse** in a folder browser (click a folder and **Select Folder**, double-click to go into one, or **New Folder** to create one; ✕ clears it); your choices are remembered. Then a Save As-style dialog picks where to save the `NAME.oca` folder. Replacing an existing OCA folder asks first, and a folder that isn't an OCA document is never replaced. See [Converting to and from OCA](#converting-to-and-from-open-cel-animation-oca). |
+| Storage Location… | Choose which folder of the shared storage is your own (or go back to your private directory). Also on the Profile dialog. |
 | Preferences… | Open the Preferences dialog, in tabs: XSheet style, Sketchpad text type and size, Format, Recent Files, Report, Logs and Login (see [Preferences dialog](#preferences-dialog)). |
 
 ### Edit menu
@@ -797,6 +922,7 @@ app uses). An existing output file is only replaced with `--force`.
 ## Project layout
 
 ```
+userstore.py      Per-user settings and drafts, kept in Valkey (see Multiple users)
 main.py           NiceGUI application: editor, Hierarchy tree, XSheet grid, validation, Format, XDTS export
 export_pdf.py     Renders a document (or its Exposure Sheet grid) as PDF -- Generate Report / Export XSheet
 xml/              XSD schemas defining the ExposureSheet document format, and the schema architecture document (.docx)

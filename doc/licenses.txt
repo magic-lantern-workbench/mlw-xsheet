@@ -1,21 +1,39 @@
 ====================================================================================================
-mlw-xsheet 1.3.0 (in development) -- Licenses and Copyright Notices
+mlw-xsheet 1.6.0 (in development) -- Licenses and Copyright Notices
 ====================================================================================================
 
 This file lists the license and copyright of mlw-xsheet itself and of every third-party component it
 uses or ships: the Python packages installed in its Docker image, the browser libraries bundled with
 NiceGUI, fonts, container base images, and third-party material in the repository.
 
-Generated on 2026-09-30 from the v1.3.0-features branch (commit 19f3ef8, in development after the
-v1.2.0 release) and a production Docker image freshly built from it. Python dependency versions are
-the ones that image installed: requirements.txt gives minimum versions, so a later build may pick up
-newer releases with the same licenses.
+Generated on 2026-10-14 and updated on 2026-10-16 (storage support) from the v1.6.0-features branch
+(in development after the v1.5.0 release) and a production Docker image freshly built from it. Python dependency versions
+are the ones that image installed: requirements.txt gives minimum versions, so a later build may pick
+up newer releases with the same licenses.
 
-Changes since the previous edition of this file (v1.0.0, 2026-09-25): one new Python package,
-opentelemetry-api 1.45.0 (Apache-2.0), now a dependency of fastapi; newer versions of fastapi
-(0.142.2), fonttools (4.66.1), fpdf2 (2.8.9) and uvicorn (0.54.0), with the same licenses. The
-browser libraries, fonts and container images are unchanged; CodeMirror now also serves the SVG
-tab's editor.
+Changes since the previous edition of this file (v1.3.0, 2026-09-30):
+  - One new Python package: valkey (valkey-py) 6.2.0 (MIT), the client for the new Valkey service
+    that keeps each user's settings. It is a direct requirement.
+  - One new Python package for the user's own file storage (SFTP to mlw-storage): paramiko 5.0.0
+    (LGPL-2.1, a direct requirement) and the packages it needs: bcrypt 5.0.0 (Apache-2.0),
+    cryptography 50.0.2 (Apache-2.0 OR BSD-3-Clause), PyNaCl 1.6.2 (Apache-2.0, bundling libsodium
+    under the ISC license), cffi 2.1.1 (MIT-0), pycparser 3.11 (BSD-3-Clause) and invoke 3.0.3
+    (BSD-2-Clause). paramiko is a second LGPL component; see section 8. The versions are those
+    pip installs for requirements.txt today (paramiko>=3.4).
+  - One new container image: valkey/valkey:8-alpine (Valkey 8.1, BSD-3-Clause), added to the
+    Compose files as the per-user store. Valkey is the open-source, Redis-compatible fork under the
+    Linux Foundation; Redis itself (7.4 and later, RSALv2/SSPLv1) is not used.
+  - Newer versions, with the same licenses, of nicegui (3.18.0), aiohttp (3.14.5), fastapi
+    (0.143.1), fonttools (4.67.0), httptools (0.9.0), MarkupSafe (3.0.4), multidict (7.1.0),
+    opentelemetry-api (1.45.1), orjson (3.13.0), pydantic (2.14.1), pydantic_core (2.50.1),
+    python-dotenv (1.2.4), starlette (1.8.0), uvloop (0.23.0) and websockets (17.2); a newer DOMPurify
+    (3.4.16) in NiceGUI; and CPython 3.11.17 in the application image (Caddy is still 2.11.4 on
+    Alpine 3.23.6). The xterm.js libraries (MIT) that NiceGUI ships, which mlw-xsheet does not use,
+    are now listed in section 4.2.
+  - Keycloak, which the application signs in against (section 6), is a separate server that is not
+    shipped with this project.
+  - No other change to the licenses. The browser libraries mlw-xsheet uses (apart from the
+    DOMPurify version above), the fonts, and the third-party material in the repository are unchanged.
 
 This is a best-effort inventory, not legal advice. Each component's own license file is
 authoritative.
@@ -49,25 +67,30 @@ Components of sections 3 and 4 (used by mlw-xsheet), grouped by license:
 
 License                               Count  Components
 ------------------------------------  -----  -------------------------------------------------------
-MIT                                   29     @uiw/codemirror-themes-all, AG Grid Community,
+MIT                                   30     @uiw/codemirror-themes-all, AG Grid Community,
                                              annotated-doc, annotated-types, anyio, attrs,
                                              CodeMirror 6 (codemirror, @codemirror/*, @lezer/*),
                                              elementpath, fastapi, fonttools, h11, httptools,
                                              ifaddr, markdown2, nicegui, pydantic, pydantic_core,
                                              python-engineio, python-socketio, PyYAML, Quasar,
                                              simple-websocket, Socket.IO client, Tailwind CSS,
-                                             typing-inspection, Vue, watchfiles, wsproto, xmlschema
-Apache-2.0                            8      aiofiles, aiosignal, frozenlist, multidict,
-                                             opentelemetry-api, propcache, python-multipart, yarl
-BSD-3-Clause                          8      click, httpcore, idna, MarkupSafe, python-dotenv,
-                                             starlette, uvicorn, websockets
+                                             typing-inspection, valkey, Vue, watchfiles, wsproto,
+                                             xmlschema
+Apache-2.0                            10     aiofiles, aiosignal, bcrypt, frozenlist, multidict,
+                                             opentelemetry-api, propcache, PyNaCl,
+                                             python-multipart, yarl
+BSD-3-Clause                          9      click, httpcore, idna, MarkupSafe, pycparser,
+                                             python-dotenv, starlette, uvicorn, websockets
 BSD (variant per package)             5      httpx, itsdangerous, Jinja2, tinycss2, webencodings
 PSF-2.0                               3      aiohappyeyeballs, defusedxml, typing_extensions
 MPL-2.0                               2      bidict, certifi
 Apache-2.0 AND MIT                    1      aiohttp
+Apache-2.0 OR BSD-3-Clause            1      cryptography
 Apache-2.0 OR MIT                     1      uvloop
+MIT-0                                 1      cffi
 Apache-2.0 OR MPL-2.0                 1      DOMPurify
-BSD-2-Clause                          1      Pygments
+BSD-2-Clause                          2      invoke, Pygments
+LGPL-2.1                              1      paramiko
 LGPL-3.0-only                         1      fpdf2
 MIT-CMU                               1      pillow
 MPL-2.0 AND (Apache-2.0 OR MIT)       1      orjson
@@ -91,7 +114,7 @@ the rest are installed because a direct requirement depends on them.
     Copyright: J. Nick Koston
     Source:    https://github.com/aio-libs/aiohappyeyeballs
 
-  aiohttp 3.14.3
+  aiohttp 3.14.5
     License:   Apache-2.0 AND MIT
     Copyright: The aio-libs contributors
     Source:    https://github.com/aio-libs/aiohttp
@@ -121,6 +144,11 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2015 Hynek Schlawack and the attrs contributors
     Source:    https://www.attrs.org/en/stable/changelog.html
 
+  bcrypt 5.0.0
+    License:   Apache-2.0
+    Copyright: The Python Cryptographic Authority developers
+    Source:    https://github.com/pyca/bcrypt/
+
   bidict 0.24.1
     License:   MPL-2.0
     Copyright: Copyright 2009-2026 Joshua Bronson. All rights reserved.
@@ -131,10 +159,20 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Kenneth Reitz
     Source:    https://github.com/certifi/python-certifi
 
+  cffi 2.1.1
+    License:   MIT-0
+    Copyright: Armin Rigo, Maciej Fijalkowski
+    Source:    https://cffi.readthedocs.io/
+
   click 8.5.0
     License:   BSD-3-Clause
     Copyright: Copyright 2014 Pallets
     Source:    https://github.com/pallets/click/
+
+  cryptography 50.0.2
+    License:   Apache-2.0 OR BSD-3-Clause
+    Copyright: The Python Cryptographic Authority and individual contributors
+    Source:    https://github.com/pyca/cryptography
 
   defusedxml 0.7.1
     License:   PSF-2.0
@@ -151,12 +189,12 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c), 2018-2026, SISSA (Scuola Internazionale Superiore di Studi Avanzati)
     Source:    https://github.com/sissaschool/elementpath
 
-  fastapi 0.142.2
+  fastapi 0.143.1
     License:   MIT
     Copyright: Copyright (c) 2018 Sebastián Ramírez
     Source:    https://github.com/fastapi/fastapi
 
-  fonttools 4.66.1
+  fonttools 4.67.0
     License:   MIT
     Copyright: Copyright (c) 2017 Just van Rossum
     Source:    http://github.com/fonttools/fonttools
@@ -181,7 +219,7 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright © 2020, Encode OSS Ltd.
     Source:    https://www.encode.io/httpcore/
 
-  httptools 0.8.0
+  httptools 0.9.0
     License:   MIT
     Copyright: Copyright (c) 2015 MagicStack Inc. http://magic.io
     Source:    https://github.com/MagicStack/httptools
@@ -201,6 +239,11 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2014 Stefan C. Mueller
     Source:    https://github.com/pydron/ifaddr
 
+  invoke 3.0.3
+    License:   BSD-2-Clause
+    Copyright: Copyright (c) 2020 Jeff Forcier.
+    Source:    https://github.com/pyinvoke/invoke
+
   itsdangerous 2.2.0
     License:   BSD (variant per package)
     Copyright: Copyright 2011 Pallets
@@ -216,30 +259,35 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2012 Trent Mick
     Source:    https://github.com/trentm/python-markdown2
 
-  MarkupSafe 3.0.3
+  MarkupSafe 3.0.4
     License:   BSD-3-Clause
     Copyright: Copyright 2010 Pallets
     Source:    https://github.com/pallets/markupsafe/
 
-  multidict 6.9.1
+  multidict 7.1.0
     License:   Apache-2.0
     Copyright: Andrew Svetlov and the aio-libs contributors
     Source:    https://github.com/aio-libs/multidict
 
-* nicegui 3.17.1
+* nicegui 3.18.0
     License:   MIT
     Copyright: Copyright (c) 2021 Zauberzeug GmbH
     Source:    https://nicegui.io
 
-  opentelemetry-api 1.45.0
+  opentelemetry-api 1.45.1
     License:   Apache-2.0
     Copyright: Copyright The OpenTelemetry Authors
     Source:    https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api
 
-  orjson 3.12.0
+  orjson 3.13.0
     License:   MPL-2.0 AND (Apache-2.0 OR MIT)
     Copyright: ijl
     Source:    https://github.com/ijl/orjson
+
+* paramiko 5.0.0
+    License:   LGPL-2.1
+    Copyright: Jeff Forcier and the Paramiko contributors
+    Source:    https://github.com/paramiko/paramiko
 
   pillow 12.3.0
     License:   MIT-CMU
@@ -251,12 +299,17 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright 2016-2021, Andrew Svetlov and aio-libs team
     Source:    https://github.com/aio-libs/propcache
 
-  pydantic 2.13.5
+  pycparser 3.11
+    License:   BSD-3-Clause
+    Copyright: Copyright (c) 2008-2027, Eli Bendersky
+    Source:    https://github.com/eliben/pycparser
+
+  pydantic 2.14.1
     License:   MIT
     Copyright: Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors.
     Source:    https://github.com/pydantic/pydantic
 
-  pydantic_core 2.46.5
+  pydantic_core 2.50.1
     License:   MIT
     Copyright: Copyright (c) 2022 Samuel Colvin
     Source:    https://github.com/pydantic
@@ -266,7 +319,12 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2006-2022 by the respective authors (see AUTHORS file).
     Source:    https://pygments.org
 
-  python-dotenv 1.2.3
+  PyNaCl 1.6.2
+    License:   Apache-2.0 (bundles libsodium, ISC)
+    Copyright: The PyNaCl developers; libsodium: Copyright (c) 2013-2026 Frank Denis
+    Source:    https://github.com/pyca/pynacl/
+
+  python-dotenv 1.2.4
     License:   BSD-3-Clause
     Copyright: Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken (django-dotenv-
                rw), 2013, Jacob Kaplan-Moss (django-dotenv)
@@ -297,7 +355,7 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2021 Miguel Grinberg
     Source:    https://github.com/miguelgrinberg/simple-websocket
 
-  starlette 1.7.0
+  starlette 1.8.0
     License:   BSD-3-Clause
     Copyright: Copyright © 2018, Encode OSS Ltd.
     Source:    https://github.com/Kludex/starlette
@@ -323,10 +381,15 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright © 2017-present, Encode OSS Ltd.
     Source:    https://uvicorn.dev/
 
-  uvloop 0.22.1
+  uvloop 0.23.0
     License:   Apache-2.0 OR MIT
     Copyright: Copyright (C) 2016-present the uvloop authors and contributors.
     Source:    https://github.com/MagicStack/uvloop
+
+* valkey 6.2.0
+    License:   MIT
+    Copyright: Copyright (c) 2022-2023, Redis, inc.; Copyright (c) 2024-present, valkey-py contributors
+    Source:    https://github.com/valkey-io/valkey-py
 
   watchfiles 1.3.0
     License:   MIT
@@ -338,7 +401,7 @@ the rest are installed because a direct requirement depends on them.
     Copyright: Copyright (c) 2012, Simon Sapin
     Source:    https://github.com/CourtBouillon/webencodings
 
-  websockets 17.1
+  websockets 17.2
     License:   BSD-3-Clause
     Copyright: Copyright (c) Aymeric Augustin and contributors
     Source:    https://github.com/python-websockets/websockets
@@ -391,7 +454,7 @@ Versions are read from the bundled files and NiceGUI's element package locks.
     Used for:  browser-server connection
     Source:    https://socket.io
 
-  DOMPurify 3.4.13
+  DOMPurify 3.4.16
     License:   Apache-2.0 OR MPL-2.0
     Copyright: Copyright (c) Cure53 and other contributors
     Used for:  HTML sanitising
@@ -433,6 +496,9 @@ three.js                  0.180.0     MIT
 tween.js                  25.0.0      MIT
 SortableJS                1.15.7      MIT
 nipplejs                  0.10.2      MIT
+xterm.js                  5.5.0       MIT
+xterm.js fit addon        0.10.0      MIT
+xterm.js web-links addon  0.11.0      MIT
 vanilla-jsoneditor        3.10.0      ISC
 ajv-formats               3.0.1       MIT
 Dart Sass                 (bundled)   MIT
@@ -458,7 +524,7 @@ Served by NiceGUI for the user interface.
 ====================================================================================================
 
   python:3.11-slim (base of the application image)
-    Contents:  Debian GNU/Linux 13 (trixie) with CPython 3.11.16
+    Contents:  Debian GNU/Linux 13 (trixie) with CPython 3.11.17
     Licenses:  CPython: PSF-2.0, Copyright (c) 2001-present Python Software Foundation. Debian
                packages: various free-software licenses, including GPL and LGPL; each package's
                terms are in /usr/share/doc/<package>/copyright in the image.
@@ -467,6 +533,19 @@ Served by NiceGUI for the user interface.
     Contents:  Caddy 2.11.4 on Alpine Linux 3.23
     Licenses:  Caddy: Apache-2.0, Copyright (c) Matthew Holt and The Caddy Authors. Alpine packages:
                various free-software licenses (see the image's package database).
+
+  valkey/valkey:8-alpine (the per-user settings store; see userstore.py)
+    Contents:  Valkey 8.1 on Alpine Linux 3.24
+    Licenses:  Valkey: BSD-3-Clause, Copyright (c) 2006-2020, Salvatore Sanfilippo, and Copyright (c)
+               2024-present, Valkey contributors. Alpine packages: various free-software licenses
+               (see the image's package database). Valkey continues the BSD-licensed Redis code at
+               its 7.2.4 release; it is used unmodified, as a separate container the application talks
+               to over the network.
+
+  Keycloak (not shipped)
+    mlw-xsheet signs users in against a Keycloak server, which you run yourself (for example the
+    quay.io/keycloak/keycloak image, Apache-2.0). It is not part of this project's images or
+    Compose files, and no Keycloak code is included in mlw-xsheet.
 
   Development image only
     Contents:  build-essential, git, curl
@@ -500,6 +579,12 @@ Served by NiceGUI for the user interface.
     package in the image, and its source is available from https://github.com/py-pdf/fpdf2.
     Modifying fpdf2 itself would require releasing those changes under the LGPL.
 
+  paramiko (LGPL-2.1)
+    mlw-xsheet uses paramiko unmodified, as a separately installed Python library that users can
+    replace with another version, which the LGPL permits. Its license text is installed with the
+    package in the image, and its source is available from https://github.com/paramiko/paramiko.
+    Modifying paramiko itself would require releasing those changes under the LGPL.
+
   MPL-2.0 (bidict, certifi; orjson in part; DOMPurify as an option)
     The Mozilla Public License applies file by file. These components are used unmodified and their
     source is available from their projects; changes to their files would have to be shared under
@@ -510,7 +595,7 @@ Served by NiceGUI for the user interface.
     the GPL. mlw-xsheet does not use docutils directly.
 
   Debian and Alpine packages in the container images
-    Include GPL and LGPL software, used unmodified. Source is available from the Debian and Alpine
+    Include GPL and LGPL software, used unmodified (the application, Caddy and Valkey images). Source is available from the Debian and Alpine
     projects; per-package terms are in the images.
 
 ====================================================================================================

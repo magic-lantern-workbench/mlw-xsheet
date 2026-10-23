@@ -164,7 +164,8 @@ def ensure_role(kc: Admin, realm: str, role: str, description: str = 'mlw-xsheet
         print(f'realm role {role} exists')
 
 
-def ensure_user(kc: Admin, realm: str, name: str, password: str, temporary: bool, role: str | None) -> None:
+def ensure_user(kc: Admin, realm: str, name: str, password: str, temporary: bool, role: str | None,
+                extra_roles: tuple = ()) -> None:
     _, found = kc.get(f'/admin/realms/{realm}/users?username={urllib.parse.quote(name)}&exact=true')
     if found:
         user_id = found[0]['id']
@@ -180,10 +181,10 @@ def ensure_user(kc: Admin, realm: str, name: str, password: str, temporary: bool
         kc.put(f'/admin/realms/{realm}/users/{user_id}/reset-password',
                {'type': 'password', 'value': password, 'temporary': temporary})
         print(f'created user {name}' + (' (must change the password at first login)' if temporary else ''))
-    if role:
-        _, role_rep = kc.get(f'/admin/realms/{realm}/roles/{urllib.parse.quote(role)}')
+    for each in [r for r in (role, *extra_roles) if r]:
+        _, role_rep = kc.get(f'/admin/realms/{realm}/roles/{urllib.parse.quote(each)}')
         kc.post(f'/admin/realms/{realm}/users/{user_id}/role-mappings/realm', [role_rep])
-        print(f'user {name} has role {role}')
+        print(f'user {name} has role {each}')
 
 
 def main(argv=None) -> int:
@@ -203,6 +204,8 @@ def main(argv=None) -> int:
     ap.add_argument('--user-password', help='its password (else KEYCLOAK_USER_PASSWORD, else asked for)')
     ap.add_argument('--user-permanent', action='store_true', help="don't make the user change the password at first login")
     ap.add_argument('--user-role', choices=[VIEWER_ROLE, REVIEWER_ROLE, EDITOR_ROLE], help='give the user this role (read-only, read-only plus reviews and the Sketchpad, or full access)')
+    ap.add_argument('--storage-role', default='mlw-user', help='the role mlw-storage requires, created and given to the new user, so '
+                    'they can open and save in their own storage (default %(default)s; empty to skip)')
     ap.add_argument('--user-admin', action='store_true', help='give the user the administrator role')
     ap.add_argument('--app-url', help='the address the mlw-xsheet container uses for Keycloak, for the .env lines '
                                       '(default: --url)')
@@ -222,10 +225,13 @@ def main(argv=None) -> int:
         ensure_role(kc, args.realm, VIEWER_ROLE, 'mlw-xsheet read-only access')
         ensure_role(kc, args.realm, REVIEWER_ROLE, 'mlw-xsheet read-only access, plus reviews and the Sketchpad')
         ensure_role(kc, args.realm, EDITOR_ROLE, 'mlw-xsheet full access')
+        if args.storage_role:
+            ensure_role(kc, args.realm, args.storage_role, 'access to the user\'s mlw-storage files')
         admin_secret = None if args.no_admin_client else ensure_admin_client(kc, args.realm, args.admin_client_id)
         if args.user:
             ensure_user(kc, args.realm, args.user, user_password, not args.user_permanent,
-                        args.admin_role if args.user_admin else args.user_role)
+                        args.admin_role if args.user_admin else args.user_role,
+                        (args.storage_role,) if args.storage_role else ())
     except KeycloakError as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 1

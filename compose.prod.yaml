@@ -34,13 +34,23 @@ services:
       #   docker compose -f compose.yaml -f compose.prod.yaml cp examples/. xsheet:/data
       #   docker compose -f compose.yaml -f compose.prod.yaml exec -u root xsheet chown -R app:app /data
       - xsheet-data:/data
-      # Per-user settings (app.storage.user).
+      # NiceGUI's storage: the login credential, each browser's login state, and
+      # (without Valkey) per-browser settings. Per-user settings are in Valkey.
       - xsheet-state:/state
     logging: &logging
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+  valkey:
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    # Set MLW_VALKEY_PASSWORD in .env to require a password (the app is given it too).
+    # The volume holds each user's settings and unsaved drafts, so keep it between deploys.
+    logging: *logging
 
   caddy:
     image: caddy:2-alpine
@@ -64,5 +74,6 @@ services:
 volumes:
   xsheet-data:
   xsheet-state:
+  valkey-data:
   caddy-data:
   caddy-config:
