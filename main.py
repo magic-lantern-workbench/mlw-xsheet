@@ -4457,12 +4457,10 @@ def toggle_overview(active: bool | None = None) -> None:
         ui.notify('Open an ExposureSheet document to see its overview', color='info')
         return
     with ui.dialog().props('seamless position=right') as dlg, \
-            titled_card('Overview', classes='w-[300px] max-w-full', body_classes='gap-2'):
+            titled_card('Overview', classes='w-[170px] max-w-full', body_classes='gap-1'):
         host = ui.element('div').classes('w-full').style(
-            'position: relative; height: 60vh; border: 1px solid #94a3b8; user-select: none')
-        ui.label('Drag the box to scroll the XSheet.').classes('text-xs text-gray-500')
-        with ui.row().classes('w-full justify-end'):
-            ui.button('Close', on_click=dlg.close).props('size=sm')
+            'position: relative; height: 30vh; border: 1px solid #94a3b8; user-select: none')
+        ui.label('Drag the box to scroll.').classes('text-xs text-gray-500')
 
     def hidden(_=None) -> None:
         if sess.overview_dialog is dlg:
