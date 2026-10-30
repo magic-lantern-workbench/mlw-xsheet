@@ -132,6 +132,9 @@ class Session:
         self.tab_tooltips = {}     # tab name -> its tooltip, which gives its Ctrl+Alt shortcut (see update_tab_shortcuts())
         self.find_close = None        # closes the Find & Replace dialog, if open (see close_find_dialogs())
         self.find_frame_dialog = None  # the Find Frame dialog, if open
+        self.overview_dialog = None  # the XSheet > Overview panel, if open (see toggle_overview())
+        self.overview_menu_icon = None  # its menu item's check box
+        self.overview_item = None  # its menu item: enabled on the XSheet tab, with a document open
         self.delete_layer_item = None  # Edit > Delete Layer: likewise
         self.delete_frame_item = None  # Edit > Delete Frame: enabled on the XSheet tab
         self.svg_tab = None        # the SVG tab, shown only while the sketchpad is on (see toggle_sketchpad())
@@ -4341,6 +4344,155 @@ def update_delete_frame_item(on_xsheet_tab: bool | None = None) -> None:
             item.set_enabled((sess.main_tab == 'XSheet' if on_xsheet_tab is None else on_xsheet_tab) and not auth.is_read_only())
 
 
+# XSheet > Overview: a miniature of the whole sheet, drawn on a canvas as a light gray
+# line at the start of each frame group (the frame rate in frames), with a box showing the part of the sheet the grid shows. Drag the box
+# (or click the miniature) to scroll the grid. It redraws as the sheet changes.
+OVERVIEW_JS = """
+window.mlwOverview = window.mlwOverview || (() => {
+    let stop = null;
+    function attach(hostId, rate) {
+        detach();
+        const host = document.getElementById(hostId);
+        if (!host) return;
+        const canvas = document.createElement('canvas');
+        const box = document.createElement('div');
+        canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+        box.style.cssText = 'position:absolute;left:0;right:0;box-sizing:border-box;border:2px solid #2563eb;' +
+            'background:rgba(37,99,235,.15);cursor:grab;touch-action:none';
+        host.replaceChildren(canvas, box);
+        const gridEl = () => document.querySelector('.mlw-xsheet-grid');
+        const body = () => { const g = gridEl(); return g && g.querySelector('.ag-body-viewport'); };
+        const api = () => {
+            const g = gridEl();
+            if (!g) return null;
+            try { return getElement(g.id.slice(1)).api; } catch (e) {}
+            try { return mounted_app.$refs['r' + g.id.slice(1)].api; } catch (e) {}
+            return null;
+        };
+        function drawSheet() {
+            const a = api(), w = host.clientWidth, h = host.clientHeight, dpr = window.devicePixelRatio || 1;
+            canvas.width = w * dpr; canvas.height = h * dpr;
+            const c = canvas.getContext('2d');
+            c.scale(dpr, dpr);
+            c.fillStyle = getComputedStyle(host).getPropertyValue('--ov-bg') || '#f8fafc';
+            c.fillRect(0, 0, w, h);
+            if (!a) return;
+            const rows = [];
+            a.forEachNode(n => { if (n.data) rows.push(n.data); });
+            if (!rows.length || !(rate >= 1)) return;
+            const start = (r) => r._range_start !== undefined && r._range_start !== null ? r._range_start : parseInt(r.Frame, 10);
+            const first = start(rows[0]), rh = h / rows.length;
+            c.strokeStyle = '#cbd5e1';
+            c.lineWidth = 1;
+            let prev = 0;
+            rows.forEach((r, i) => {
+                const g = Math.floor((start(r) - first) / rate);
+                if (i && g !== prev) {
+                    const y = Math.round(i * rh) + .5;
+                    c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+                }
+                prev = g;
+            });
+        }
+        function place() {
+            const b = body(), h = host.clientHeight;
+            if (!b || !b.scrollHeight) { box.style.display = 'none'; return; }
+            box.style.display = '';
+            const top = b.scrollTop / b.scrollHeight * h;
+            box.style.top = top + 'px';
+            box.style.height = Math.max(Math.min(b.clientHeight / b.scrollHeight * h, h - top), 6) + 'px';
+        }
+        let drag = null;
+        const scrollTo = (e) => {
+            const b = body(); if (!b) return;
+            const y = e.clientY - host.getBoundingClientRect().top - drag;
+            b.scrollTop = y / host.clientHeight * b.scrollHeight;
+        };
+        host.addEventListener('pointerdown', (e) => {
+            const r = box.getBoundingClientRect();
+            drag = e.clientY >= r.top && e.clientY <= r.bottom ? e.clientY - r.top : r.height / 2;
+            host.setPointerCapture(e.pointerId);
+            box.style.cursor = 'grabbing';
+            scrollTo(e);
+        });
+        host.addEventListener('pointermove', (e) => { if (drag !== null) scrollTo(e); });
+        const release = () => { drag = null; box.style.cursor = 'grab'; };
+        host.addEventListener('pointerup', release);
+        host.addEventListener('pointercancel', release);
+        const onScroll = () => place();
+        document.addEventListener('scroll', onScroll, true);
+        let last = '';
+        const tick = () => {
+            if (!host.isConnected) { detach(); return; }
+            const a = api(), b = body();
+            const sig = a ? a.getDisplayedRowCount() + ':' + (b ? b.scrollHeight : 0) + ':' + host.clientHeight : '';
+            if (sig !== last) { last = sig; drawSheet(); }
+            place();
+        };
+        const timer = setInterval(tick, 400);
+        // data edits that keep the row count: redraw now and then regardless
+        const slow = setInterval(drawSheet, 2000);
+        stop = () => { clearInterval(timer); clearInterval(slow); document.removeEventListener('scroll', onScroll, true); };
+        tick(); drawSheet();
+    }
+    function detach() { if (stop) { stop(); stop = null; } }
+    return {attach, detach};
+})();
+"""
+
+
+def toggle_overview(active: bool | None = None) -> None:
+    """XSheet > Overview: show or hide the Overview panel at the right, like
+    Find Frame's. It shows the whole sheet in miniature, with a box over the
+    part the grid shows; dragging the box scrolls the grid (see OVERVIEW_JS)."""
+    sess = session()
+    want = (sess.overview_dialog is None) if active is None else bool(active)
+    if not want:
+        if sess.overview_dialog is not None:
+            sess.overview_dialog.close()
+        return
+    if sess.overview_dialog is not None:
+        return
+    if not sess.document_open or sess.main_tab != 'XSheet':
+        ui.notify('Open an ExposureSheet document to see its overview', color='info')
+        return
+    with ui.dialog().props('seamless position=right') as dlg, \
+            titled_card('Overview', classes='w-[300px] max-w-full', body_classes='gap-2'):
+        host = ui.element('div').classes('w-full').style(
+            'position: relative; height: 60vh; border: 1px solid #94a3b8; user-select: none')
+        ui.label('Drag the box to scroll the XSheet.').classes('text-xs text-gray-500')
+        with ui.row().classes('w-full justify-end'):
+            ui.button('Close', on_click=dlg.close).props('size=sm')
+
+    def hidden(_=None) -> None:
+        if sess.overview_dialog is dlg:
+            sess.overview_dialog = None
+            set_overview_icon()
+            ui.run_javascript('window.mlwOverview && mlwOverview.detach()')
+    sess.overview_dialog = dlg
+    dlg.on('hide', hidden)
+    dlg.open()
+    set_overview_icon()
+    ui.run_javascript(OVERVIEW_JS + f'mlwOverview.attach("c{host.id}", {_frame_rate()})')
+
+
+def set_overview_icon() -> None:
+    sess = session()
+    if sess.overview_menu_icon is not None:
+        sess.overview_menu_icon.name = 'check_box' if sess.overview_dialog is not None else 'check_box_outline_blank'
+
+
+def update_overview_item(on_xsheet_tab: bool | None = None) -> None:
+    """XSheet > Overview can be chosen only on the XSheet tab, with a document open."""
+    sess = session()
+    if on_xsheet_tab is None:
+        on_xsheet_tab = sess.main_tab == 'XSheet'
+    if sess.overview_item is not None:
+        sess.overview_item.set_enabled(on_xsheet_tab and sess.document_open)
+    if not on_xsheet_tab and sess.overview_dialog is not None:
+        sess.overview_dialog.close()
+
+
 def update_sketchpad_item(on_xsheet_tab: bool | None = None) -> None:
     """XSheet > Sketchpad can be chosen only on the XSheet tab, and only
     once a document is open (opened, new, or a restored draft)."""
@@ -4363,6 +4515,7 @@ def reset_sketchpad() -> None:
     sess.sketch_modified = False
     ui.run_javascript('window.mlwSketchpad && mlwSketchpad.reset()')
     update_sketchpad_item()
+    update_overview_item()
     refresh_svg_editor()
 
 
@@ -4977,6 +5130,8 @@ def close_find_dialogs(showing: str) -> None:
     if showing != 'XSheet' and sess.find_frame_dialog is not None:
         sess.find_frame_dialog.close()
         sess.find_frame_dialog = None
+    if showing != 'XSheet' and sess.overview_dialog is not None:
+        sess.overview_dialog.close()
 
 
 def shown_tabs() -> list[str]:
@@ -7966,6 +8121,13 @@ window.mlwSelectRange = function(elementId, from, to) {
                     ui.menu_item('Expand Frames', on_click=lambda _: expand_frames()),
                 ]
                 ui.separator()
+                # a check box shows whether the Overview panel is open (see toggle_overview())
+                with ui.menu_item(on_click=lambda _: toggle_overview()) as overview_item:
+                    with ui.item_section():
+                        ui.label('Overview')
+                    with ui.item_section().props('side'):
+                        sess.overview_menu_icon = ui.icon('check_box_outline_blank', size='xs')
+                sess.overview_item = overview_item
                 # a check box shows whether the sketchpad is on (see toggle_sketchpad())
                 with ui.menu_item(on_click=lambda _: toggle_sketchpad()) as sketchpad_item:
                     with ui.item_section():
@@ -7973,6 +8135,7 @@ window.mlwSelectRange = function(elementId, from, to) {
                     with ui.item_section().props('side'):  # the check box, at the right
                         sess.sketchpad_menu_icon = ui.icon('check_box_outline_blank', size='xs')
                 sess.sketchpad_item = sketchpad_item
+                update_overview_item(True)
                 update_sketchpad_item(True)  # the page opens on the XSheet tab (see update_sketchpad_item())
                 ui.separator()
                 ui.menu_item('Export XSheet', on_click=lambda _: export_xsheet())
@@ -8064,6 +8227,7 @@ window.mlwSelectRange = function(elementId, from, to) {
         update_xsheet_view_items(showing == 'XSheet')
         update_delete_frame_item(showing == 'XSheet')
         update_sketchpad_item(showing == 'XSheet')
+        update_overview_item(showing == 'XSheet')
         try:
             if leaving == 'XML':
                 offset = await ui.run_javascript(f'return window.mlwGetEditorCursorOffset({sess.editor.id});')
