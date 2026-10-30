@@ -58,6 +58,7 @@
     <Production>
 
         <ProjectID>SHOW001</ProjectID>
+        <EpisodeID>EP101</EpisodeID>
         <SequenceID>SQ010</SequenceID>
         <SceneID>SC010</SceneID>
         <ShotID>SH005</ShotID>

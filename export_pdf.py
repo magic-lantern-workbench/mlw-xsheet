@@ -338,7 +338,7 @@ def generate_pdf(text: str, *, title: str = 'Untitled', warnings: list[str] | No
 
 
 # Production fields shown above the grid, as in the XSheet view.
-XSHEET_PRODUCTION_FIELDS = (('ProjectID', 'Project ID'), ('SequenceID', 'Sequence ID'), ('SceneID', 'Scene ID'),
+XSHEET_PRODUCTION_FIELDS = (('ProjectID', 'Project ID'), ('EpisodeID', 'Episode ID'), ('SequenceID', 'Sequence ID'), ('SceneID', 'Scene ID'),
                             ('Title', 'Title'), ('FrameRate', 'Frame Rate'))
 
 

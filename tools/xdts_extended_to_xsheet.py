@@ -62,7 +62,7 @@ format:
   with "; " if several marks share a frame).
 - The extended schema has no dialogue/phoneme concept at all, so no
   <Dialogue> elements are ever emitted (it's optional in the schema).
-- ProjectID, SequenceID, Reviews, VersionControl and OTIO still have no
+- ProjectID, EpisodeID, SequenceID, Reviews, VersionControl and OTIO still have no
   XDTS-Extended equivalent and are filled with placeholders (overridable
   via CLI flags where it makes sense). Unlike the legacy converter,
   FrameRate, SceneID/ShotID (from scene/cut) and the Camera's keyframes
@@ -396,6 +396,7 @@ def convert_document(data: dict, args) -> ET.Element:
 
     prod_el = sub(root, "core", "Production")
     sub(prod_el, "core", "ProjectID", text=args.project_id)
+    sub(prod_el, "core", "EpisodeID", text=args.episode_id)
     sub(prod_el, "core", "SequenceID", text=args.sequence_id)
     sub(prod_el, "core", "SceneID", text=scene_id)
     sub(prod_el, "core", "ShotID", text=shot_id)
@@ -464,6 +465,7 @@ def main() -> int:
     parser.add_argument("input", type=Path, help="XDTS-Extended JSON file")
     parser.add_argument("-o", "--output", type=Path, help="Output XML path (default: alongside input)")
     parser.add_argument("--project-id", default="UNKNOWN", help="Production/ProjectID (not present in XDTS-Extended)")
+    parser.add_argument("--episode-id", default="UNKNOWN", help="Production/EpisodeID (not present in XDTS-Extended)")
     parser.add_argument("--sequence-id", default="UNKNOWN", help="Production/SequenceID (not present in XDTS-Extended)")
     parser.add_argument("--shot-id", help="Production/ShotID override (default: the source's 'cut' value)")
     parser.add_argument("--scene-id", help="Production/SceneID override (default: the source's 'scene' value)")

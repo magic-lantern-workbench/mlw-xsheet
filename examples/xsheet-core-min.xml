@@ -42,6 +42,7 @@
 
     <Production>
         <ProjectID>SPACE01</ProjectID>
+        <EpisodeID>EP01</EpisodeID>
         <SequenceID>SQ001</SequenceID>
         <SceneID>SC010</SceneID>
         <ShotID>SH005</ShotID>

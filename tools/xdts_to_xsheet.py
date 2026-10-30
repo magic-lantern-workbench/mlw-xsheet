@@ -60,7 +60,7 @@ Mapping decisions (mirroring xsheet_to_xdts.py's choices in reverse):
   before the next entry (or the end of the sheet). Numeric keyframe data
   has no XDTS source, so exactly one placeholder <Keyframe> is
   synthesized (Camera requires at least one).
-- ProjectID, SequenceID, FrameRate, AudioTracks, Reviews, VersionControl
+- ProjectID, EpisodeID, SequenceID, FrameRate, AudioTracks, Reviews, VersionControl
   and OTIO have no XDTS equivalent and are filled with placeholders
   (overridable via CLI flags where it makes sense).
 
@@ -413,6 +413,7 @@ def convert_timetable(table: dict, header: dict, xdts_version: int, args) -> ET.
 
     prod_el = sub(root, "core", "Production")
     sub(prod_el, "core", "ProjectID", text=args.project_id)
+    sub(prod_el, "core", "EpisodeID", text=args.episode_id)
     sub(prod_el, "core", "SequenceID", text=args.sequence_id)
     sub(prod_el, "core", "SceneID", text=scene_id)
     sub(prod_el, "core", "ShotID", text=shot_id)
@@ -471,6 +472,7 @@ def main() -> int:
     parser.add_argument("-o", "--output", type=Path, help="Output XML path (single table) or directory (multiple tables)")
     parser.add_argument("--index", type=int, help="Convert only timeTables[INDEX] (0-based); default: convert all")
     parser.add_argument("--project-id", default="UNKNOWN", help="Production/ProjectID (not present in XDTS)")
+    parser.add_argument("--episode-id", default="UNKNOWN", help="Production/EpisodeID (not present in XDTS)")
     parser.add_argument("--sequence-id", default="UNKNOWN", help="Production/SequenceID (not present in XDTS)")
     parser.add_argument("--shot-id", help="Production/ShotID override (default: derived from header.cut)")
     parser.add_argument("--scene-id", help="Production/SceneID override (default: derived from header.scene)")

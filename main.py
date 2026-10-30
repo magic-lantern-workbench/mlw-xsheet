@@ -1301,7 +1301,7 @@ def resolve_schema_for_xml(text: str):
         # examples often reference "xsheet-assets.xsd" while it lives in xml/;
         # fall back to a repo-wide search by basename.
         name = Path(loc).name
-        for search_dir in dict.fromkeys((BASE_DIR, SCHEMA_DIR)):
+        for search_dir in dict.fromkeys((SCHEMA_DIR, BASE_DIR)):  # the bundled schema first: BASE_DIR may hold stale copies
             matches = sorted(search_dir.rglob(name))
             if matches:
                 return matches[0]
@@ -3058,7 +3058,7 @@ FRAME_CELL_RENDERER = (
 
 
 # Production fields shown above the XSheet grid, with their captions.
-XSHEET_PRODUCTION_FIELDS = (('ProjectID', 'Project ID'), ('SequenceID', 'Sequence ID'), ('SceneID', 'Scene ID'),
+XSHEET_PRODUCTION_FIELDS = (('ProjectID', 'Project ID'), ('EpisodeID', 'Episode ID'), ('SequenceID', 'Sequence ID'), ('SceneID', 'Scene ID'),
                             ('Title', 'Title'), ('FrameRate', 'Frame Rate'))
 
 
@@ -3096,6 +3096,11 @@ def update_production_in_text(text: str, changes: dict[str, str]) -> tuple[str, 
     for field, value in changes.items():
         field_re = re.compile(r'<((?:[\w.-]+:)?)' + re.escape(field) + r'(\s[^>]*?)?\s*(?:/>|>.*?</\1' + re.escape(field) + r'\s*>)', re.S)
         m = field_re.search(body)
+        if not m and field == 'EpisodeID':  # required, but older documents lack it: add it after ProjectID
+            pm = re.search(r'<((?:[\w.-]+:)?)ProjectID(?:\s[^>]*)?>.*?</\1ProjectID\s*>', body, re.S)
+            if pm:
+                body = body[:pm.end()] + f'<{pm.group(1)}EpisodeID>{escape(value)}</{pm.group(1)}EpisodeID>' + body[pm.end():]
+                continue
         if not m:
             missing.append(field)
             continue
@@ -5881,6 +5886,7 @@ def new_document_text() -> str:
     version="2.0">
 <Production>
 <ProjectID>UNKNOWN</ProjectID>
+<EpisodeID>UNKNOWN</EpisodeID>
 <SequenceID>UNKNOWN</SequenceID>
 <SceneID>UNKNOWN</SceneID>
 <ShotID>UNKNOWN</ShotID>

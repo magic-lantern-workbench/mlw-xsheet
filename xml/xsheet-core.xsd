@@ -35,6 +35,7 @@
     <xs:complexType name="ProductionType">
         <xs:sequence>
             <xs:element name="ProjectID" type="xs:string"/>
+            <xs:element name="EpisodeID" type="xs:string"/>
             <xs:element name="SequenceID" type="xs:string"/>
             <xs:element name="SceneID" type="xs:string"/>
             <xs:element name="ShotID" type="xs:string"/>

@@ -98,7 +98,7 @@ xdts_extended_to_xsheet.py's mapping, not a reinterpretation of it:
 - Production/SceneID and Production/ShotID map directly to `scene`/`cut`
   (the extended schema takes free-form strings, unlike the legacy format's
   \\d{1,4}-only header fields, so no digit-truncation is needed).
-  Production/FrameRate maps directly to `frameRate`. ProjectID, SequenceID
+  Production/FrameRate maps directly to `frameRate`. ProjectID, EpisodeID, SequenceID
   and Title have no home in the extended schema and are dropped.
 
 Usage:

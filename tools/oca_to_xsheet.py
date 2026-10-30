@@ -46,7 +46,7 @@ has, and the rest is filled in so the result is schema-valid:
 - Production: Title from the document name, FrameRate from its frame rate
   (rounded to a whole number, as the schema requires), StartFrame and
   EndFrame from its timeline (``endTime`` is exclusive in OCA). ProjectID,
-  SequenceID, SceneID and ShotID are ``UNKNOWN`` unless given on the command
+  EpisodeID, SequenceID, SceneID and ShotID are ``UNKNOWN`` unless given on the command
   line. XSheet frames are numbered from 1, so a timeline starting at 0 (the
   OCA default) is shifted up by one; the header comment says so.
 - Layers: each paint or vector layer becomes an XSheet layer, bottom to top
@@ -69,7 +69,7 @@ has, and the rest is filled in so the result is schema-valid:
   Camera, Reviews and OTIO are optional and left out.
 
 Usage:
-    python3 oca_to_xsheet.py INPUT.oca [-o OUTPUT.xml] [--project-id ID] [--sequence-id ID]
+    python3 oca_to_xsheet.py INPUT.oca [-o OUTPUT.xml] [--project-id ID] [--episode-id ID] [--sequence-id ID]
                              [--scene-id ID] [--shot-id ID] [--validate]
 """
 
@@ -259,7 +259,7 @@ def convert_document(document: dict, metadata: dict, *, source_name: str = "unti
     })
     prod_el = sub(root, "core", "Production")
     placeholders = []
-    for field, key in (("ProjectID", "project_id"), ("SequenceID", "sequence_id"),
+    for field, key in (("ProjectID", "project_id"), ("EpisodeID", "episode_id"), ("SequenceID", "sequence_id"),
                        ("SceneID", "scene_id"), ("ShotID", "shot_id")):
         value = ids.get(key) or production.get(field)
         if not value:
@@ -272,7 +272,7 @@ def convert_document(document: dict, metadata: dict, *, source_name: str = "unti
     sub(prod_el, "core", "EndFrame", text=str(end))
     if placeholders:
         notes.append("Placeholders (OCA has no equivalent): " + ", ".join(placeholders)
-                     + " are UNKNOWN; the converter's project-id, sequence-id, scene-id and shot-id "
+                     + " are UNKNOWN; the converter's project-id, episode-id, sequence-id, scene-id and shot-id "
                        "options set them.")
 
     # ---- layers: names, attributes and exposure
@@ -421,6 +421,7 @@ def main() -> int:
     parser.add_argument("input", type=Path, help="OCA folder (NAME.oca/) or its data file")
     parser.add_argument("-o", "--output", type=Path, help="Output XML path (default: NAME.xml next to the input)")
     parser.add_argument("--project-id", help="Production/ProjectID (not in OCA)")
+    parser.add_argument("--episode-id", help="Production/EpisodeID (not in OCA)")
     parser.add_argument("--sequence-id", help="Production/SequenceID (not in OCA)")
     parser.add_argument("--scene-id", help="Production/SceneID (not in OCA)")
     parser.add_argument("--shot-id", help="Production/ShotID (not in OCA)")
@@ -429,7 +430,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="Replace the output file if it already exists")
     args = parser.parse_args()
 
-    ids = {k: getattr(args, k) for k in ("project_id", "sequence_id", "scene_id", "shot_id") if getattr(args, k)}
+    ids = {k: getattr(args, k) for k in ("project_id", "episode_id", "sequence_id", "scene_id", "shot_id") if getattr(args, k)}
     try:
         xml_text = convert_path(args.input, ids=ids, xsheet_version=args.xsheet_version)
     except OCAConversionError as exc:
